@@ -392,8 +392,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     )
   }
 
-  // Convert plain text URLs to clickable links
-  // Handles both "Text https://url" (uses Text as link) and standalone URLs
+  // Convert plain text URLs to clickable links or inline images
+  // Handles:
+  //   1. "Text https://chat.virtualflybrain.org?query=..." → clickable question link
+  //   2. Standalone chat query URLs → clickable link with decoded query text
+  //   3. VFB thumbnail URLs (plain text) → inline <img> with hover-to-expand
   const convertUrlsToLinks = (children) => {
     if (!children) return children
     
@@ -401,98 +404,97 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const parts = []
       let lastIndex = 0
       
-      // Pattern: TEXT  https://chat.virtualflybrain.org?query=...
-      // Matches text followed by whitespace and then the URL
-      const textAndUrlRegex = /(\S.*?)\s+(https:\/\/chat\.virtualflybrain\.org\?query=[^\s)]+)/g
+      // Unified regex: match EITHER a VFB thumbnail URL OR a chat query URL
+      // (with optional preceding text for query URLs)
+      const combinedRegex = /(https:\/\/www\.virtualflybrain\.org\/data\/VFB\/[^\s)]+\/thumbnail\.png)|(?:(\S.*?)\s+)?(https:\/\/chat\.virtualflybrain\.org\?query=[^\s)]+)/g
       let match
-      let foundAnyMatch = false
       
-      // First pass: look for text + URL patterns
-      while ((match = textAndUrlRegex.exec(children)) !== null) {
-        foundAnyMatch = true
-        
+      while ((match = combinedRegex.exec(children)) !== null) {
         // Add text before this match
         if (match.index > lastIndex) {
           parts.push(children.substring(lastIndex, match.index))
         }
         
-        const linkText = match[1].trim()
-        const fullUrl = match[2]
-        const params = new URLSearchParams(fullUrl.split('?')[1])
-        const queryText = params.get('query')
-        const decodedQuery = queryText ? decodeURIComponent(queryText) : ''
-        
-        parts.push(
-          <a
-            key={fullUrl + match.index}
-            href={fullUrl}
-            onClick={(e) => {
-              e.preventDefault()
-              if (queryText) {
-                handleSend(decodeURIComponent(queryText))
-              }
-            }}
-            style={{
-              color: '#66d9ff',
-              textDecoration: 'underline',
-              textDecorationColor: '#66d9ff40',
-              cursor: 'pointer'
-            }}
-            title={`Ask: ${decodedQuery}`}
-          >
-            {linkText}
-          </a>
-        )
-        
-        lastIndex = textAndUrlRegex.lastIndex
-      }
-      
-      // If we found text+URL patterns, add remaining text and return
-      if (foundAnyMatch) {
-        if (lastIndex < children.length) {
-          parts.push(children.substring(lastIndex))
+        if (match[1]) {
+          // ── VFB thumbnail URL ──
+          const thumbUrl = match[1]
+          // Try to extract a label from preceding text like "Thumbnail:" or surrounding context
+          const precedingText = children.substring(Math.max(0, lastIndex), match.index).trim()
+          const altText = precedingText.replace(/^[-•*]\s*/, '').replace(/:?\s*$/, '').trim() || 'VFB Image'
+          
+          parts.push(
+            <span key={'thumb-' + match.index} className="vfb-thumb-wrap" style={{ display: 'inline-block', margin: '4px', verticalAlign: 'middle', position: 'relative' }}>
+              <img
+                src={thumbUrl}
+                alt={altText}
+                className="vfb-thumb"
+                style={{
+                  maxWidth: '120px',
+                  maxHeight: '64px',
+                  width: 'auto',
+                  height: 'auto',
+                  objectFit: 'contain',
+                  border: '1px solid #444',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  verticalAlign: 'middle',
+                  transition: 'opacity 0.15s'
+                }}
+              />
+              <span className="vfb-thumb-expanded" style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: '0',
+                display: 'none',
+                backgroundColor: '#111',
+                border: '1px solid #444',
+                borderRadius: '6px',
+                padding: '6px',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.7)',
+                zIndex: 1000,
+                whiteSpace: 'nowrap'
+              }}>
+                <img
+                  src={thumbUrl}
+                  alt={altText}
+                  style={{ maxWidth: '280px', maxHeight: '280px', borderRadius: '4px', display: 'block' }}
+                />
+                <span style={{ display: 'block', fontSize: '11px', color: '#aaa', marginTop: '4px', textAlign: 'center' }}>{altText}</span>
+              </span>
+            </span>
+          )
+        } else {
+          // ── Chat query URL (with or without preceding text) ──
+          const linkText = match[2] ? match[2].trim() : null
+          const fullUrl = match[3]
+          const params = new URLSearchParams(fullUrl.split('?')[1])
+          const queryText = params.get('query')
+          const decodedQuery = queryText ? decodeURIComponent(queryText) : fullUrl
+          
+          parts.push(
+            <a
+              key={fullUrl + match.index}
+              href={fullUrl}
+              onClick={(e) => {
+                e.preventDefault()
+                if (queryText) {
+                  handleSend(decodeURIComponent(queryText))
+                }
+              }}
+              style={{
+                color: '#66d9ff',
+                textDecoration: 'underline',
+                textDecorationColor: '#66d9ff40',
+                cursor: 'pointer'
+              }}
+              title={`Ask: ${decodedQuery}`}
+            >
+              {linkText || decodedQuery}
+            </a>
+          )
         }
-        return parts
-      }
-      
-      // Second pass: handle standalone URLs (no preceding text)
-      lastIndex = 0
-      const urlOnlyRegex = /https:\/\/chat\.virtualflybrain\.org\?query=[^\s)]+/g
-      
-      while ((match = urlOnlyRegex.exec(children)) !== null) {
-        // Add text before the URL
-        if (match.index > lastIndex) {
-          parts.push(children.substring(lastIndex, match.index))
-        }
         
-        const fullUrl = match[0]
-        const params = new URLSearchParams(fullUrl.split('?')[1])
-        const queryText = params.get('query')
-        const decodedQuery = queryText ? decodeURIComponent(queryText) : fullUrl
-        
-        parts.push(
-          <a
-            key={fullUrl + match.index}
-            href={fullUrl}
-            onClick={(e) => {
-              e.preventDefault()
-              if (queryText) {
-                handleSend(decodeURIComponent(queryText))
-              }
-            }}
-            style={{
-              color: '#66d9ff',
-              textDecoration: 'underline',
-              textDecorationColor: '#66d9ff40',
-              cursor: 'pointer'
-            }}
-            title={`Ask: ${decodedQuery}`}
-          >
-            {decodedQuery}
-          </a>
-        )
-        
-        lastIndex = urlOnlyRegex.lastIndex
+        lastIndex = combinedRegex.lastIndex
       }
       
       // Add remaining text
@@ -500,7 +502,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         parts.push(children.substring(lastIndex))
       }
       
-      return parts.length > 0 ? parts : children
+      return parts.length > 0 && lastIndex > 0 ? parts : children
     }
     
     // If children is an array, process each element
