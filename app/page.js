@@ -138,9 +138,10 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
 
   // Extract suggested questions from the end of assistant messages
   const extractSuggestedQuestions = (content) => {
-    // Common intro phrases that indicate follow-up suggestions
-    const introPatterns = [
+    // Strong intro phrases that definitively indicate follow-up suggestions
+    const strongIntroPatterns = [
       'What would you like',
+      'What would you like next',
       'What do you want to',
       'Would you like',
       'Would you like me to',
@@ -153,51 +154,60 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       'Some follow-up questions',
       'Further questions',
       'Next steps',
-      'Here are',
-      'You can also',
-      'Other questions',
-      'Additional queries',
-      'want to explore'
+      'want to explore',
+      'would you like to',
+      'any follow-up',
+      'other questions'
     ]
     
-    // Look for a bulleted/numbered list in the last 3 paragraphs
+    // Look for a bulleted/numbered list in the last 2 paragraphs
     const paragraphs = content.split('\n\n')
     
-    for (let i = Math.max(0, paragraphs.length - 3); i < paragraphs.length; i++) {
+    if (paragraphs.length < 2) return []
+    
+    // Check the last 2 sections for follow-up suggestions
+    for (let i = Math.max(0, paragraphs.length - 2); i < paragraphs.length; i++) {
       const para = paragraphs[i]
       
-      // Check if this paragraph starts with an intro phrase
-      const hasIntro = introPatterns.some(phrase => 
-        para.toLowerCase().includes(phrase.toLowerCase())
-      )
+      // Check if this paragraph has an intro phrase at the START or very early
+      const hasStrongIntro = strongIntroPatterns.some(phrase => {
+        const lowerPara = para.toLowerCase()
+        const phraseIndex = lowerPara.indexOf(phrase.toLowerCase())
+        return phraseIndex >= 0 && phraseIndex < 100 // Intro must be near the start
+      })
       
-      if (hasIntro || i === paragraphs.length - 1) {
-        // Extract list items (bullet points, dashes, or numbered)
+      if (hasStrongIntro) {
+        // Extract list items from this specific paragraph
         const listItems = para
           .split('\n')
           .filter(line => {
             const trimmed = line.trim()
-            // Match lines starting with -, •, *, or numbers followed by dot
-            return /^[-•*]\s+|^\d+\.\s+|^\d+\)\s+/.test(trimmed)
+            // Only match direct list items (not nested)
+            return /^[-•*]\s+[^-•*]|^\d+\.\s+|^\d+\)\s+/.test(trimmed)
           })
           .map(line => {
-            // Remove bullet/number prefix
-            const cleaned = line
+            // Remove bullet/number prefix and strip leading dash
+            let cleaned = line
               .replace(/^[-•*]\s+/, '')
               .replace(/^\d+[.)]\s+/, '')
               .trim()
+            // Remove any leading single dash that's part of markdown
+            cleaned = cleaned.replace(/^-\s+/, '')
             return cleaned
           })
           .filter(item => {
-            // Filter out empty items and obviously non-question content
-            return item.length > 5 && 
+            // Filter out empty items and non-question-like content
+            return item.length > 8 && 
+                   item.length < 150 &&
                    !item.includes('http') &&
-                   !item.includes('[') && // Avoid markdown-heavy lines
-                   item.length < 200 // Avoid extremely long items
+                   !item.includes('[') &&
+                   !item.startsWith('The ') && // Likely explanatory, not a question
+                   !item.startsWith('There ') &&
+                   !item.match(/^[A-Z][a-z]+\s+is\s+/) // Avoid definition-like items
           })
         
         if (listItems.length >= 2) {
-          return listItems.slice(0, 5) // Limit to 5 suggestions
+          return listItems.slice(0, 5)
         }
       }
     }
@@ -205,46 +215,35 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     return []
   }
 
-  // Remove suggested questions from content for display
-  const removeSuggestedQuestions = (content) => {
-    const introPatterns = [
-      'What would you like',
-      'What do you want to',
-      'Would you like',
-      'Would you like me to',
-      'If you\'d like',
-      'If you\'re interested',
-      'Feel free to ask',
-      'You could also ask',
-      'You might want to',
-      'Try asking',
-      'Some follow-up questions',
-      'Further questions',
-      'Next steps',
-      'Here are',
-      'You can also',
-      'Other questions',
-      'Additional queries',
-      'want to explore'
-    ]
+  // Convert suggested questions to markdown links within the content
+  const convertSuggestionsToLinks = (content, suggestions) => {
+    if (suggestions.length === 0) return content
     
-    // Remove the last section that contains intro phrase + list
-    const sections = content.split('\n\n')
+    // Find and replace the suggestion list items with markdown links
+    let modified = content
     
-    for (let i = sections.length - 1; i >= Math.max(0, sections.length - 3); i--) {
-      const section = sections[i]
-      const hasIntro = introPatterns.some(phrase => 
-        section.toLowerCase().includes(phrase.toLowerCase())
-      )
-      const hasListItems = /^[-•*]\s+|^\d+[.)]\s+/m.test(section)
+    suggestions.forEach(suggestion => {
+      // Create regex that matches the list item in various bullet formats
+      const escapedSuggestion = suggestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const patterns = [
+        // With leading dash/bullet
+        new RegExp(`^[-•*]\\s+${escapedSuggestion}$`, 'gm'),
+        // With number prefix
+        new RegExp(`^\\d+[.)]\\s+${escapedSuggestion}$`, 'gm'),
+        // Without prefix (just the text)
+        new RegExp(`^${escapedSuggestion}$`, 'gm')
+      ]
       
-      if (hasIntro && hasListItems) {
-        sections.splice(i, 1)
-        break
-      }
-    }
+      patterns.forEach(pattern => {
+        if (pattern.test(modified)) {
+          const shareUrl = `https://chat.virtualflybrain.org?query=${encodeURIComponent(suggestion)}`
+          const markdownLink = `[${suggestion}](${shareUrl})`
+          modified = modified.replace(pattern, `- ${markdownLink}`)
+        }
+      })
+    })
     
-    return sections.join('\n\n').trim()
+    return modified
   }
 
   // Custom renderers for react-markdown
