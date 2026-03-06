@@ -329,13 +329,80 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     )
   }
 
+  // Convert plain text URLs to clickable links
+  const convertUrlsToLinks = (children) => {
+    if (!children) return children
+    
+    if (typeof children === 'string') {
+      const urlPattern = /https:\/\/chat\.virtualflybrain\.org\?query=([^\s)]+)/g
+      const parts = []
+      let lastIndex = 0
+      let match
+      
+      while ((match = urlPattern.exec(children)) !== null) {
+        // Add text before the URL
+        if (match.index > lastIndex) {
+          parts.push(children.substring(lastIndex, match.index))
+        }
+        
+        const fullUrl = match[0]
+        const params = new URLSearchParams(fullUrl.split('?')[1])
+        const queryText = params.get('query')
+        const decodedQuery = queryText ? decodeURIComponent(queryText) : fullUrl
+        
+        parts.push(
+          <a
+            key={fullUrl + match.index}
+            href={fullUrl}
+            onClick={(e) => {
+              e.preventDefault()
+              if (queryText) {
+                handleSend(decodeURIComponent(queryText))
+              }
+            }}
+            style={{
+              color: '#66d9ff',
+              textDecoration: 'underline',
+              textDecorationColor: '#66d9ff40',
+              cursor: 'pointer'
+            }}
+            title={`Ask: ${decodedQuery}`}
+          >
+            {decodedQuery}
+          </a>
+        )
+        
+        lastIndex = urlPattern.lastIndex
+      }
+      
+      // Add remaining text
+      if (lastIndex < children.length) {
+        parts.push(children.substring(lastIndex))
+      }
+      
+      return parts.length > 0 ? parts : children
+    }
+    
+    // If children is an array, process each element
+    if (Array.isArray(children)) {
+      return children.map((child, idx) => {
+        if (typeof child === 'string') {
+          return <>{convertUrlsToLinks(child)}</>
+        }
+        return child
+      })
+    }
+    
+    return children
+  }
+
   const markdownComponents = {
     a: renderLink,
     img: renderImage,
-    p: ({ children }) => <p style={{ margin: '0.4em 0' }}>{children}</p>,
+    p: ({ children }) => <p style={{ margin: '0.4em 0' }}>{convertUrlsToLinks(children)}</p>,
     ul: ({ children }) => <ul style={{ margin: '0.4em 0', paddingLeft: '20px' }}>{children}</ul>,
     ol: ({ children }) => <ol style={{ margin: '0.4em 0', paddingLeft: '20px' }}>{children}</ol>,
-    li: ({ children }) => <li style={{ margin: '0.2em 0' }}>{children}</li>,
+    li: ({ children }) => <li style={{ margin: '0.2em 0' }}>{convertUrlsToLinks(children)}</li>,
     strong: ({ children }) => <strong style={{ color: '#fff' }}>{children}</strong>,
     h1: ({ children }) => <h3 style={{ color: '#fff', margin: '0.5em 0 0.3em' }}>{children}</h3>,
     h2: ({ children }) => <h4 style={{ color: '#fff', margin: '0.5em 0 0.3em' }}>{children}</h4>,
