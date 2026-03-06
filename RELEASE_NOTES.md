@@ -1,3 +1,14 @@
+Release 2.2.19
+
+This release improves suggested follow-up questions by having the LLM natively include them as clickable query URLs in its markdown responses, rather than relying on client-side extraction.
+
+Changes:
+- System prompt now instructs gpt-5-nano to suggest follow-up questions as markdown links with `https://chat.virtualflybrain.org?query=` URLs
+- renderLink function detects these special query URLs and handles clicks by submitting the question as a new chat message
+- Eliminates false positive detection of regular content as suggested questions (fragile pattern matching removed)
+- LLM has full control over suggestion placement (inline, bullets, sentences) and can omit suggestions when not appropriate
+- More reliable than client-side extraction since LLM explicitly marks suggestions with URLs rather than relying on pattern matching
+
 Release 2.2.18
 
 This release adds intelligent extraction and rendering of suggested follow-up questions from gpt-5-nano responses, enabling users to quickly explore related topics with a single click.
