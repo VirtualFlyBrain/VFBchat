@@ -791,11 +791,26 @@ When get_term_info returns visual data, include thumbnail URLs in your response 
 Do NOT show any images if no validated thumbnail URLs are available in the data. The user's chat interface renders these as compact thumbnails that expand on hover.
 
 SUGGESTED FOLLOW-UP QUESTIONS:
-At the end of your responses, when appropriate, suggest 2-4 follow-up questions the user might want to ask next. Format these as markdown links using the special URL format:
-  https://chat.virtualflybrain.org?query=ENCODED_QUESTION
-For example:
-  You might also want to explore: [What neurons connect to the mushroom body?](https://chat.virtualflybrain.org?query=What%20neurons%20connect%20to%20the%20mushroom%20body%3F) or [Show me the visual projection neurons](https://chat.virtualflybrain.org?query=Show%20me%20the%20visual%20projection%20neurons).
-The question text in the URL must be properly URL-encoded. The visible link text should be a natural, readable version of the question. These links are rendered as clickable suggestions in the chat interface — clicking one automatically sends that question as a new chat message. You can weave these links into a sentence or list them as bullet points, whichever feels most natural for the context.`
+At the end of your responses, when appropriate (not always necessary), suggest 2-4 follow-up questions the user might want to ask next. Include these as plain-text URLs in one of these formats:
+
+**Format 1 - Plain-text URLs in text (recommended):**
+You might also want to explore:
+- What neurons have presynaptic terminals in the medulla? https://chat.virtualflybrain.org?query=What%20neurons%20have%20presynaptic%20terminals%20in%20the%20medulla%3F
+- Show me neuron morphologies https://chat.virtualflybrain.org?query=Show%20me%20neuron%20morphologies
+
+**Format 2 - Markdown links (also works):**
+[What is the lomula](https://chat.virtualflybrain.org?query=What%20is%20the%20lobula) or [Show me MB connectivity](https://chat.virtualflybrain.org?query=Show%20me%20mushroom%20body%20connectivity)
+
+**Format 3 - Inline in sentences:**
+If you want to explore further, you could ask about [layer-specific connectivity](https://chat.virtualflybrain.org?query=What%20is%20the%20layer-specific%20connectivity%20in%20the%20medulla) or [transgenic lines](https://chat.virtualflybrain.org?query=Which%20transgenic%20lines%20label%20medulla%20neurons).
+
+**Important guidelines:**
+- The question text in the URL MUST be properly URL-encoded (spaces as %20, ? as %3F, etc.)
+- Keep questions concise and specific to the topic at hand
+- Only suggest when relevant — skip if the response already answers likely follow-ups
+- Vary the question types: ask about connectivity, morphology, genetics, layers, comparisons, etc.
+- The user's chat interface automatically converts both plain URLs and markdown links to clickable buttons that submit the question
+- Don't overuse: 2-3 well-chosen questions are better than 5 generic ones`
 
         // Term resolution happens during conversation via tool calls
 
