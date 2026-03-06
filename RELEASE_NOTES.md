@@ -1,3 +1,15 @@
+Release 2.2.20
+
+This release improves the rendering of suggested follow-up question URLs to be more user-friendly and support both markdown links and plain-text URL formats.
+
+Changes:
+- Added plain-text URL detection: URLs like `https://chat.virtualflybrain.org?query=...` are now automatically converted to clickable links
+- Extract preceding text as link label: when text precedes the URL (e.g., `What is the medulla https://...`), the question text becomes the link label for cleaner UX
+- Fallback to decoded query text: if no preceding text is found, the URL-decoded query text is used as the link label
+- Improved system prompt guidance with multiple example formats showing real-world usage patterns
+- Emphasizes URL-encoding requirements and suggests varying question types for better follow-up quality
+- Both plain-text URLs and markdown links are now properly rendered and clickable
+
 Release 2.2.19
 
 This release improves suggested follow-up questions by having the LLM natively include them as clickable query URLs in its markdown responses, rather than relying on client-side extraction.
