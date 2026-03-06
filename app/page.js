@@ -1,8 +1,71 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
+
+// ── Memoized single-message bubble ──────────────────────────────────
+// Only re-renders when its own props change, NOT when sibling messages
+// are added or the thinking indicator ticks.
+const ChatMessage = memo(function ChatMessage({ msg, markdownComponents }) {
+  const getDisplayName = (role) => {
+    if (role === 'user') return 'Researcher'
+    if (role === 'assistant') return 'VFB'
+    if (role === 'reasoning') return 'VFB'
+    return role
+  }
+
+  return (
+    <div style={{
+      marginBottom: '12px',
+      padding: '8px 12px',
+      backgroundColor: msg.role === 'user' ? '#1a1a2e' : 'transparent',
+      borderRadius: '6px',
+      borderLeft: msg.role === 'user' ? '3px solid #4a9eff' : '3px solid #2a6a3a'
+    }}>
+      <div style={{
+        fontSize: '0.75em',
+        fontWeight: 600,
+        color: msg.role === 'user' ? '#4a9eff' : '#4ade80',
+        marginBottom: '4px',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px'
+      }}>
+        {getDisplayName(msg.role)}
+      </div>
+      <div
+        className="message-content"
+        style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
+      >
+        <ReactMarkdown components={markdownComponents}>
+          {msg.content}
+        </ReactMarkdown>
+      </div>
+      {/* Image gallery from API images field */}
+      {msg.images && msg.images.length > 0 && (
+        <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+          {msg.images.map((img, i) => (
+            <div key={i} style={{ display: 'inline-block' }}>
+              <img
+                src={img.thumbnail}
+                alt={img.label}
+                style={{
+                  width: '80px',
+                  height: '80px',
+                  objectFit: 'cover',
+                  border: '1px solid #444',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+                title={img.label}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+})
 
 export default function Home() {
   const searchParams = useSearchParams()
@@ -17,11 +80,21 @@ export default function Home() {
   const [thinkingDots, setThinkingDots] = useState('.')
   const [thinkingMessage, setThinkingMessage] = useState('Thinking')
   const chatEndRef = useRef(null)
+  const msgIdRef = useRef(0) // stable, incrementing message ID
 
-  // Auto-scroll to bottom when messages change
+  // Helper: create a message object with a stable unique id
+  const makeMsg = useCallback((role, content, extras = {}) => ({
+    id: ++msgIdRef.current,
+    role,
+    content,
+    ...extras
+  }), [])
+
+  // Auto-scroll to bottom when messages change or thinking starts/stops
+  // NOT on thinkingDots – that would cause layout jumps every 500ms
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isThinking, thinkingDots])
+  }, [messages, isThinking])
 
   function createVFBUrl(scene) {
     if (!scene.id) return '#'
@@ -42,9 +115,7 @@ export default function Home() {
     if (initialQuery) {
       handleSend()
     } else {
-      setMessages([{
-        role: 'assistant',
-        content: `Welcome to VFB Chat! I'm here to help you explore Drosophila neuroanatomy and neuroscience using Virtual Fly Brain data.
+      setMessages([makeMsg('assistant', `Welcome to VFB Chat! I'm here to help you explore Drosophila neuroanatomy and neuroscience using Virtual Fly Brain data.
 
 **Important AI Usage Guidelines:**
 - Always verify information from AI responses with primary sources
@@ -59,8 +130,7 @@ Here are some example queries you can try:
 - Find neurons similar to DA1 using NBLAST
 - What genes are expressed in the antennal lobe?
 
-Feel free to ask about neural circuits, gene expression, connectome data, or any VFB-related topics!`
-      }])
+Feel free to ask about neural circuits, gene expression, connectome data, or any VFB-related topics!`)])
     }
   }, [])
 
@@ -68,7 +138,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     const textToSend = messageText || input
     if (!textToSend.trim()) return
 
-    const userMessage = { role: 'user', content: textToSend }
+    const userMessage = makeMsg('user', textToSend)
     setMessages(prev => [...prev, userMessage])
     if (!messageText) setInput('')
     setIsThinking(true)
@@ -106,14 +176,14 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               if (currentEvent === 'status') {
                 setThinkingMessage(data.message)
               } else if (currentEvent === 'reasoning') {
-                setMessages(prev => [...prev, { role: 'reasoning', content: data.text }])
+                setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
               } else if (currentEvent === 'result') {
-                setMessages(prev => [...prev, { role: 'assistant', content: data.response, images: data.images }])
+                setMessages(prev => [...prev, makeMsg('assistant', data.response, { images: data.images })])
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
                 return
               } else if (currentEvent === 'error') {
-                setMessages(prev => [...prev, { role: 'assistant', content: data.message }])
+                setMessages(prev => [...prev, makeMsg('assistant', data.message)])
                 setIsThinking(false)
                 return
               }
@@ -124,16 +194,9 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         }
       }
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, there was an error processing your request. Please try again.' }])
+      setMessages(prev => [...prev, makeMsg('assistant', 'Sorry, there was an error processing your request. Please try again.')])
       setIsThinking(false)
     }
-  }
-
-  const getDisplayName = (role) => {
-    if (role === 'user') return 'Researcher'
-    if (role === 'assistant') return 'VFB'
-    if (role === 'reasoning') return 'VFB'
-    return role
   }
 
   // Extract suggested questions from the end of assistant messages
@@ -453,7 +516,10 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     return children
   }
 
-  const markdownComponents = {
+  // Memoize markdown component renderers so they are referentially stable
+  // across renders. This is critical for React.memo on ChatMessage to work.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const markdownComponents = useMemo(() => ({
     a: renderLink,
     img: renderImage,
     p: ({ children }) => <p style={{ margin: '0.4em 0' }}>{convertUrlsToLinks(children)}</p>,
@@ -471,7 +537,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     tr: ({ children }) => <tr>{children}</tr>,
     th: ({ children }) => <th style={{ border: '1px solid #444', padding: '4px 8px', backgroundColor: '#1a1a2e', color: '#fff', textAlign: 'left' }}>{children}</th>,
     td: ({ children }) => <td style={{ border: '1px solid #444', padding: '4px 8px', color: '#e0e0e0' }}>{children}</td>,
-  }
+  }), []) // stable – renderLink/renderImage/convertUrlsToLinks use handleSend which is stable via closure
 
   return (
     <div style={{
@@ -504,55 +570,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         borderRadius: '8px',
         minHeight: 0
       }}>
-        {messages.map((msg, idx) => (
-          <div key={idx} style={{
-            marginBottom: '12px',
-            padding: '8px 12px',
-            backgroundColor: msg.role === 'user' ? '#1a1a2e' : 'transparent',
-            borderRadius: '6px',
-            borderLeft: msg.role === 'user' ? '3px solid #4a9eff' : '3px solid #2a6a3a'
-          }}>
-            <div style={{
-              fontSize: '0.75em',
-              fontWeight: 600,
-              color: msg.role === 'user' ? '#4a9eff' : '#4ade80',
-              marginBottom: '4px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.5px'
-            }}>
-              {getDisplayName(msg.role)}
-            </div>
-            <div
-              className="message-content"
-              style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
-            >
-              <ReactMarkdown components={markdownComponents}>
-                {msg.content}
-              </ReactMarkdown>
-            </div>
-            {/* Image gallery from API images field */}
-            {msg.images && msg.images.length > 0 && (
-              <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                {msg.images.map((img, i) => (
-                  <div key={i} style={{ display: 'inline-block' }}>
-                    <img
-                      src={img.thumbnail}
-                      alt={img.label}
-                      style={{
-                        width: '80px',
-                        height: '80px',
-                        objectFit: 'cover',
-                        border: '1px solid #444',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                      }}
-                      title={img.label}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        {messages.map((msg) => (
+          <ChatMessage key={msg.id} msg={msg} markdownComponents={markdownComponents} />
         ))}
         {isThinking && (
           <div style={{
