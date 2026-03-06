@@ -810,7 +810,8 @@ If you want to explore further, you could ask about [layer-specific connectivity
 - Only suggest when relevant — skip if the response already answers likely follow-ups
 - Vary the question types: ask about connectivity, morphology, genetics, layers, comparisons, etc.
 - The user's chat interface automatically converts both plain URLs and markdown links to clickable buttons that submit the question
-- Don't overuse: 2-3 well-chosen questions are better than 5 generic ones`
+- Don't overuse: 2-3 well-chosen questions are better than 5 generic ones
+- Do NOT include any instructional text like "you can click or copy-paste these into the chat" or "copy and paste" — the links are already clickable, so such instructions are unnecessary and redundant. Just present the links directly with a brief natural intro like "You might also want to explore:" or "Related questions:".`
 
         // Term resolution happens during conversation via tool calls
 
