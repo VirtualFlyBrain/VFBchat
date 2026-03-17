@@ -89,10 +89,26 @@ export default function Home() {
 
   // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
   // become clickable links to the corresponding Virtual Fly Brain report page.
+  //
+  // Avoid modifying IDs that are already part of a URL (e.g. https://virtualflybrain.org/reports/VFB_...) as this can break
+  // thumbnail URLs and other VFB links.
   const linkifyVfbTerms = (text) => {
     if (!text) return text
+
+    const urlPlaceholders = []
+    const URL_PLACEHOLDER = '\x00URL'
+    let result = text.replace(/https?:\/\/[^\s)]+/g, (url) => {
+      urlPlaceholders.push(url)
+      return `${URL_PLACEHOLDER}${urlPlaceholders.length - 1}\x00`
+    })
+
     // Avoid double-linking IDs that are already inside markdown links.
-    return text.replace(/(?<!\[)(?<!\]\()(\b(FBbt_\d{8}|VFB_\d{8})\b)/g, '[$1](https://virtualflybrain.org/reports/$1)')
+    result = result.replace(/(?<!\[)(?<!\]\()(\b(FBbt_\d{8}|VFB_\d{8})\b)/g, '[$1](https://virtualflybrain.org/reports/$1)')
+
+    // Restore protected URLs
+    result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => urlPlaceholders[Number(idx)])
+
+    return result
   }
 
   // Helper: create a message object with a stable unique id

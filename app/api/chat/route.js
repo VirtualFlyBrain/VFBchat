@@ -615,6 +615,15 @@ function replaceTermsWithLinks(text) {
   let result = text
   const allLinks = []
 
+  // Protect existing URLs (including those embedded in markdown/HTML) so we don't
+  // accidentally rewrite IDs that are already part of a URL.
+  const urlPlaceholders = []
+  const URL_PLACEHOLDER = '\x00URL'
+  result = result.replace(/https?:\/\/[^\s)]+/g, (url) => {
+    urlPlaceholders.push(url)
+    return `${URL_PLACEHOLDER}${urlPlaceholders.length - 1}\x00`
+  })
+
   // Protect existing markdown links and images
   result = result.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, (match) => {
     allLinks.push(match)
@@ -645,6 +654,7 @@ function replaceTermsWithLinks(text) {
   })
 
   result = result.replace(/\x00LINK(\d+)\x00/g, (_, idx) => allLinks[parseInt(idx)])
+  result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => urlPlaceholders[parseInt(idx)])
 
   return result
 }
