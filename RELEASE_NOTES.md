@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.0.1
+- Release v3.0.1: Add VFB report link generation and improved term linking
+
 ## v3.0.0
 - Release v3.0.0
 

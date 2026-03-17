@@ -37,7 +37,12 @@ const ChatMessage = memo(function ChatMessage({ msg, markdownComponents }) {
         className="message-content"
         style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
       >
-        <ReactMarkdown components={markdownComponents}>
+        <ReactMarkdown
+          components={{
+            ...markdownComponents,
+            a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />
+          }}
+        >
           {msg.content}
         </ReactMarkdown>
       </div>
@@ -82,11 +87,19 @@ export default function Home() {
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
 
+  // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
+  // become clickable links to the corresponding Virtual Fly Brain report page.
+  const linkifyVfbTerms = (text) => {
+    if (!text) return text
+    // Avoid double-linking IDs that are already inside markdown links.
+    return text.replace(/(?<!\[)(?<!\]\()(\b(FBbt_\d{8}|VFB_\d{8})\b)/g, '[$1](https://virtualflybrain.org/reports/$1)')
+  }
+
   // Helper: create a message object with a stable unique id
   const makeMsg = useCallback((role, content, extras = {}) => ({
     id: ++msgIdRef.current,
     role,
-    content,
+    content: role !== 'user' ? linkifyVfbTerms(content) : content,
     ...extras
   }), [])
 

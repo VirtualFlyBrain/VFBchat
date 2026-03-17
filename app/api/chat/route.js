@@ -621,12 +621,14 @@ function replaceTermsWithLinks(text) {
     return `\x00LINK${allLinks.length - 1}\x00`
   })
 
+  const REPORT_BASE = 'https://virtualflybrain.org/reports/'
+
   for (const term of sortedTerms) {
     const id = lookupCache[term]
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const regex = new RegExp(`\\b${escaped}\\b`, 'gi')
     result = result.replace(regex, (match) => {
-      const link = `[${match}](${id})`
+      const link = `[${match}](${REPORT_BASE + encodeURIComponent(id)})`
       allLinks.push(link)
       return `\x00LINK${allLinks.length - 1}\x00`
     })
