@@ -135,7 +135,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   }, [])
 
   const handleSend = async (messageText = null) => {
-    const textToSend = messageText || input
+    const textToSend = (typeof messageText === 'string' ? messageText : null) || input
     if (!textToSend.trim()) return
 
     const userMessage = makeMsg('user', textToSend)
@@ -404,9 +404,9 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const parts = []
       let lastIndex = 0
       
-      // Unified regex: match EITHER a VFB thumbnail URL OR a chat query URL
-      // (with optional preceding text for query URLs)
-      const combinedRegex = /(https:\/\/www\.virtualflybrain\.org\/data\/VFB\/[^\s)]+\/thumbnail\.png)|(?:(\S.*?)\s+)?(https:\/\/chat\.virtualflybrain\.org\?query=[^\s)]+)/g
+      // Unified regex: match EITHER a VFB thumbnail URL, a chat query URL,
+      // or any other plain https:// URL that should become a clickable link
+      const combinedRegex = /(https:\/\/www\.virtualflybrain\.org\/data\/VFB\/[^\s)]+\/thumbnail\.png)|(?:(\S.*?)\s+)?(https:\/\/chat\.virtualflybrain\.org\?query=[^\s)]+)|(https?:\/\/[^\s)<>]+)/g
       let match
       
       while ((match = combinedRegex.exec(children)) !== null) {
@@ -463,14 +463,14 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               </span>
             </span>
           )
-        } else {
+        } else if (match[3]) {
           // ── Chat query URL (with or without preceding text) ──
           const linkText = match[2] ? match[2].trim() : null
           const fullUrl = match[3]
           const params = new URLSearchParams(fullUrl.split('?')[1])
           const queryText = params.get('query')
           const decodedQuery = queryText ? decodeURIComponent(queryText) : fullUrl
-          
+
           parts.push(
             <a
               key={fullUrl + match.index}
@@ -492,8 +492,42 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               {linkText || decodedQuery}
             </a>
           )
+        } else if (match[4]) {
+          // ── General URL (PubMed, DOI, bioRxiv, etc.) ──
+          const trailingPunctRe = /[.,;:!?\)]+$/
+          const plainUrl = match[4].replace(trailingPunctRe, '') // strip trailing punctuation
+          const trailingPunct = match[4].substring(plainUrl.length)
+          // Derive a short display label from the URL
+          let displayText = plainUrl
+          try {
+            const urlObj = new URL(plainUrl)
+            const hostname = urlObj.hostname.replace(/^www\./, '')
+            displayText = hostname + urlObj.pathname.replace(/\/$/, '')
+            if (displayText.length > 60) {
+              displayText = hostname + '/...' + urlObj.pathname.slice(-30)
+            }
+          } catch (e) { /* use raw URL */ }
+
+          parts.push(
+            <a
+              key={'url-' + match.index}
+              href={plainUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#66d9ff',
+                textDecoration: 'underline',
+                textDecorationColor: '#66d9ff40'
+              }}
+            >
+              {displayText}
+            </a>
+          )
+          if (trailingPunct) {
+            parts.push(trailingPunct)
+          }
         }
-        
+
         lastIndex = combinedRegex.lastIndex
       }
       

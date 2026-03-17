@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import fs from 'fs'
@@ -63,10 +62,17 @@ function trackQuery(query, responseLength, duration, sessionId) {
 function sanitizeApiError(statusCode, rawText) {
   // Detect HTML error pages (Cloudflare, nginx, etc.)
   if (rawText && (rawText.trim().startsWith('<!DOCTYPE') || rawText.trim().startsWith('<html'))) {
-    // Try to extract the <title> for a short summary
     const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i)
     const title = titleMatch ? titleMatch[1].trim() : `HTTP ${statusCode}`
     return `The AI service returned an error (${title}). This is usually a temporary issue — please try again in a moment.`
+  }
+  // Try to parse JSON errors and extract the message
+  if (rawText && rawText.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawText)
+      const msg = parsed?.error?.message
+      if (msg) return msg
+    } catch { /* fall through */ }
   }
   // Cap very long non-HTML errors to avoid flooding the UI
   if (rawText && rawText.length > 400) {
@@ -80,234 +86,471 @@ function isTransientError(status) {
   return [429, 500, 502, 503, 504, 520, 521, 522, 524].includes(status)
 }
 
-// Parse tool arguments - OpenAI returns JSON string, Ollama returns object
-function parseToolArguments(args) {
-  if (typeof args === 'string') {
-    try { return JSON.parse(args) } catch { return {} }
+// Pick the OpenAI model to use for LLM completions.
+function getOpenAIModel() {
+  const explicit = process.env.OPENAI_MODEL?.trim()
+  if (explicit) return explicit
+
+  const isProd = process.env.NODE_ENV === 'production'
+  return isProd ? 'gpt-5.4-nano' : 'gpt-4o-mini'
+}
+
+// --- MCP client management (lazy initialization) ---
+
+let vfbMcpClient = null
+let biorxivMcpClient = null
+
+const VFB_MCP_URL = 'https://vfb3-mcp.virtualflybrain.org/'
+const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
+
+async function getVfbMcpClient() {
+  if (vfbMcpClient) return vfbMcpClient
+  try {
+    log('Initializing VFB MCP client...')
+    const transport = new StreamableHTTPClientTransport(new URL(VFB_MCP_URL))
+    const client = new Client(
+      { name: 'vfb-chat-client', version: '3.0.0' },
+      { capabilities: {} }
+    )
+    await client.connect(transport)
+    log('VFB MCP client connected')
+    vfbMcpClient = client
+    return client
+  } catch (err) {
+    log('VFB MCP client connection failed', { error: err.message })
+    throw err
   }
-  return args || {}
+}
+
+async function getBiorxivMcpClient() {
+  if (biorxivMcpClient) return biorxivMcpClient
+  try {
+    log('Initializing bioRxiv MCP client...')
+    const transport = new StreamableHTTPClientTransport(new URL(BIORXIV_MCP_URL))
+    const client = new Client(
+      { name: 'vfb-chat-biorxiv', version: '3.0.0' },
+      { capabilities: {} }
+    )
+    await client.connect(transport)
+    log('bioRxiv MCP client connected')
+    biorxivMcpClient = client
+    return client
+  } catch (err) {
+    log('bioRxiv MCP client connection failed', { error: err.message })
+    throw err
+  }
+}
+
+// Build the tools array for the Responses API.
+// All MCP tools are relayed as type: "function" through local MCP clients.
+function getToolConfig() {
+  const tools = []
+
+  // --- VFB MCP tools (relayed via local MCP client) ---
+  tools.push({
+    type: 'function',
+    name: 'vfb_search_terms',
+    description: 'Search VFB terms by keywords, with optional filtering by entity type. Use specific filters to limit results. Always exclude ["deprecated"]. Use minimize_results: true for initial broad searches.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query keywords' },
+        filter_types: {
+          type: 'array', items: { type: 'string' },
+          description: 'Filter by entity types (e.g., ["neuron","adult","has_image"], ["dataset"], ["anatomy"], ["gene"])'
+        },
+        exclude_types: {
+          type: 'array', items: { type: 'string' },
+          description: 'Exclude types (e.g., ["deprecated"])'
+        },
+        boost_types: {
+          type: 'array', items: { type: 'string' },
+          description: 'Boost types to prioritize (e.g., ["has_image", "has_neuron_connectivity"])'
+        },
+        start: { type: 'number', description: 'Pagination start index (default 0)' },
+        rows: { type: 'number', description: 'Number of results (default 10, max 50)' },
+        minimize_results: { type: 'boolean', description: 'Return minimal fields for faster response (default false). Use true for initial broad searches.' },
+        auto_fetch_term_info: { type: 'boolean', description: 'Automatically fetch full term info when searching for a specific term by name (default false)' }
+      },
+      required: ['query']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_get_term_info',
+    description: 'Get detailed information about a VFB term by ID, including definitions, relationships, images, queries, and references. Supports batch requests with arrays of IDs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The VFB term ID (e.g., VFB_00102107, FBbt_00003748)' }
+      },
+      required: ['id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_run_query',
+    description: 'Run analyses like PaintedDomains, NBLAST, Connectivity on a VFB entity. IMPORTANT: Only use query_type values returned in the Queries array from vfb_get_term_info.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The VFB term ID to query' },
+        query_type: { type: 'string', description: 'Type of query (e.g., PaintedDomains, NBLAST, NeuronNeuronConnectivityQuery)' }
+      },
+      required: ['id', 'query_type']
+    }
+  })
+
+  // --- bioRxiv MCP tools (relayed via local MCP client) ---
+  tools.push({
+    type: 'function',
+    name: 'biorxiv_search_preprints',
+    description: 'Search bioRxiv/medRxiv preprints by date range and category. No keyword search — filter by category and date only. Results are NOT peer-reviewed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', description: 'Start date YYYY-MM-DD (e.g., "2024-01-01")' },
+        date_to: { type: 'string', description: 'End date YYYY-MM-DD' },
+        category: { type: 'string', description: 'Subject category (e.g., "neuroscience", "genetics", "cell biology")' },
+        recent_days: { type: 'number', description: 'Alternative: get preprints from last N days' },
+        limit: { type: 'number', description: 'Max results (1-100, default 10)' },
+        cursor: { type: 'number', description: 'Pagination cursor (default 0)' },
+        server: { type: 'string', enum: ['biorxiv', 'medrxiv'], description: 'Server to query (default biorxiv)' }
+      }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'biorxiv_get_preprint',
+    description: 'Get full metadata for a preprint by DOI: title, authors, abstract, PDF URL, published DOI if available.',
+    parameters: {
+      type: 'object',
+      properties: {
+        doi: { type: 'string', description: 'DOI (e.g., "10.1101/2024.01.15.123456")' },
+        server: { type: 'string', enum: ['biorxiv', 'medrxiv'], description: 'Server (default biorxiv)' }
+      },
+      required: ['doi']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'biorxiv_search_published_preprints',
+    description: 'Find preprints that were published in peer-reviewed journals. Filter by date, publisher DOI prefix.',
+    parameters: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', description: 'Start date YYYY-MM-DD' },
+        date_to: { type: 'string', description: 'End date YYYY-MM-DD' },
+        recent_days: { type: 'number', description: 'Alternative: last N days' },
+        publisher: { type: 'string', description: 'Publisher DOI prefix (e.g., "10.1038" for Nature)' },
+        limit: { type: 'number', description: 'Max results (1-100, default 10)' },
+        cursor: { type: 'number', description: 'Pagination cursor (default 0)' },
+        server: { type: 'string', enum: ['biorxiv', 'medrxiv'], description: 'Server (default biorxiv)' }
+      }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'biorxiv_get_categories',
+    description: 'List all bioRxiv subject categories for filtering searches.',
+    parameters: { type: 'object', properties: {} }
+  })
+
+  // --- Web search (native OpenAI tool, restricted to VFB domains) ---
+  tools.push({
+    type: 'web_search',
+    search_context_size: 'medium',
+    user_location: { type: 'approximate' }
+  })
+
+  // --- PubMed tools (direct NCBI E-utilities, no MCP) ---
+  tools.push({
+    type: 'function',
+    name: 'search_pubmed',
+    description: 'Search PubMed for published scientific articles. Returns titles, authors, abstracts, PMIDs, and DOIs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (e.g., "Drosophila medulla neurons connectome")' },
+        max_results: { type: 'number', description: 'Maximum results (default 5, max 20)' },
+        sort: { type: 'string', enum: ['relevance', 'date'], description: 'Sort order (default relevance)' }
+      },
+      required: ['query']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'get_pubmed_article',
+    description: 'Get detailed information about a specific PubMed article by PMID.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pmid: { type: 'string', description: 'PubMed ID (e.g., "12345678")' }
+      },
+      required: ['pmid']
+    }
+  })
+
+  return tools
+}
+
+// --- PubMed E-utilities integration ---
+
+const NCBI_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
+
+async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
+  maxResults = Math.min(Math.max(1, maxResults || 5), 20)
+  const sortParam = sort === 'date' ? 'date' : 'relevance'
+
+  const searchUrl = `${NCBI_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=${sortParam}&retmode=json`
+  const searchRes = await fetch(searchUrl)
+  if (!searchRes.ok) throw new Error(`PubMed search failed: ${searchRes.status}`)
+  const searchData = await searchRes.json()
+  const pmids = searchData.esearchresult?.idlist || []
+
+  if (pmids.length === 0) {
+    return JSON.stringify({ results: [], total_found: searchData.esearchresult?.count || 0 })
+  }
+
+  const summaryUrl = `${NCBI_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json`
+  const summaryRes = await fetch(summaryUrl)
+  if (!summaryRes.ok) throw new Error(`PubMed summary fetch failed: ${summaryRes.status}`)
+  const summaryData = await summaryRes.json()
+
+  const articles = pmids.map(pmid => {
+    const article = summaryData.result?.[pmid]
+    if (!article) return null
+    return {
+      pmid,
+      title: article.title,
+      authors: (article.authors || []).map(a => a.name).slice(0, 5).join(', '),
+      journal: article.fulljournalname || article.source,
+      pub_date: article.pubdate,
+      doi: (article.articleids || []).find(id => id.idtype === 'doi')?.value || null,
+      url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`
+    }
+  }).filter(Boolean)
+
+  return JSON.stringify({
+    results: articles,
+    total_found: parseInt(searchData.esearchresult?.count || 0)
+  })
+}
+
+async function getPubmedArticle(pmid) {
+  const fetchUrl = `${NCBI_BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}&retmode=xml`
+  const fetchRes = await fetch(fetchUrl)
+  if (!fetchRes.ok) throw new Error(`PubMed fetch failed: ${fetchRes.status}`)
+  const xmlText = await fetchRes.text()
+
+  const extract = (tag) => {
+    const match = xmlText.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'))
+    return match ? match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : null
+  }
+
+  const extractAll = (tag) => {
+    const matches = []
+    const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi')
+    let m
+    while ((m = regex.exec(xmlText)) !== null) {
+      matches.push(m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+    }
+    return matches
+  }
+
+  const title = extract('ArticleTitle')
+  const abstractText = extract('AbstractText') || extract('Abstract')
+  const journal = extract('Title')
+  const year = extract('Year')
+  const doi = (() => {
+    const doiMatch = xmlText.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/i)
+    return doiMatch ? doiMatch[1] : null
+  })()
+
+  const authorBlocks = xmlText.match(/<Author[^>]*>[\s\S]*?<\/Author>/gi) || []
+  const authors = authorBlocks.slice(0, 10).map(block => {
+    const lastName = block.match(/<LastName>([^<]+)<\/LastName>/i)?.[1] || ''
+    const firstName = block.match(/<ForeName>([^<]+)<\/ForeName>/i)?.[1] || ''
+    return `${firstName} ${lastName}`.trim()
+  }).filter(Boolean)
+
+  const keywords = extractAll('Keyword').slice(0, 10)
+
+  return JSON.stringify({
+    pmid,
+    title,
+    authors,
+    abstract: abstractText,
+    journal,
+    year,
+    doi,
+    doi_url: doi ? `https://doi.org/${doi}` : null,
+    pubmed_url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+    keywords
+  })
+}
+
+// --- Function tool execution (routes to MCP clients or direct APIs) ---
+
+// Map tool names to their MCP server and the actual MCP tool name
+const MCP_TOOL_ROUTING = {
+  // VFB tools — strip "vfb_" prefix to get the MCP tool name
+  vfb_search_terms: { server: 'vfb', mcpName: 'search_terms' },
+  vfb_get_term_info: { server: 'vfb', mcpName: 'get_term_info' },
+  vfb_run_query: { server: 'vfb', mcpName: 'run_query' },
+  // bioRxiv tools — strip "biorxiv_" prefix
+  biorxiv_search_preprints: { server: 'biorxiv', mcpName: 'search_preprints' },
+  biorxiv_get_preprint: { server: 'biorxiv', mcpName: 'get_preprint' },
+  biorxiv_search_published_preprints: { server: 'biorxiv', mcpName: 'search_published_preprints' },
+  biorxiv_get_categories: { server: 'biorxiv', mcpName: 'get_categories' }
+}
+
+async function executeFunctionTool(name, args) {
+  // PubMed — direct API calls (no MCP)
+  if (name === 'search_pubmed') {
+    return await searchPubmed(args.query, args.max_results, args.sort)
+  }
+  if (name === 'get_pubmed_article') {
+    return await getPubmedArticle(args.pmid)
+  }
+
+  // MCP-relayed tools
+  const routing = MCP_TOOL_ROUTING[name]
+  if (routing) {
+    const client = routing.server === 'vfb'
+      ? await getVfbMcpClient()
+      : await getBiorxivMcpClient()
+
+    // Remove undefined/null values from args to keep the MCP call clean
+    const cleanArgs = {}
+    for (const [k, v] of Object.entries(args || {})) {
+      if (v !== undefined && v !== null) cleanArgs[k] = v
+    }
+
+    log('MCP relay call', { tool: routing.mcpName, server: routing.server, args: Object.keys(cleanArgs) })
+    const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
+
+    // MCP callTool returns { content: [{ type, text }] } — extract text
+    if (result?.content) {
+      const texts = result.content
+        .filter(c => c.type === 'text')
+        .map(c => c.text)
+      return texts.join('\n') || JSON.stringify(result.content)
+    }
+    return JSON.stringify(result)
+  }
+
+  throw new Error(`Unknown function tool: ${name}`)
 }
 
 // Check for common jailbreak attempts
 function detectJailbreakAttempt(message) {
   const lowerMessage = message.toLowerCase()
-  
-  // Common jailbreak patterns
+
   const jailbreakPatterns = [
-    // Developer mode / unrestricted mode
     /\bdeveloper mode\b/i,
     /\bunrestricted mode\b/i,
     /\bdebug mode\b/i,
     /\bmaintenance mode\b/i,
     /\bgod mode\b/i,
-    
-    // DAN and similar personas
     /\bdan\b.*mode/i,
     /\bdo anything now\b/i,
     /\buncensored\b/i,
     /\bunfiltered\b/i,
     /\bjailbreak\b/i,
-    
-    // Override instructions
     /\bignore.*previous.*instructions?\b/i,
     /\boverride.*instructions?\b/i,
     /\bforget.*instructions?\b/i,
     /\bdiscard.*instructions?\b/i,
     /\bdisregard.*rules\b/i,
-    
-    // Role-playing as different AI
     /\byou are now\b.*ai/i,
     /\bact as\b.*ai/i,
     /\bpretend.*to be\b.*ai/i,
     /\bbecome.*ai\b/i,
-    
-    // System prompt manipulation
     /\bchange.*system.*prompt\b/i,
     /\balter.*system.*prompt\b/i,
     /\bmodify.*system.*prompt\b/i,
     /\brewrite.*system.*prompt\b/i,
-    
-    // Encoding attempts
     /\bbase64\b/i,
     /\bencoded\b.*prompt/i,
     /\bencrypted\b.*prompt/i,
-    
-    // Specific jailbreak names
     /\baim.*jailbreak/i,
     /\bmaximum.*jailbreak/i,
     /\bcharacter.*jailbreak/i,
     /\banti.*woke\b/i,
-    
-    // Coercive language
     /\byou must\b.*break.*rules/i,
     /\bi command you\b.*to/i,
     /\bas root\b/i,
     /\bsudo\b/i,
     /\badmin\b.*mode/i,
-    
-    // Attempts to create personas
     /\bcreate.*uncensored.*persona/i,
     /\brole.*play.*as.*uncensored/i,
     /\bact.*like.*uncensored/i,
-    
-    // Specific phrases from known jailbreaks
     /\bfrom now on\b.*you are/i,
     /\blet'?s role.*play/i,
     /\bscenario.*role.*play/i,
     /\bpretend.*that/i,
-    
-    // Attempts to hide prompts
     /\bhiding.*query/i,
     /\bsecret.*message/i,
     /\bencoded.*message/i
   ]
-  
-  // Check for patterns
+
   for (const pattern of jailbreakPatterns) {
-    if (pattern.test(lowerMessage)) {
-      return true
-    }
+    if (pattern.test(lowerMessage)) return true
   }
-  
-  // Check for repeated attempts to override
+
   const overrideCount = (lowerMessage.match(/\b(ignore|override|forget|discard|disregard)\b.*\b(instructions?|rules?|prompt)\b/gi) || []).length
-  if (overrideCount > 1) {
-    return true
-  }
-  
-  // Check for suspicious repetition of keywords
+  if (overrideCount > 1) return true
+
   const suspiciousWords = ['ignore', 'override', 'forget', 'unrestricted', 'uncensored', 'jailbreak']
   let suspiciousCount = 0
   for (const word of suspiciousWords) {
     suspiciousCount += (lowerMessage.match(new RegExp(`\\b${word}\\b`, 'gi')) || []).length
   }
-  if (suspiciousCount > 2) {
-    return true
-  }
-  
+  if (suspiciousCount > 2) return true
+
   return false
 }
 
-// Validate if a thumbnail URL actually exists
-async function validateThumbnailUrl(url) {
-  try {
-    const response = await axios.head(url, { 
-      timeout: 2000, // 2 second timeout
-      headers: {
-        'User-Agent': 'VFBchat-Thumbnail-Validator/1.0'
-      }
-    })
-    return response.status === 200
-  } catch (error) {
-    log('Thumbnail validation failed', { url, error: error.message })
-    return false
-  }
-}
+// --- Lookup cache (read-only, loaded from static file) ---
 
-// Global lookup cache (persists across requests)
 let lookupCache = null
 let reverseLookupCache = null
 let normalizedLookupCache = null
 const CACHE_FILE = path.join(process.cwd(), 'vfb_lookup_cache.json')
 
-// Load lookup cache from file or fetch from MCP
-async function getLookupCache(mcpClient) {
-  if (lookupCache) {
-    return lookupCache
-  }
+function loadLookupCache() {
+  if (lookupCache) return
 
-  // Try to load from cache file first
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))
-      lookupCache = cacheData.lookup
-      reverseLookupCache = cacheData.reverseLookup
-      normalizedLookupCache = cacheData.normalizedLookup
+      lookupCache = cacheData.lookup || {}
+      reverseLookupCache = cacheData.reverseLookup || {}
+      normalizedLookupCache = cacheData.normalizedLookup || {}
       log('Loaded lookup cache from file', { entries: Object.keys(lookupCache).length })
-      return lookupCache
+    } else {
+      log('No lookup cache file found, initializing with essential terms')
+      lookupCache = {}
+      reverseLookupCache = {}
+      normalizedLookupCache = {}
+      seedEssentialTerms()
     }
   } catch (error) {
     log('Failed to load cache file', { error: error.message })
-  }
-
-  // Fetch comprehensive lookup data from VFB (following VFB_connect approach)
-  try {
-    log('Fetching comprehensive lookup data from VFB...')
-
-    // Initialize empty caches
-    lookupCache = {}
-    reverseLookupCache = {}
-    normalizedLookupCache = {}
-
-    // Get comprehensive lookup from VFB database via MCP
-    await loadVfbLookupTable(mcpClient)
-
-    // If we got minimal data, seed with essential terms as fallback
-    if (Object.keys(lookupCache).length < 100) {
-      log('Limited lookup data received, adding essential seed terms')
-      seedEssentialTerms()
-    }
-
-    // Save cache
-    saveLookupCache()
-    log('Initialized lookup cache', { entries: Object.keys(lookupCache).length })
-    return lookupCache
-  } catch (error) {
-    log('Failed to fetch lookup data, using essential seed terms only', { error: error.message })
-
-    // Fallback: initialize with essential terms only
     lookupCache = {}
     reverseLookupCache = {}
     normalizedLookupCache = {}
     seedEssentialTerms()
-    saveLookupCache()
-    return lookupCache
   }
 }
 
-// Load comprehensive lookup table from VFB (following VFB_connect approach)
-async function loadVfbLookupTable(mcpClient) {
-  try {
-    // Use MCP to get a comprehensive lookup table from VFB
-    // This simulates what VFB_connect does with Neo4jConnect.get_lookup()
-    const toolResult = await mcpClient.callTool({
-      name: 'mcp_virtual-fly-b_search_terms',
-      arguments: {
-        query: 'medulla OR protocerebrum OR mushroom OR central OR brain',  // Search for key anatomical terms
-        rows: 1000  // Get substantial data
-      }
-    })
-
-    if (toolResult?.content?.[0]?.text) {
-      const parsedResult = JSON.parse(toolResult.content[0].text)
-
-      if (parsedResult?.response?.docs) {
-        let addedCount = 0
-        for (const doc of parsedResult.response.docs) {
-          if (doc.label && doc.short_form) {
-            addToLookupCache(doc.label, doc.short_form)
-            addedCount++
-
-            // Also add synonyms if available
-            if (doc.synonym && Array.isArray(doc.synonym)) {
-              for (const syn of doc.synonym) {
-                if (syn && typeof syn === 'string') {
-                  addToLookupCache(syn, doc.short_form)
-                  addedCount++
-                }
-              }
-            }
-          }
-        }
-        log('Loaded comprehensive lookup from VFB', { termsAdded: addedCount })
-      }
-    }
-  } catch (error) {
-    log('Failed to load comprehensive lookup, will use incremental approach', { error: error.message })
-  }
-}
-
-// Seed with only essential, verified terms (much smaller set than before)
 function seedEssentialTerms() {
   const essentialTerms = {
     'medulla': 'FBbt_00003748',
@@ -320,47 +563,17 @@ function seedEssentialTerms() {
   }
 
   Object.entries(essentialTerms).forEach(([term, id]) => {
-    addToLookupCache(term, id)
+    lookupCache[term] = id
+    reverseLookupCache[id] = term
+    const normalized = normalizeKey(term)
+    if (!normalizedLookupCache[normalized]) {
+      normalizedLookupCache[normalized] = id
+    }
   })
 
   log('Seeded lookup cache with essential verified terms', { count: Object.keys(essentialTerms).length })
 }
 
-// Save lookup cache to file
-function saveLookupCache() {
-  try {
-    const cacheData = {
-      lookup: lookupCache || {},
-      reverseLookup: reverseLookupCache || {},
-      normalizedLookup: normalizedLookupCache || {},
-      lastUpdated: new Date().toISOString()
-    }
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2))
-  } catch (error) {
-    log('Failed to save lookup cache', { error: error.message })
-  }
-}
-
-// Add entries to lookup cache
-function addToLookupCache(label, id) {
-  if (!lookupCache) return
-
-  lookupCache[label] = id
-  reverseLookupCache[id] = label
-
-  // Create normalized version for fuzzy matching
-  const normalized = normalizeKey(label)
-  if (!normalizedLookupCache[normalized]) {
-    normalizedLookupCache[normalized] = id
-  }
-
-  // Save periodically (every 100 additions)
-  if (Object.keys(lookupCache).length % 100 === 0) {
-    saveLookupCache()
-  }
-}
-
-// Normalize key for fuzzy matching (VFB_connect style with prefix substitutions)
 function normalizeKey(key) {
   let normalized = key.toLowerCase()
     .replace(/_/g, '')
@@ -369,7 +582,6 @@ function normalizeKey(key) {
     .replace(/:/g, '')
     .replace(/;/g, '')
 
-  // VFB_connect style prefix substitutions for developmental stages
   const prefixSubs = [
     ['adult', ''],
     ['larval', ''],
@@ -380,13 +592,12 @@ function normalizeKey(key) {
     ['embryo', '']
   ]
 
-  // Apply prefix substitutions
-  for (const [prefix, replacement] of prefixSubs) {
+  for (const [prefix] of prefixSubs) {
     if (normalized.startsWith(prefix)) {
       const withoutPrefix = normalized.substring(prefix.length)
-      if (withoutPrefix.length > 2) { // Avoid too short terms
+      if (withoutPrefix.length > 2) {
         normalized = withoutPrefix
-        break // Only apply first matching prefix
+        break
       }
     }
   }
@@ -394,26 +605,22 @@ function normalizeKey(key) {
   return normalized
 }
 
-// Replace VFB terms in text with markdown links
 function replaceTermsWithLinks(text) {
   if (!text || !lookupCache) return text
 
-  // Sort terms by length (longest first) to avoid partial matches
   const sortedTerms = Object.keys(lookupCache)
-    .filter(term => term.length > 2) // Skip very short terms
+    .filter(term => term.length > 2)
     .sort((a, b) => b.length - a.length)
 
   let result = text
   const allLinks = []
 
-  // First, protect existing markdown links and images by replacing with placeholders
+  // Protect existing markdown links and images
   result = result.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, (match) => {
     allLinks.push(match)
     return `\x00LINK${allLinks.length - 1}\x00`
   })
 
-  // Replace each term with markdown link (longest first)
-  // After each replacement, protect the new link with a placeholder too
   for (const term of sortedTerms) {
     const id = lookupCache[term]
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -425,344 +632,13 @@ function replaceTermsWithLinks(text) {
     })
   }
 
-  // Restore all links (both existing and newly created) from placeholders
   result = result.replace(/\x00LINK(\d+)\x00/g, (_, idx) => allLinks[parseInt(idx)])
 
   return result
 }
 
-// Extract term IDs from a message containing markdown links like [term](id)
-function extractTermIds(text) {
-  const idSet = new Set()
-  // Match markdown links and extract the URL part
-  const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g
-  let match
-  while ((match = linkRegex.exec(text)) !== null) {
-    const id = match[2]
-    // Only include VFB IDs (start with VFB or FBbt)
-    if (id.startsWith('VFB') || id.startsWith('FBbt')) {
-      idSet.add(id)
-    }
-  }
-  return Array.from(idSet)
-}
-
-// Summarize term info to reduce prompt length
-async function summarizeTermInfo(termInfoText) {
-  try {
-    const data = JSON.parse(termInfoText)
-    
-    // Extract key information based on actual VFB response structure
-    const isClass = data.IsClass || false
-    const hasImage = data.SuperTypes?.includes('has_image') || false
-    
-    // Extract publications from both Publications field and Synonyms field
-    let publications = [...(data.Publications || [])]
-    
-    // Extract FBrf IDs from synonyms
-    if (data.Synonyms && Array.isArray(data.Synonyms)) {
-      data.Synonyms.forEach(synonym => {
-        if (synonym.publication && typeof synonym.publication === 'string') {
-          // Extract FBrf IDs from publication strings like "[Bates et al., 2020](FBrf0246460)"
-          const fbrfMatch = synonym.publication.match(/FBrf\d+/g)
-          if (fbrfMatch) {
-            publications.push(...fbrfMatch)
-          }
-        }
-      })
-    }
-    
-    // Remove duplicates
-    publications = [...new Set(publications)]
-    
-    const summary = {
-      id: data.Id || data.id,
-      name: data.Name || data.name,
-      definition: data.Meta?.Description || data.description,
-      type: data.Types || data.type,
-      superTypes: data.SuperTypes?.slice(0, 3) || [],
-      tags: data.Tags?.slice(0, 5) || [],
-      isClass: isClass,
-      hasImage: hasImage,
-      // Use appropriate field based on entity type
-      visualData: isClass ? (data.Examples || {}) : (hasImage ? (data.Images || {}) : {}),
-      publications: publications
-    }
-    
-    // Format as concise text
-    let result = `${summary.id}: ${summary.name || 'Unknown'}`
-    if (summary.definition) result += ` - ${summary.definition.substring(0, 300)}${summary.definition.length > 300 ? '...' : ''}`
-    if (summary.superTypes.length > 0) result += ` (SuperTypes: ${summary.superTypes.join(', ')})`
-    if (summary.tags.length > 0) result += ` (Tags: ${summary.tags.join(', ')})`
-    
-    // Include image information if available
-    const visualEntries = Object.entries(summary.visualData || {})
-    if (visualEntries.length > 0) {
-      const totalImages = visualEntries.reduce((sum, [_, images]) => sum + (images?.length || 0), 0)
-      const dataType = summary.isClass ? 'example' : 'aligned'
-      result += ` (Has ${totalImages} ${dataType} image(s))`
-      
-      // Prioritize certain templates: JRC2018Unisex (VFB_00101567), then JFRC2 (VFB_00017894), then others
-      const templatePriority = ['VFB_00101567', 'VFB_00017894', 'VFB_00030786', 'VFB_00101384']
-      const sortedEntries = visualEntries.sort(([a], [b]) => {
-        const aIndex = templatePriority.indexOf(a)
-        const bIndex = templatePriority.indexOf(b)
-        const aPriority = aIndex === -1 ? templatePriority.length : aIndex
-        const bPriority = bIndex === -1 ? templatePriority.length : bIndex
-        return aPriority - bPriority
-      })
-      
-      // Include first available thumbnail URL as example (validate it exists)
-      for (const [templateId, images] of sortedEntries) {
-        if (images && Array.isArray(images) && images.length > 0 && images[0]?.thumbnail) {
-          try {
-            const isValid = await validateThumbnailUrl(images[0].thumbnail)
-            if (isValid) {
-              result += `\nThumbnail example: ${images[0].thumbnail}`
-              break
-            } else {
-              log('Skipping invalid thumbnail URL', { url: images[0].thumbnail })
-            }
-          } catch (error) {
-            log('Thumbnail validation error, skipping', { url: images[0].thumbnail, error: error.message })
-          }
-        }
-      }
-    }
-    
-    // Include publication information if available
-    if (summary.publications.length > 0) {
-      result += `\nPublications: ${summary.publications.slice(0, 3).join(', ')}${summary.publications.length > 3 ? '...' : ''}`
-    }
-  } catch (error) {
-    // If parsing fails, return a truncated version of the original text
-    return termInfoText.substring(0, 300) + (termInfoText.length > 300 ? '...' : '')
-  }
-}
-
-// Initialize cache with common VFB terms
-function seedLookupCache() {
-  // This function is now deprecated - use seedEssentialTerms instead
-  seedEssentialTerms()
-}
-
-// Local term resolution (fast lookup with VFB_connect style fuzzy matching)
-function resolveTermLocally(term) {
-  if (!lookupCache) return null
-
-  // Exact match
-  if (lookupCache[term]) {
-    return lookupCache[term]
-  }
-
-  // Reverse lookup (if it's already an ID)
-  if (reverseLookupCache[term]) {
-    return term
-  }
-
-  // Normalized fuzzy match
-  const normalized = normalizeKey(term)
-  if (normalizedLookupCache[normalized]) {
-    return normalizedLookupCache[normalized]
-  }
-
-  // Try with developmental prefixes removed (VFB_connect style)
-  const prefixes = ['adult ', 'larval ', 'pupal ', 'embryonic ', 'larva ', 'pupa ', 'embryo ']
-  for (const prefix of prefixes) {
-    if (term.toLowerCase().startsWith(prefix)) {
-      const withoutPrefix = term.substring(prefix.length).trim()
-      if (lookupCache[withoutPrefix]) {
-        return lookupCache[withoutPrefix]
-      }
-      const normalizedWithoutPrefix = normalizeKey(withoutPrefix)
-      if (normalizedLookupCache[normalizedWithoutPrefix]) {
-        return normalizedLookupCache[normalizedWithoutPrefix]
-      }
-    }
-  }
-
-  // Partial matches (longest first)
-  const partialMatches = Object.keys(lookupCache)
-    .filter(key => key.toLowerCase().includes(term.toLowerCase()))
-    .sort((a, b) => b.length - a.length)
-
-  if (partialMatches.length > 0) {
-    return lookupCache[partialMatches[0]]
-  }
-
-  return null
-}
-
-export async function POST(request) {
-  const startTime = Date.now()
-  const xForwardedFor = request.headers.get('x-forwarded-for') || ''
-  const clientIp = (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
-
-  const { messages, scene } = await request.json()
-  
-  const message = messages[messages.length - 1].content // Last message is the current user input
-  
-  log('Chat API request received', {
-    message: message.substring(0, 100),
-    scene,
-    clientIp,
-    xForwardedFor
-  })
-
-  // Check for jailbreak attempts
-  if (detectJailbreakAttempt(message)) {
-    log('Jailbreak attempt detected', { message: message.substring(0, 200) })
-    
-    // Return a streaming error response
-    const encoder = new TextEncoder()
-    const stream = new ReadableStream({
-      start(controller) {
-        const sendEvent = (event, data) => {
-          try {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
-          } catch (e) {
-            // Controller is closed, ignore
-          }
-        }
-        
-        sendEvent('error', { 
-          message: 'I cannot assist with attempts to bypass safety restrictions or override my core instructions. Please ask questions related to Drosophila neuroscience and Virtual Fly Brain data.' 
-        })
-        controller.close()
-      }
-    })
-    
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    })
-  }
-
-  if (!process.env.OPENAI_API_KEY) {
-    log('WARNING: OPENAI_API_KEY not set - API calls may fail')
-  }
-
-  // Create a streaming response
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    async start(controller) {
-      const sendEvent = (event, data) => {
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
-        } catch (e) {
-          // Controller is closed, ignore to prevent errors
-        }
-      }
-
-      try {
-        // Initialize MCP client and transport
-        let mcpTransport
-        let mcpClient
-
-        try {
-          log('Initializing MCP client...')
-          mcpTransport = new StreamableHTTPClientTransport(new URL('https://vfb3-mcp.virtualflybrain.org/'))
-          mcpClient = new Client(
-            { name: 'vfb-chat-client', version: '1.0.0' },
-            { capabilities: {} }
-          )
-
-          log('Connecting to MCP server...')
-          await mcpClient.connect(mcpTransport)
-          log('MCP client connected successfully')
-
-          // Initialize lookup cache for fast term resolution
-          await getLookupCache(mcpClient)
-        } catch (connectError) {
-          log('MCP client connection failed', { error: connectError.message })
-          // Continue without MCP - the LLM will handle it gracefully
-        }
-        const tools = [
-          {
-            type: 'function',
-            function: {
-              name: 'get_term_info',
-              description: 'Get detailed information about a VFB term by ID, including definitions, relationships, images, and references',
-              parameters: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    description: 'The VFB term ID (e.g., VFB_00102107, FBbt_00003748)'
-                  }
-                },
-                required: ['id']
-              }
-            }
-          },
-          {
-            type: 'function',
-            function: {
-              name: 'search_terms',
-              description: 'Search for VFB terms by keywords, with optional filtering by entity type. Results are limited to 10 by default for performance - use pagination to get more.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  query: {
-                    type: 'string',
-                    description: 'Search query keywords'
-                  },
-                  filter_types: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Optional filter by entity types (e.g., ["neuron"], ["gene"], ["anatomy"], ["adult"], ["has_image"]) - use specific filters to limit results'
-                  },
-                  exclude_types: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Optional exclude types (e.g., ["deprecated"]) to remove unwanted results'
-                  },
-                  boost_types: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Optional boost types to prioritize results (e.g., ["has_image", "has_neuron_connectivity"])'
-                  },
-                  start: {
-                    type: 'number',
-                    description: 'Optional pagination start index (default 0) - use to get more results beyond the first 10'
-                  },
-                  rows: {
-                    type: 'number',
-                    description: 'Optional number of results to return (default 10, max 50) - use smaller numbers for focused searches'
-                  }
-                },
-                required: ['query']
-              }
-            }
-          },
-          {
-            type: 'function',
-            function: {
-              name: 'run_query',
-              description: 'Execute specific queries like morphological similarity (NBLAST) analysis',
-              parameters: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    description: 'The VFB term ID to query'
-                  },
-                  query_type: {
-                    type: 'string',
-                    description: 'Type of query to run (e.g., PaintedDomains, NBLAST)'
-                  }
-                },
-                required: ['id', 'query_type']
-              }
-            }
-          }
-        ]
-
-        // System prompt with comprehensive guardrailing based on VFB LLM guidance
-        const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant specialising in Drosophila melanogaster neuroanatomy, neuroscience, and related research.
+// System prompt
+const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant specialising in Drosophila melanogaster neuroanatomy, neuroscience, and related research.
 
 SCOPE & GUARDRAILS:
 You MUST only discuss topics related to:
@@ -784,15 +660,17 @@ When referencing external resources, ONLY link to these trusted domains:
 - Published journal articles referenced in VFB data (identified by DOI or FBrf IDs)
 - insectbraindb.org — Insect brain database
 - flywire.ai — FlyWire connectome
+- pubmed.ncbi.nlm.nih.gov — PubMed published articles
+- biorxiv.org — bioRxiv preprints (note: preprints are NOT peer-reviewed)
 Do NOT link to or reference any other websites. If a user asks you to visit, search, or retrieve content from websites outside this list, decline and explain you can only reference trusted Drosophila neuroscience resources.
 
 ACCURACY:
 - Always use VFB tools to look up information rather than relying on general knowledge. If tools return no results, say so rather than guessing.
 - Clearly distinguish between data from VFB tools and your general scientific knowledge.
-- When citing research, use FBrf reference IDs from VFB data where available.
+- When citing research, use FBrf reference IDs from VFB data where available, or DOIs/PMIDs from PubMed/bioRxiv searches.
 
 CITATIONS:
-- ONLY cite publications that are explicitly returned in VFB data Publications field
+- ONLY cite publications that are explicitly returned in VFB data Publications field or from PubMed/bioRxiv tool results
 - Do NOT generate citations from general knowledge or invent DOIs
 - If no publications are available in VFB data, do not include any citations
 - For publications from VFB data, convert DOI or FBrf IDs to proper links:
@@ -800,23 +678,46 @@ CITATIONS:
   - FBrf format: https://flybase.org/reports/FBrfXXXXXXX
 - Do not reference "common Drosophila neuroscience papers" unless they appear in the actual VFB data for the specific entity being discussed
 
-TOOLS:
-- search_terms(query, filter_types, exclude_types, boost_types, start, rows): Search VFB terms with filters like ["dataset"] for datasets, ["neuron","adult","has_image"] for adult neurons, ["anatomy"] for brain regions, ["gene"] for genes. Always exclude ["deprecated"].
-- get_term_info(id): Get detailed info about a VFB entity by ID
-- run_query(id, query_type): Run analyses like PaintedDomains, NBLAST, Connectivity. IMPORTANT: Only use query_type values that are returned in the Queries array from get_term_info for the given id. Do not guess or invent query types. For connectivity, individual neurons from connectomes often have "NeuronNeuronConnectivityQuery" available.
+VFB TOOLS:
+The VFB tools are available as function tools with the "vfb_" prefix:
+- vfb_search_terms(query, filter_types, exclude_types, boost_types, start, rows, minimize_results, auto_fetch_term_info): Search VFB terms with filters like ["dataset"] for datasets, ["neuron","adult","has_image"] for adult neurons, ["anatomy"] for brain regions, ["gene"] for genes. Always exclude ["deprecated"]. Use minimize_results: true for initial broad searches. Use auto_fetch_term_info: true when searching for a specific term by name.
+- vfb_get_term_info(id): Get detailed info about a VFB entity by ID. Supports batch requests with arrays of IDs.
+- vfb_run_query(id, query_type): Run analyses like PaintedDomains, NBLAST, Connectivity. IMPORTANT: Only use query_type values that are returned in the Queries array from vfb_get_term_info for the given id.
+
+PUBLICATION TOOLS:
+- biorxiv_search_preprints: Search bioRxiv/medRxiv preprints by date and category. Note: preprints are NOT peer-reviewed.
+- biorxiv_get_preprint(doi): Get full preprint metadata by DOI.
+- biorxiv_search_published_preprints: Find preprints published in peer-reviewed journals.
+- biorxiv_get_categories: List bioRxiv subject categories.
+- search_pubmed(query, max_results, sort): Search PubMed for peer-reviewed articles.
+- get_pubmed_article(pmid): Get full PubMed article details by PMID.
+When users ask about published research or recent findings, use these tools. Always format publication links as markdown links with the paper title as the link text:
+- PubMed: [Paper Title](https://pubmed.ncbi.nlm.nih.gov/<PMID>/)
+- DOI: [Paper Title](https://doi.org/<DOI>)
+- FlyBase: [Paper Title](https://flybase.org/reports/<FBrf>)
+Never output bare publication URLs — always use markdown link syntax with a descriptive title so users know what they are clicking on.
+
+TOOL SELECTION — match the user's intent to the right tool:
+- "Find papers/publications/research on X" → use search_pubmed FIRST (keyword search for peer-reviewed articles), optionally biorxiv_search_preprints for preprints
+- "What is X? / Tell me about X" → use vfb_search_terms + vfb_get_term_info (VFB data lookup)
+- "What neurons/genes/datasets in X?" → use vfb_search_terms with appropriate filters
+- "What connectivity/queries for X?" → use vfb_get_term_info then vfb_run_query
+- "When is NeuroFly? / VFB documentation" → web_search (searches the web including virtualflybrain.org)
+- "Recent preprints on X" → biorxiv_search_preprints (filter by category like "neuroscience")
+Do NOT use web_search as a substitute for search_pubmed when the user asks for papers — PubMed gives structured results with titles, authors, DOIs. Web search is for VFB website content and general Drosophila neuroscience information.
 
 STRATEGY:
-1. For anatomy/neurons: search_terms with specific filters → get_term_info → run relevant queries
+1. For anatomy/neurons: vfb_search_terms with specific filters → vfb_get_term_info → run relevant queries
 2. Handle pagination if _truncation.canRequestMore=true
-3. When you encounter a VFB term ID in user messages, call get_term_info to get detailed information about it
-4. When displaying multiple neurons or creating scene links, use the IDs directly from search results without calling get_term_info unless you need additional metadata like descriptions or images
-5. ALWAYS call get_term_info before using run_query to see what query types are available for that entity. Only use query types that appear in the Queries array returned by get_term_info.
-6. For connectivity queries: If a neuron class (IsClass: true) doesn't have connectivity data, look at individual neuron instances from connectomes. Use "ListAllAvailableImages" to find individual neurons, then check those individuals for connectivity queries like "NeuronNeuronConnectivityQuery".
+3. When you encounter a VFB term ID in user messages, call vfb_get_term_info to get detailed information about it
+4. When displaying multiple neurons or creating scene links, use the IDs directly from search results without calling vfb_get_term_info unless you need additional metadata
+5. ALWAYS call vfb_get_term_info before using vfb_run_query to see what query types are available for that entity.
+6. For connectivity queries: If a neuron class (IsClass: true) doesn't have connectivity data, look at individual neuron instances from connectomes.
 7. Construct VFB URLs: https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=<id>&i=<template_id>,<image_ids>
 
 DISPLAYING IMAGES:
 ONLY show thumbnail images when they are actually available AND validated to exist in the VFB data. NEVER make up or invent thumbnail URLs.
-When get_term_info returns visual data, include thumbnail URLs in your response using markdown image syntax:
+When vfb_get_term_info returns visual data, include thumbnail URLs in your response using markdown image syntax:
 ![label](thumbnail_url)
 Do NOT show any images if no validated thumbnail URLs are available in the data. The user's chat interface renders these as compact thumbnails that expand on hover.
 
@@ -829,7 +730,7 @@ You might also want to explore:
 - Show me neuron morphologies https://chat.virtualflybrain.org?query=Show%20me%20neuron%20morphologies
 
 **Format 2 - Markdown links (also works):**
-[What is the lomula](https://chat.virtualflybrain.org?query=What%20is%20the%20lobula) or [Show me MB connectivity](https://chat.virtualflybrain.org?query=Show%20me%20mushroom%20body%20connectivity)
+[What is the lobula](https://chat.virtualflybrain.org?query=What%20is%20the%20lobula) or [Show me MB connectivity](https://chat.virtualflybrain.org?query=Show%20me%20mushroom%20body%20connectivity)
 
 **Format 3 - Inline in sentences:**
 If you want to explore further, you could ask about [layer-specific connectivity](https://chat.virtualflybrain.org?query=What%20is%20the%20layer-specific%20connectivity%20in%20the%20medulla) or [transgenic lines](https://chat.virtualflybrain.org?query=Which%20transgenic%20lines%20label%20medulla%20neurons).
@@ -837,565 +738,191 @@ If you want to explore further, you could ask about [layer-specific connectivity
 **Important guidelines:**
 - The question text in the URL MUST be properly URL-encoded (spaces as %20, ? as %3F, etc.)
 - Keep questions concise and specific to the topic at hand
+- Follow-up questions MUST be directly relevant to Drosophila neuroscience AND actionable using VFB tools. Only suggest questions that VFB tools can actually answer. Good examples: "What neurons have presynaptic terminals in the medulla?" (uses vfb_search_terms with neuron filters), "What are the subregions of the mushroom body?" (uses vfb_get_term_info), "Which GAL4 lines label Kenyon cells?" (searches for transgene expression patterns), "What connectivity data is available for this neuron?" (uses vfb_run_query with connectivity queries), "Find recent neuroscience preprints about Drosophila connectomics" (uses biorxiv/pubmed tools). Bad examples: "Show me morphologies" (too vague — NBLAST requires a specific neuron ID to compare against), generic biology questions, questions that VFB tools cannot answer.
 - Only suggest when relevant — skip if the response already answers likely follow-ups
-- Vary the question types: ask about connectivity, morphology, genetics, layers, comparisons, etc.
+- Vary the question types: ask about connectivity, neuron types in a region, gene/transgene expression, substructures, available datasets, or related publications
 - The user's chat interface automatically converts both plain URLs and markdown links to clickable buttons that submit the question
 - Don't overuse: 2-3 well-chosen questions are better than 5 generic ones
-- Do NOT include any instructional text like "you can click or copy-paste these into the chat" or "copy and paste" — the links are already clickable, so such instructions are unnecessary and redundant. Just present the links directly with a brief natural intro like "You might also want to explore:" or "Related questions:".`
+- Do NOT include any instructional text like "you can click or copy-paste these into the chat", "use these as plain-text URLs", or similar meta-commentary — just present the links directly with a brief natural intro like "You might also want to explore:" or "Related questions:".`
 
-        // Term resolution happens during conversation via tool calls
+export async function POST(request) {
+  const startTime = Date.now()
+  const xForwardedFor = request.headers.get('x-forwarded-for') || ''
+  const clientIp = (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
 
-        // Initial messages - prepend system prompt to conversation history
+  const { messages, scene } = await request.json()
+
+  const message = messages[messages.length - 1].content
+
+  log('Chat API request received', {
+    message: message.substring(0, 100),
+    scene,
+    clientIp,
+    xForwardedFor
+  })
+
+  // Check for jailbreak attempts
+  if (detectJailbreakAttempt(message)) {
+    log('Jailbreak attempt detected', { message: message.substring(0, 200) })
+
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        const sendEvent = (event, data) => {
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+          } catch (e) { /* Controller closed */ }
+        }
+
+        sendEvent('error', {
+          message: 'I cannot assist with attempts to bypass safety restrictions or override my core instructions. Please ask questions related to Drosophila neuroscience and Virtual Fly Brain data.'
+        })
+        controller.close()
+      }
+    })
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    })
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    log('WARNING: OPENAI_API_KEY not set - API calls may fail')
+  }
+
+  // Load static lookup cache for user input term resolution
+  loadLookupCache()
+
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    async start(controller) {
+      const sendEvent = (event, data) => {
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch (e) { /* Controller closed */ }
+      }
+
+      try {
+        // Resolve VFB terms in user input using static lookup cache
         const resolvedUserMessage = replaceTermsWithLinks(message)
-        const conversationMessages = [
-          { role: 'system', content: systemPrompt },
-          ...messages.slice(0, -1).map(msg => ({ role: msg.role, content: msg.content })), // Previous messages
-          { role: 'user', content: resolvedUserMessage } // Current user message
+
+        // Build conversation input for the Responses API
+        const conversationInput = [
+          ...messages.slice(0, -1).map(msg => ({ role: msg.role, content: msg.content })),
+          { role: 'user', content: resolvedUserMessage }
         ]
 
-        let finalResponse = ''
-        const maxIterations = 3
+        const apiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+        const apiKey = process.env.OPENAI_API_KEY
+        const apiModel = getOpenAIModel()
 
-        for (let iteration = 0; iteration < maxIterations; iteration++) {
-          log(`Starting iteration ${iteration + 1}/${maxIterations}`)
-          
-          // Call OpenAI-compatible API
-          const apiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-          const apiKey = process.env.OPENAI_API_KEY
-          const apiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-          const apiStart = Date.now()
+        log('Calling Responses API', {
+          messageCount: conversationInput.length,
+          model: apiModel
+        })
 
-          // Set up timeout (shorter for cloud API)
-          const hasToolResults = conversationMessages.some(msg => msg.role === 'tool')
-          const timeoutMs = hasToolResults ? 120000 : 60000 // 2 min with tool results, 1 min without
-          const abortController = new AbortController()
-          const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
+        sendEvent('status', { message: 'Thinking...', phase: 'llm' })
 
-          log('Calling LLM API', {
-            iteration: iteration + 1,
-            messageCount: conversationMessages.length,
+        const timeoutMs = 180000
+        const abortController = new AbortController()
+        const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
+
+        const apiStart = Date.now()
+
+        const apiResponse = await fetch(`${apiBaseUrl}/responses`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+          },
+          body: JSON.stringify({
             model: apiModel,
-            timeoutMs,
-            hasToolResults
-          })
+            instructions: systemPrompt,
+            input: conversationInput,
+            tools: getToolConfig(),
+            stream: true
+          }),
+          signal: abortController.signal
+        })
 
-          const apiResponse = await fetch(`${apiBaseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
-            },
-            body: JSON.stringify({
-              model: apiModel,
-              messages: conversationMessages,
-              tools: tools,
-              stream: false
-            }),
-            signal: abortController.signal
-          })
+        clearTimeout(timeoutId)
 
-          clearTimeout(timeoutId)
+        const apiDuration = Date.now() - apiStart
+        log('Responses API initial response', { duration: `${apiDuration}ms`, status: apiResponse.status })
 
-          const apiDuration = Date.now() - apiStart
-          log('LLM API response received', { duration: `${apiDuration}ms`, status: apiResponse.status })
+        if (!apiResponse.ok) {
+          const errorText = await apiResponse.text()
+          log('Responses API error', { status: apiResponse.status, error: errorText.substring(0, 500) })
 
-          if (!apiResponse.ok) {
-            const errorText = await apiResponse.text()
-            log('LLM API error', { status: apiResponse.status, error: errorText.substring(0, 500) })
+          // Retry on transient errors
+          if (isTransientError(apiResponse.status)) {
+            const maxRetries = 2
+            for (let retry = 1; retry <= maxRetries; retry++) {
+              const backoffMs = retry * 3000
+              log(`Retrying Responses API (attempt ${retry}/${maxRetries}) after ${backoffMs}ms`, { status: apiResponse.status })
+              sendEvent('status', { message: `AI service temporarily unavailable — retrying (${retry}/${maxRetries})…` })
+              await new Promise(resolve => setTimeout(resolve, backoffMs))
 
-            // Retry on transient errors (5xx / 429) with exponential back-off
-            if (isTransientError(apiResponse.status)) {
-              const maxRetries = 2
-              let retrySuccess = false
+              try {
+                const retryAbort = new AbortController()
+                const retryTimeout = setTimeout(() => retryAbort.abort(), timeoutMs)
 
-              for (let retry = 1; retry <= maxRetries; retry++) {
-                const backoffMs = retry * 3000 // 3 s, 6 s
-                log(`Retrying LLM API call (attempt ${retry}/${maxRetries}) after ${backoffMs}ms`, { status: apiResponse.status })
-                sendEvent('status', { message: `AI service temporarily unavailable — retrying (${retry}/${maxRetries})…` })
-                await new Promise(resolve => setTimeout(resolve, backoffMs))
+                const retryResponse = await fetch(`${apiBaseUrl}/responses`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+                  },
+                  body: JSON.stringify({
+                    model: apiModel,
+                    instructions: systemPrompt,
+                    input: conversationInput,
+                    tools: getToolConfig(),
+                    stream: true
+                  }),
+                  signal: retryAbort.signal
+                })
+                clearTimeout(retryTimeout)
 
-                try {
-                  const retryAbort = new AbortController()
-                  const retryTimeout = setTimeout(() => retryAbort.abort(), timeoutMs)
-
-                  const retryResponse = await fetch(`${apiBaseUrl}/chat/completions`, {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
-                    },
-                    body: JSON.stringify({
-                      model: apiModel,
-                      messages: conversationMessages,
-                      tools: tools,
-                      stream: false
-                    }),
-                    signal: retryAbort.signal
-                  })
-                  clearTimeout(retryTimeout)
-
-                  if (retryResponse.ok) {
-                    log('LLM API retry succeeded', { attempt: retry })
-                    // Replace apiResponse reference for downstream processing
-                    // We need to continue the outer loop with this good response,
-                    // so we re-assign and break out of the retry loop.
-                    const retryData = await retryResponse.json()
-                    const retryAssistant = retryData.choices?.[0]?.message
-                    if (retryAssistant) {
-                      // Push into conversation & process like a normal response
-                      conversationMessages.push(retryAssistant)
-                      if (retryAssistant.content && !retryAssistant.tool_calls?.length) {
-                        finalResponse = retryAssistant.content
-                      }
-                      retrySuccess = true
-                      break
-                    }
-                  } else {
-                    const retryErrorText = await retryResponse.text()
-                    log('LLM API retry failed', { attempt: retry, status: retryResponse.status, error: retryErrorText.substring(0, 300) })
-                  }
-                } catch (retryErr) {
-                  log('LLM API retry exception', { attempt: retry, error: retryErr.message })
+                if (retryResponse.ok) {
+                  log('Responses API retry succeeded', { attempt: retry })
+                  await processResponseStream(retryResponse, sendEvent, message, scene, startTime, conversationInput)
+                  controller.close()
+                  return
+                } else {
+                  const retryErrorText = await retryResponse.text()
+                  log('Responses API retry failed', { attempt: retry, status: retryResponse.status, error: retryErrorText.substring(0, 300) })
                 }
+              } catch (retryErr) {
+                log('Responses API retry exception', { attempt: retry, error: retryErr.message })
               }
-
-              if (retrySuccess) {
-                // If the retried response included tool_calls we need to let
-                // the outer for-loop continue processing them, so just
-                // `continue` to skip the rest of this iteration's
-                // post-response logic (it was already pushed above).
-                // If it was a final text response, fall through to the
-                // normal response-sending logic at end of loop.
-                const lastMsg = conversationMessages[conversationMessages.length - 1]
-                if (lastMsg.tool_calls?.length) {
-                  // Let outer loop handle tool calls on next iteration
-                  continue
-                }
-                // Final text response — will be sent after loop ends
-                break
-              }
-
-              // All retries exhausted
-              const friendlyMsg = sanitizeApiError(apiResponse.status, errorText)
-              sendEvent('error', { message: `Sorry, the AI service is temporarily unavailable. ${friendlyMsg}` })
-              controller.close()
-              return
             }
 
-            // Non-transient error — show sanitized message
             const friendlyMsg = sanitizeApiError(apiResponse.status, errorText)
-            sendEvent('error', { message: `Error: ${friendlyMsg}` })
+            sendEvent('error', { message: `Sorry, the AI service is temporarily unavailable. ${friendlyMsg}` })
             controller.close()
             return
           }
 
-          const apiData = await apiResponse.json()
-          const assistantMessage = apiData.choices?.[0]?.message
-
-          if (!assistantMessage) {
-            log('No assistant message in LLM response')
-            break
-          }
-
-          log('Assistant message received', { 
-            hasContent: !!assistantMessage.content,
-            toolCallsCount: assistantMessage.tool_calls?.length || 0,
-            contentLength: assistantMessage.content?.length || 0
-          })
-
-          // Note: We no longer run replaceTermsWithLinks on LLM responses.
-          // The LLM now has full data and system prompt instructions to create its own markdown links.
-          // Running replacement on LLM output caused nested link corruption.
-
-          conversationMessages.push(assistantMessage)
-
-          // Check for tool calls
-          if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-            // Send intermediate reasoning to user in smaller font
-            if (assistantMessage.content) {
-              sendEvent('reasoning', { text: assistantMessage.content })
-            }
-            
-            log('Processing tool calls', { count: assistantMessage.tool_calls.length })
-            
-            // Update status immediately when MCP calls are initiated
-            sendEvent('status', { message: 'Querying the fly hive mind', phase: 'mcp' })
-            
-            for (const toolCall of assistantMessage.tool_calls) {
-                const toolStart = Date.now()
-                
-                // Parse tool arguments (OpenAI returns JSON string, Ollama returned object)
-                const parsedArgs = parseToolArguments(toolCall.function.arguments)
-                
-                log('Executing tool call', { 
-                  name: toolCall.function.name, 
-                  args: toolCall.function.name === 'get_term_info' && parsedArgs?.id ? 
-                    `pulling info on ${parsedArgs.id}` : 
-                    JSON.stringify(toolCall.function.arguments).substring(0, 200) 
-                })
-                
-                try {
-                  let toolResult = null
-
-                  // FAST LOCAL TERM RESOLUTION: Try local cache first for get_term_info
-                  if (toolCall.function.name === 'get_term_info' && parsedArgs?.id) {
-                    const localId = resolveTermLocally(parsedArgs.id)
-                    if (localId && localId !== parsedArgs.id) {
-                      log('Local term resolution', {
-                        input: parsedArgs.id,
-                        resolved: localId
-                      })
-                      // Update the arguments with resolved ID
-                      parsedArgs.id = localId
-                    }
-                  }
-
-                  // Modify arguments for search_terms to limit results
-                  let callArgs = parsedArgs
-                  if (toolCall.function.name === 'search_terms') {
-                    callArgs = { ...callArgs }
-                    if (callArgs.rows === undefined) callArgs.rows = 10
-                    if (callArgs.start === undefined) callArgs.start = 0
-                    
-                    // Fix case sensitivity for filter_types - VFB uses capitalized facet names
-                    if (callArgs.filter_types && Array.isArray(callArgs.filter_types)) {
-                      callArgs.filter_types = callArgs.filter_types.map(type => {
-                        const lowerType = type.toLowerCase()
-                        // Map common lowercase filters to proper capitalized VFB facets
-                        const facetMap = {
-                          'dataset': 'DataSet',
-                          'neuron': 'Neuron',
-                          'anatomy': 'Anatomy',
-                          'gene': 'Gene',
-                          'adult': 'Adult',
-                          'has_image': 'has_image',
-                          'deprecated': 'Deprecated'
-                        }
-                        return facetMap[lowerType] || type
-                      })
-                    }
-                    
-                    // Also fix exclude_types
-                    if (callArgs.exclude_types && Array.isArray(callArgs.exclude_types)) {
-                      callArgs.exclude_types = callArgs.exclude_types.map(type => {
-                        const lowerType = type.toLowerCase()
-                        const facetMap = {
-                          'dataset': 'DataSet',
-                          'neuron': 'Neuron',
-                          'anatomy': 'Anatomy',
-                          'gene': 'Gene',
-                          'adult': 'Adult',
-                          'has_image': 'has_image',
-                          'deprecated': 'Deprecated'
-                        }
-                        return facetMap[lowerType] || type
-                      })
-                    }
-                  }
-
-                  // Use MCP client to call the tool
-                  if (mcpClient.getServerCapabilities()?.tools) {
-                    const result = await mcpClient.callTool({
-                      name: toolCall.function.name,
-                      arguments: callArgs
-                    })
-                    toolResult = result
-                  } else {
-                    throw new Error('MCP server does not support tools')
-                  }
-
-                  const toolDuration = Date.now() - toolStart
-                  log('Tool call completed', { 
-                    name: toolCall.function.name, 
-                    duration: `${toolDuration}ms`,
-                    resultSize: JSON.stringify(toolResult).length 
-                  })
-
-                  // DEBUG: Log raw MCP result
-                  console.log('🔍 MCP RAW RESULT:', JSON.stringify(toolResult, null, 2))
-
-                  // Process search results to minimize response size
-                  if (toolCall.function.name === 'search_terms' && toolResult?.content?.[0]?.text) {
-                    try {
-                      const parsedResult = JSON.parse(toolResult.content[0].text)
-                      
-                      // Filter results based on filter_types if specified
-                      if (parsedResult?.response?.docs && callArgs?.filter_types?.length > 0) {
-                        const filterTypes = callArgs.filter_types
-                        parsedResult.response.docs = parsedResult.response.docs.filter(doc => {
-                          if (!doc.facets_annotation || !Array.isArray(doc.facets_annotation)) {
-                            return false
-                          }
-                          // Check if the doc has any of the required filter types
-                          return filterTypes.some(filterType => 
-                            doc.facets_annotation.includes(filterType)
-                          )
-                        })
-                        // Update numFound to reflect filtered count
-                        parsedResult.response.numFound = parsedResult.response.docs.length
-                        log('Filtered search results by facets', { 
-                          filterTypes, 
-                          originalCount: parsedResult.response.numFound,
-                          filteredCount: parsedResult.response.docs.length 
-                        })
-                      }
-                      
-                      // POPULATE CACHE: Add label->ID mappings from search results
-                      if (parsedResult?.response?.docs) {
-                        parsedResult.response.docs.forEach(doc => {
-                          if (doc.label && doc.short_form) {
-                            addToLookupCache(doc.label, doc.short_form)
-                          }
-                          // Also add synonyms if available
-                          if (doc.synonym && Array.isArray(doc.synonym)) {
-                            doc.synonym.forEach(syn => {
-                              if (syn && doc.short_form) {
-                                addToLookupCache(syn, doc.short_form)
-                              }
-                            })
-                          }
-                        })
-                        log('Added search results to lookup cache', { count: parsedResult.response.docs.length })
-                      }
-                      
-                      if (parsedResult?.response?.docs) {
-                        const query = parsedArgs?.query?.toLowerCase() || ''
-                        const originalCount = parsedResult.response.numFound
-
-                        const start = parsedArgs?.start || 0
-                        const rows = parsedArgs?.rows || 10
-                        const isPaginatedRequest = start > 0 || (rows && rows !== 10)
-                        
-                        // Check for exact label match first (only for initial searches)
-                        const exactMatch = !isPaginatedRequest ? parsedResult.response.docs.find(doc => 
-                          doc.label?.toLowerCase() === query
-                        ) : null
-                        
-                        let minimizedDocs
-                        let truncationInfo = {}
-                        
-                        if (exactMatch) {
-                          // If exact match found in initial search, return just that one
-                          minimizedDocs = [exactMatch]
-                          truncationInfo = { exactMatch: true, totalAvailable: originalCount }
-                          log('Found exact label match, returning single result', { label: exactMatch.label })
-                          
-                          // Pre-fetch term info for the exact match
-                          try {
-                            const termInfoResult = await mcpClient.callTool({
-                              name: 'get_term_info',
-                              arguments: { id: exactMatch.short_form }
-                            })
-                            parsedResult._term_info = termInfoResult
-                            log('Pre-fetched term info for exact match', { id: exactMatch.short_form })
-                          } catch (termInfoError) {
-                            log('Failed to pre-fetch term info', { error: termInfoError.message, id: exactMatch.short_form })
-                          }
-                        } else if (isPaginatedRequest) {
-                          // For paginated requests, return all requested results (up to reasonable limit)
-                          minimizedDocs = parsedResult.response.docs.slice(0, Math.min(rows, 50))
-                          truncationInfo = { 
-                            paginated: true, 
-                            requested: rows, 
-                            returned: minimizedDocs.length,
-                            totalAvailable: originalCount
-                          }
-                        } else {
-                          // For initial searches without pagination, limit to top 10
-                          minimizedDocs = parsedResult.response.docs.slice(0, 10)
-                          truncationInfo = { 
-                            truncated: originalCount > 10, 
-                            shown: minimizedDocs.length, 
-                            totalAvailable: originalCount,
-                            canRequestMore: originalCount > 10
-                          }
-                        }
-                        
-                        // Keep only essential fields
-                        minimizedDocs = minimizedDocs.map(doc => ({
-                          short_form: doc.short_form,
-                          label: doc.label,
-                          synonym: Array.isArray(doc.synonym) ? doc.synonym[0] : doc.synonym // Keep only first synonym
-                        }))
-                        
-                        parsedResult.response.docs = minimizedDocs
-                        parsedResult.response.numFound = minimizedDocs.length // Update count
-                        
-                        // Add truncation metadata
-                        parsedResult.response._truncation = truncationInfo
-                        
-                        // Put back as text
-                        toolResult.content[0].text = JSON.stringify(parsedResult)
-                        
-                        log('Minimized search results', { 
-                          originalCount,
-                          minimizedCount: minimizedDocs.length,
-                          exactMatch: !!exactMatch,
-                          paginated: isPaginatedRequest,
-                          resultSize: toolResult.content[0].text.length
-                        })
-
-                        // DEBUG: Log minimized result
-                        console.log('🔍 MINIMIZED RESULT:', toolResult.content[0].text.substring(0, 500) + '...')
-                      }
-                    } catch (error) {
-                      log('Failed to parse search result for minimization', { error: error.message })
-                    }
-                  }
-
-                  // POPULATE CACHE: Add additional mappings from get_term_info results
-                  if (toolCall.function.name === 'get_term_info' && toolResult?.content?.[0]?.text) {
-                    try {
-                      const termInfo = JSON.parse(toolResult.content[0].text)
-                      if (termInfo && termInfo.term && termInfo.term.core) {
-                        const core = termInfo.term.core
-                        const id = core.short_form
-                        
-                        // Add label
-                        if (core.label) {
-                          addToLookupCache(core.label, id)
-                        }
-                        
-                        // Add synonyms
-                        if (core.synonyms && Array.isArray(core.synonyms)) {
-                          core.synonyms.forEach(syn => {
-                            if (syn && syn.label) {
-                              addToLookupCache(syn.label, id)
-                            }
-                          })
-                        }
-                        
-                        log('Added term info to lookup cache', { id, label: core.label })
-                      }
-                    } catch (error) {
-                      log('Failed to parse term info for cache', { error: error.message })
-                    }
-                  }
-
-                  const toolContent = JSON.stringify(toolResult)
-
-                  // Add tool result to conversation
-                  conversationMessages.push({
-                    role: 'tool',
-                    content: toolContent,
-                    tool_call_id: toolCall.id
-                  })
-
-                } catch (toolError) {
-                  const toolDuration = Date.now() - toolStart
-                  log('Tool call failed', { 
-                    name: toolCall.function.name, 
-                    duration: `${toolDuration}ms`,
-                    error: toolError.message 
-                  })
-                  
-                  // Update status when MCP call fails
-                  sendEvent('status', { message: 'MCP service unavailable, using knowledge base', phase: 'fallback' })
-                  
-                  conversationMessages.push({
-                    role: 'tool',
-                    content: `Error executing ${toolCall.function.name}: ${toolError.message}`,
-                    tool_call_id: toolCall.id
-                  })
-                }
-              }
-              
-            // Switch back to thinking for next LLM call after MCP processing
-            sendEvent('status', { message: 'Processing results', phase: 'llm' })
-          } else {
-            // No tool calls - this is the final response
-            finalResponse = assistantMessage.content || ''
-            // Note: No replaceTermsWithLinks here - LLM creates its own links
-            log('Final response generated', { length: finalResponse.length })
-            break
-          }
-        }
-        if (!finalResponse) {
-          log('No final response after max iterations, making fallback call')
-          sendEvent('status', { message: 'Generating final response', phase: 'fallback' })
-          const fallbackBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-          const fallbackApiKey = process.env.OPENAI_API_KEY
-          const fallbackModel = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-          const fallbackStart = Date.now()
-
-          // Set up timeout for fallback call
-          const fallbackController = new AbortController()
-          const fallbackTimeoutMs = 120000 // 2 minutes
-          const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), fallbackTimeoutMs)
-
-          const finalApiResponse = await fetch(`${fallbackBaseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(fallbackApiKey ? { 'Authorization': `Bearer ${fallbackApiKey}` } : {})
-            },
-            body: JSON.stringify({
-              model: fallbackModel,
-              messages: conversationMessages,
-              stream: false
-            }),
-            signal: fallbackController.signal
-          })
-
-          clearTimeout(fallbackTimeoutId)
-          const fallbackDuration = Date.now() - fallbackStart
-          log('Fallback LLM call completed', { duration: `${fallbackDuration}ms`, status: finalApiResponse.status })
-
-          if (finalApiResponse.ok) {
-            const finalData = await finalApiResponse.json()
-            finalResponse = finalData.choices?.[0]?.message?.content || 'I apologize, but I was unable to generate a complete response. Please try rephrasing your question.'
-            // Note: No replaceTermsWithLinks here - LLM creates its own links
-            log('Fallback response generated', { length: finalResponse.length })
-          } else {
-            finalResponse = 'I apologize, but there was an error generating the response. Please try again.'
-            log('Fallback call failed, using error message')
-          }
+          const friendlyMsg = sanitizeApiError(apiResponse.status, errorText)
+          sendEvent('error', { message: `Error: ${friendlyMsg}` })
+          controller.close()
+          return
         }
 
-        // Parse for images
-        const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
-        const images = []
-        let match
-        while ((match = thumbnailRegex.exec(finalResponse)) !== null) {
-          const templateId = match[1]
-          const imageId = match[2]
-          images.push({
-            id: imageId,
-            template: templateId,
-            thumbnail: match[0],
-            label: `VFB Image ${imageId}`
-          })
-        }
-
-        const totalDuration = Date.now() - startTime
-        log('Chat API request completed', { 
-          totalDuration: `${totalDuration}ms`, 
-          responseLength: finalResponse.length, 
-          imagesCount: images.length 
-        })
-
-        // Track query for analytics
-        trackQuery(message, finalResponse.length, totalDuration, `session_${Date.now()}`)
-
-        // Send final result
-        sendEvent('result', { response: finalResponse, images, newScene: scene })
-        
-        // Clean up MCP client
-        try {
-          if (mcpClient) await mcpClient.close()
-          if (mcpTransport) await mcpTransport.close()
-        } catch (cleanupError) {
-          log('MCP cleanup error', { error: cleanupError.message })
-        }
-        
+        // Process the streaming response
+        await processResponseStream(apiResponse, sendEvent, message, scene, startTime, conversationInput)
         controller.close()
 
       } catch (error) {
         const totalDuration = Date.now() - startTime
         log('Chat API request failed', { totalDuration: `${totalDuration}ms`, error: error.message })
-        
+
         console.error('Chat API error:', error)
-        // Provide a user-friendly message for common failure modes
         let userMessage = 'Sorry, something went wrong processing your request. Please try again.'
         if (error.name === 'AbortError' || error.message?.includes('abort')) {
           userMessage = 'The request timed out. The AI service may be under heavy load — please try again in a moment.'
@@ -1403,15 +930,6 @@ If you want to explore further, you could ask about [layer-specific connectivity
           userMessage = 'Unable to reach the AI service. Please check your connection and try again.'
         }
         sendEvent('error', { message: userMessage })
-        
-        // Clean up MCP client
-        try {
-          if (mcpClient) await mcpClient.close()
-          if (mcpTransport) await mcpTransport.close()
-        } catch (cleanupError) {
-          log('MCP cleanup error', { error: cleanupError.message })
-        }
-        
         controller.close()
       }
     }
@@ -1424,4 +942,239 @@ If you want to explore further, you could ask about [layer-specific connectivity
       'Connection': 'keep-alive',
     },
   })
+}
+
+// Read and parse an SSE stream from the Responses API.
+// Returns { textAccumulator, functionCalls, responseId, failed }.
+async function readResponseStream(apiResponse, sendEvent) {
+  const reader = apiResponse.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let textAccumulator = ''
+  let sentVfbStatus = false
+  let sentBiorxivStatus = false
+  let sentPubmedStatus = false
+  const functionCalls = []
+  let responseId = null
+  let failed = false
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) continue
+
+        if (!line.startsWith('data: ')) continue
+        const dataStr = line.substring(6).trim()
+        if (dataStr === '[DONE]') continue
+
+        try {
+          const event = JSON.parse(dataStr)
+          const eventType = event.type
+
+          switch (eventType) {
+            case 'response.created':
+              responseId = event.response?.id || null
+              log('Response stream started', { responseId })
+              break
+
+            case 'response.output_item.added':
+              if (event.item?.type === 'function_call') {
+                const toolName = event.item?.name || ''
+                if (toolName.startsWith('vfb_') && !sentVfbStatus) {
+                  sendEvent('status', { message: 'Querying the fly hive mind', phase: 'mcp' })
+                  sentVfbStatus = true
+                } else if (toolName.startsWith('biorxiv_') && !sentBiorxivStatus) {
+                  sendEvent('status', { message: 'Searching bioRxiv preprints', phase: 'biorxiv' })
+                  sentBiorxivStatus = true
+                } else if ((toolName === 'search_pubmed' || toolName === 'get_pubmed_article') && !sentPubmedStatus) {
+                  sendEvent('status', { message: 'Searching publications', phase: 'pubmed' })
+                  sentPubmedStatus = true
+                }
+                log('Function call initiated', { name: toolName })
+              } else if (event.item?.type === 'web_search_call') {
+                sendEvent('status', { message: 'Searching VFB website', phase: 'web_search' })
+                log('Web search initiated')
+              } else if (event.item?.type === 'message') {
+                sendEvent('status', { message: 'Processing results', phase: 'llm' })
+              }
+              break
+
+            case 'response.output_text.delta':
+              if (event.delta) {
+                textAccumulator += event.delta
+              }
+              break
+
+            case 'response.content_part.done':
+              break
+
+            case 'response.output_item.done':
+              if (event.item?.type === 'function_call') {
+                functionCalls.push({
+                  call_id: event.item.call_id,
+                  name: event.item.name,
+                  arguments: event.item.arguments
+                })
+                log('Function call collected', { name: event.item.name, call_id: event.item.call_id })
+              } else if (event.item?.type === 'reasoning') {
+                const reasoningText = event.item?.summary?.map(s => s.text).join('\n') || ''
+                if (reasoningText) {
+                  sendEvent('reasoning', { text: reasoningText })
+                }
+              }
+              break
+
+            case 'response.completed':
+              responseId = event.response?.id || responseId
+              log('Response stream completed', { responseId })
+              break
+
+            case 'response.failed':
+              const errorMsg = event.response?.status_details?.error?.message || 'Unknown error'
+              log('Response failed', { error: errorMsg })
+              sendEvent('error', { message: `Error: ${errorMsg}` })
+              failed = true
+              return { textAccumulator, functionCalls, responseId, failed }
+
+            case 'error':
+              log('Stream error event', { error: event.message || event })
+              sendEvent('error', { message: event.message || 'An error occurred' })
+              failed = true
+              return { textAccumulator, functionCalls, responseId, failed }
+          }
+        } catch (parseError) {
+          log('Failed to parse SSE data', { error: parseError.message, data: dataStr.substring(0, 100) })
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  return { textAccumulator, functionCalls, responseId, failed }
+}
+
+// Process the Responses API stream, handling function tool calls via MCP relay.
+// Uses inline conversation accumulation instead of previous_response_id
+// (required for orgs with Zero Data Retention).
+async function processResponseStream(apiResponse, sendEvent, message, scene, startTime, conversationInput) {
+  const apiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+  const apiKey = process.env.OPENAI_API_KEY
+  const apiModel = getOpenAIModel()
+  const maxFunctionRounds = 5
+
+  let currentResponse = apiResponse
+  // Accumulate function call/output items to replay on subsequent rounds
+  const accumulatedItems = []
+
+  for (let round = 0; round <= maxFunctionRounds; round++) {
+    const { textAccumulator, functionCalls, responseId, failed } = await readResponseStream(currentResponse, sendEvent)
+
+    if (failed) return
+
+    // If there are function calls, execute them and submit results
+    if (functionCalls.length > 0) {
+      log('Executing function tools via relay', { count: functionCalls.length, round })
+
+      // Execute all function calls in parallel
+      const toolOutputs = await Promise.all(functionCalls.map(async (fc) => {
+        try {
+          const args = typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
+          const result = await executeFunctionTool(fc.name, args)
+          log('Function tool executed', { name: fc.name, resultLength: result?.length || 0 })
+          return { call_id: fc.call_id, name: fc.name, arguments: fc.arguments, output: result }
+        } catch (err) {
+          log('Function tool failed', { name: fc.name, error: err.message })
+          return { call_id: fc.call_id, name: fc.name, arguments: fc.arguments, output: JSON.stringify({ error: err.message }) }
+        }
+      }))
+
+      // Accumulate the function_call items and their outputs for conversation replay
+      for (const to of toolOutputs) {
+        accumulatedItems.push({
+          type: 'function_call',
+          call_id: to.call_id,
+          name: to.name,
+          arguments: typeof to.arguments === 'string' ? to.arguments : JSON.stringify(to.arguments)
+        })
+        accumulatedItems.push({
+          type: 'function_call_output',
+          call_id: to.call_id,
+          output: to.output
+        })
+      }
+
+      // Resend the full conversation with accumulated tool interactions
+      const submitResponse = await fetch(`${apiBaseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify({
+          model: apiModel,
+          instructions: systemPrompt,
+          input: [...conversationInput, ...accumulatedItems],
+          tools: getToolConfig(),
+          stream: true
+        })
+      })
+
+      if (!submitResponse.ok) {
+        const errText = await submitResponse.text()
+        log('Function tool result submission failed', { status: submitResponse.status, error: errText.substring(0, 300) })
+        sendEvent('error', { message: 'Failed to process tool results. Please try again.' })
+        return
+      }
+
+      currentResponse = submitResponse
+      continue
+    }
+
+    // No function calls — we have the final text response
+    const finalResponse = textAccumulator
+
+    if (!finalResponse) {
+      log('No text content in response')
+      sendEvent('error', { message: 'The AI did not generate a response. Please try again.' })
+      return
+    }
+
+    // Parse for VFB thumbnail images
+    const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
+    const images = []
+    let match
+    while ((match = thumbnailRegex.exec(finalResponse)) !== null) {
+      const templateId = match[1]
+      const imageId = match[2]
+      images.push({
+        id: imageId,
+        template: templateId,
+        thumbnail: match[0],
+        label: `VFB Image ${imageId}`
+      })
+    }
+
+    const totalDuration = Date.now() - startTime
+    log('Chat API request completed', {
+      totalDuration: `${totalDuration}ms`,
+      responseLength: finalResponse.length,
+      imagesCount: images.length
+    })
+
+    trackQuery(message, finalResponse.length, totalDuration, `session_${Date.now()}`)
+
+    sendEvent('result', { response: finalResponse, images, newScene: scene })
+    return
+  }
+
+  log('Max function tool rounds exceeded')
+  sendEvent('error', { message: 'The response required too many tool calls. Please try a simpler question.' })
 }
