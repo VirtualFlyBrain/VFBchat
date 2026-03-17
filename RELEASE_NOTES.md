@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.0.2
+- Release v3.0.2: Improve linked ID display by using preferred labels (e.g., “ME on JRC2018Unisex” instead of raw ID)
+
 ## v3.0.1
 - Release v3.0.1: Add VFB report link generation and improved term linking
 
