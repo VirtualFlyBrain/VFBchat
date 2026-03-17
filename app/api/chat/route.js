@@ -634,6 +634,16 @@ function replaceTermsWithLinks(text) {
     })
   }
 
+  // Link raw VFB/FBbt IDs using their preferred short label when available.
+  // This makes e.g. "VFB_00102107" render as "%label%" but still link to the report.
+  result = result.replace(/\b(FBbt_\d{8}|VFB_\d{8})\b/g, (match) => {
+    const label = reverseLookupCache?.[match]
+    const display = label || match
+    const link = `[${display}](${REPORT_BASE + encodeURIComponent(match)})`
+    allLinks.push(link)
+    return `\x00LINK${allLinks.length - 1}\x00`
+  })
+
   result = result.replace(/\x00LINK(\d+)\x00/g, (_, idx) => allLinks[parseInt(idx)])
 
   return result
