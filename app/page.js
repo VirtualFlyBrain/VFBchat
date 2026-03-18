@@ -38,10 +38,7 @@ const ChatMessage = memo(function ChatMessage({ msg, markdownComponents }) {
         style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
       >
         <ReactMarkdown
-          components={{
-            ...markdownComponents,
-            a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />
-          }}
+          components={markdownComponents}
         >
           {msg.content}
         </ReactMarkdown>
@@ -95,15 +92,27 @@ export default function Home() {
   const linkifyVfbTerms = (text) => {
     if (!text) return text
 
+    // Strip OpenAI Responses API citation artifacts in all known formats
+    // Private Use Area chars (U+E200-E2FF) used as citation delimiters by OpenAI
+    let cleaned = text.replace(/[\uE200-\uE2FF]cite[\uE200-\uE2FF]\w*[\uE200-\uE2FF]/g, '') // PUA-bracketed citations e.g. \uE200cite\uE202turn1data\uE201
+    cleaned = cleaned.replace(/\u3010[^\u3011]*\u3011/g, '')    // 【...】 bracketed citations
+    cleaned = cleaned.replace(/[\uE200-\uE2FF]/g, '')           // any remaining PUA chars
+    cleaned = cleaned.replace(/citeturn[\w?]*/g, '')             // bare citeturn artifacts
+    cleaned = cleaned.replace(/\bcite(?=\[|https?:\/\/)/g, '')   // orphaned "cite" before links
+    // Clean up leftover whitespace from stripped artifacts
+    cleaned = cleaned.replace(/ {2,}/g, ' ')
+
     const urlPlaceholders = []
     const URL_PLACEHOLDER = '\x00URL'
-    let result = text.replace(/https?:\/\/[^\s)]+/g, (url) => {
+    let result = cleaned.replace(/https?:\/\/[^\s)]+/g, (url) => {
       urlPlaceholders.push(url)
       return `${URL_PLACEHOLDER}${urlPlaceholders.length - 1}\x00`
     })
 
     // Avoid double-linking IDs that are already inside markdown links.
+    // Link VFB and FBbt IDs to VFB, FBrf IDs to FlyBase
     result = result.replace(/(?<!\[)(?<!\]\()(\b(FBbt_\d{8}|VFB_\d{8})\b)/g, '[$1](https://virtualflybrain.org/reports/$1)')
+    result = result.replace(/(?<!\[)(?<!\]\()(\b(FBrf\d{7})\b)/g, '[$1](https://flybase.org/reports/$1)')
 
     // Restore protected URLs
     result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => urlPlaceholders[Number(idx)])
