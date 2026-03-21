@@ -708,7 +708,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         />
         <div style={{
           fontSize: '10px',
-          color: '#333',
+          color: 'rgb(255, 255, 255)',
           opacity: 0.4,
           fontFamily: 'monospace',
           whiteSpace: 'nowrap'
