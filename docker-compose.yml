@@ -10,3 +10,10 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - RATE_LIMIT_PER_IP=${RATE_LIMIT_PER_IP:-50}
+    volumes:
+      - rate-data:/app/data
+
+volumes:
+  rate-data:
+    driver: local

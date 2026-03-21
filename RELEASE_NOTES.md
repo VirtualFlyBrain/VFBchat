@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.1.0
+- Release v3.1.0: Add per-IP daily rate limiting and rate-info endpoint; backend data storage in data/rate-limits.json; client-side usage counter in UI
+
 ## v3.0.3
 - Release v3.0.3: Fix thumbnail handling by avoiding ID linkification inside existing URLs
 

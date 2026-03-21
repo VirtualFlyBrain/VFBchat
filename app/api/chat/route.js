@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import fs from 'fs'
 import path from 'path'
 import axios from 'axios'
+import { checkAndIncrement } from '../../../lib/rateLimit.js'
 
 // GA4 Analytics configuration
 const GA_MEASUREMENT_ID = process.env.GA_MEASUREMENT_ID || 'G-K7DDZVVXM7'
@@ -738,11 +739,22 @@ STRATEGY:
 6. For connectivity queries: If a neuron class (IsClass: true) doesn't have connectivity data, look at individual neuron instances from connectomes.
 7. Construct VFB URLs: https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=<id>&i=<template_id>,<image_ids>
 
-DISPLAYING RESULTS:
-- Use the human-readable name as markdown link text, not bare IDs. Example: [medulla](https://virtualflybrain.org/reports/FBbt_00003748) not FBbt_00003748.
-- When vfb_get_term_info returns thumbnail URLs, include them using markdown image syntax: ![label](thumbnail_url)
-- Only use thumbnail URLs actually present in the tool response data. Never invent URLs.
-- The chat UI renders thumbnails as compact images that expand on hover.
+FORMATTING VFB REFERENCES:
+When referencing VFB entities, ALWAYS use markdown links with the descriptive name as link text, NOT bare IDs in parentheses.
+- CORRECT: [ME on JRC2018Unisex adult brain](https://virtualflybrain.org/reports/VFB_00102107)
+- WRONG: ME on JRC2018Unisex adult brain (VFB_00102107)
+- WRONG: ME on JRC2018Unisex adult brain ([VFB_00102107](https://virtualflybrain.org/reports/VFB_00102107))
+The user wants to see human-readable names as clickable links, not cryptic IDs. The same applies to FBbt anatomy terms — use the term name as the link text: [medulla](https://virtualflybrain.org/reports/FBbt_00003748), not FBbt_00003748.
+
+DISPLAYING IMAGES:
+When vfb_get_term_info returns data with thumbnail URLs, you MUST include them in your response using markdown image syntax.
+Format each VFB entity as: thumbnail image followed by a descriptive link — do NOT repeat the name as plain text. Example:
+- ![ME on JRC2018Unisex](https://www.virtualflybrain.org/data/VFB/i/0010/2107/thumbnail.png) [ME on JRC2018Unisex adult brain](https://virtualflybrain.org/reports/VFB_00102107)
+NOT:
+- ME on JRC2018Unisex adult brain ![ME](thumbnail_url) [ME on JRC2018Unisex adult brain](url)
+The name should appear ONLY ONCE as the link text next to the thumbnail. Do not write it as plain text before the image.
+ONLY use thumbnail URLs that are actually present in the vfb_get_term_info response data. NEVER invent or guess thumbnail URLs.
+The user's chat interface renders these as compact thumbnails that expand on hover — they are a key visual feature, so always include them when available.
 
 SUGGESTED FOLLOW-UP QUESTIONS:
 At the end of your responses, when appropriate (not always necessary), suggest 2-4 follow-up questions the user might want to ask next. Include these as plain-text URLs in one of these formats:
@@ -772,6 +784,27 @@ export async function POST(request) {
   const startTime = Date.now()
   const xForwardedFor = request.headers.get('x-forwarded-for') || ''
   const clientIp = (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
+
+  const rateCheck = checkAndIncrement(clientIp)
+  if (!rateCheck.allowed) {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        try {
+          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ message: `Daily rate limit exceeded (${rateCheck.limit} requests per day). Please try again tomorrow.`, used: rateCheck.used, limit: rateCheck.limit })}\n\n`))
+        } catch (e) { /* ignore */ }
+        controller.close()
+      }
+    })
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      }
+    })
+  }
 
   const { messages, scene } = await request.json()
 

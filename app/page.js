@@ -80,6 +80,7 @@ export default function Home() {
   const [scene, setScene] = useState({ id: existingId, i: existingI })
   const [isThinking, setIsThinking] = useState(false)
   const [thinkingDots, setThinkingDots] = useState('.')
+  const [rateInfo, setRateInfo] = useState({ used: 0, limit: 50, remaining: 50 })
   const [thinkingMessage, setThinkingMessage] = useState('Thinking')
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
@@ -93,14 +94,11 @@ export default function Home() {
     if (!text) return text
 
     // Strip OpenAI Responses API citation artifacts in all known formats
-    // Private Use Area chars (U+E200-E2FF) used as citation delimiters by OpenAI
-    let cleaned = text.replace(/[\uE200-\uE2FF]cite[\uE200-\uE2FF]\w*[\uE200-\uE2FF]/g, '') // PUA-bracketed citations e.g. \uE200cite\uE202turn1data\uE201
-    cleaned = cleaned.replace(/\u3010[^\u3011]*\u3011/g, '')    // 【...】 bracketed citations
-    cleaned = cleaned.replace(/[\uE200-\uE2FF]/g, '')           // any remaining PUA chars
-    cleaned = cleaned.replace(/citeturn[\w?]*/g, '')             // bare citeturn artifacts
-    cleaned = cleaned.replace(/\bcite(?=\[|https?:\/\/)/g, '')   // orphaned "cite" before links
-    // Clean up leftover whitespace from stripped artifacts
-    cleaned = cleaned.replace(/ {2,}/g, ' ')
+    let cleaned = text.replace(/\u3010[^\u3011]*\u3011/g, '')  // 【...】 bracketed citations
+    cleaned = cleaned.replace(/citeturn[\w?]*\d*/g, '')         // citeturn0search0, citeturn0?, citeturn0vfbsomething etc.
+    cleaned = cleaned.replace(/\bcite(?=\[|https?:\/\/)/g, '')  // orphaned "cite" before links
+    // Clean up leftover whitespace/punctuation from stripped artifacts
+    cleaned = cleaned.replace(/ {2,}/g, ' ').replace(/\.\s*\?\s*/g, '. ').replace(/\. \./g, '.')
 
     const urlPlaceholders = []
     const URL_PLACEHOLDER = '\x00URL'
@@ -149,7 +147,25 @@ export default function Home() {
     }
   }, [isThinking])
 
+  const fetchRateInfo = useCallback(async () => {
+    try {
+      const response = await fetch('/api/rate-info')
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json()
+      setRateInfo({
+        used: data.used ?? 0,
+        limit: data.limit ?? 50,
+        remaining: data.remaining ?? Math.max(0, (data.limit ?? 50) - (data.used ?? 0))
+      })
+    } catch (error) {
+      // Keep existing state on error; not critical for user workflow
+      console.error('Failed to fetch rate info', error)
+    }
+  }, [])
+
   useEffect(() => {
+    fetchRateInfo()
+
     if (initialQuery) {
       handleSend()
     } else {
@@ -170,7 +186,7 @@ Here are some example queries you can try:
 
 Feel free to ask about neural circuits, gene expression, connectome data, or any VFB-related topics!`)])
     }
-  }, [])
+  }, [fetchRateInfo])
 
   const handleSend = async (messageText = null) => {
     const textToSend = (typeof messageText === 'string' ? messageText : null) || input
@@ -219,10 +235,12 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 setMessages(prev => [...prev, makeMsg('assistant', data.response, { images: data.images })])
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
+                fetchRateInfo()
                 return
               } else if (currentEvent === 'error') {
                 setMessages(prev => [...prev, makeMsg('assistant', data.message)])
                 setIsThinking(false)
+                fetchRateInfo()
                 return
               }
             } catch (parseError) {
@@ -234,6 +252,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     } catch (error) {
       setMessages(prev => [...prev, makeMsg('assistant', 'Sorry, there was an error processing your request. Please try again.')])
       setIsThinking(false)
+      fetchRateInfo()
     }
   }
 
@@ -668,6 +687,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         display: 'flex',
         gap: '8px',
         marginTop: '8px',
+        alignItems: 'center',
         flexShrink: 0
       }}>
         <input
@@ -686,6 +706,15 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             outline: 'none'
           }}
         />
+        <div style={{
+          fontSize: '10px',
+          color: '#333',
+          opacity: 0.4,
+          fontFamily: 'monospace',
+          whiteSpace: 'nowrap'
+        }}>
+          {`${rateInfo.used}/${rateInfo.limit}`}
+        </div>
         <button
           onClick={handleSend}
           disabled={isThinking}
