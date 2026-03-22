@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.2.1
+- Release v3.2.1: Expand approved site search beyond a hand-maintained VFB page list by adding wider sitemap-backed reviewed search, approved page extraction, and NeuroFly domain allow-list support
+
 ## v3.2.0
 - Release v3.2.0: Add governance-ready logging with `/logs` volume support, reviewed-domain search controls, outbound link allow-listing, structured feedback, privacy updates, and opt-in transcript attachments for problem reports
 

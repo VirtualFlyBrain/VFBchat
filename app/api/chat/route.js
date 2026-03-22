@@ -19,7 +19,7 @@ import {
   sanitizeAssistantOutput
 } from '../../../lib/policy.js'
 import { checkAndIncrement } from '../../../lib/rateLimit.js'
-import { searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
+import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import {
   getConfiguredApiBaseUrl,
   getConfiguredModel,
@@ -111,7 +111,7 @@ function looksLikeEmptyResult(text = '') {
 function classifyTopicCategory(message = '', toolUsage = {}) {
   const lowerMessage = message.toLowerCase()
 
-  if (toolUsage.search_reviewed_docs || /\b(documentation|docs?|how do i|how to|website|site|page)\b/i.test(lowerMessage)) {
+  if (toolUsage.search_reviewed_docs || toolUsage.get_reviewed_page || /\b(documentation|docs?|how do i|how to|website|site|page|blog|news|conference|event|workshop)\b/i.test(lowerMessage)) {
     return 'how-to'
   }
 
@@ -232,7 +232,7 @@ async function getVfbMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(VFB_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-client', version: '3.2.0' },
+    { name: 'vfb-chat-client', version: '3.2.1' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -245,7 +245,7 @@ async function getBiorxivMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(BIORXIV_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-biorxiv', version: '3.2.0' },
+    { name: 'vfb-chat-biorxiv', version: '3.2.1' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -378,7 +378,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'search_reviewed_docs',
-    description: 'Search a reviewed local index of approved Virtual Fly Brain and FlyBase pages only. Use this for site documentation or approved website questions.',
+    description: 'Search approved Virtual Fly Brain, NeuroFly, and reviewed FlyBase pages using a server-side site index. Use this for documentation, news or blog posts, conference or event questions, and other approved website questions.',
     parameters: {
       type: 'object',
       properties: {
@@ -386,6 +386,19 @@ function getToolConfig() {
         max_results: { type: 'number', description: 'Maximum results to return (default 5, max 10)' }
       },
       required: ['query']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'get_reviewed_page',
+    description: 'Fetch and extract content from an approved Virtual Fly Brain, NeuroFly, or reviewed FlyBase page URL returned by search_reviewed_docs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Approved page URL to fetch and extract' }
+      },
+      required: ['url']
     }
   })
 
@@ -540,6 +553,10 @@ async function executeFunctionTool(name, args) {
 
   if (name === 'search_reviewed_docs') {
     return searchReviewedDocs(args.query, args.max_results)
+  }
+
+  if (name === 'get_reviewed_page') {
+    return getReviewedPage(args.url)
   }
 
   const routing = MCP_TOOL_ROUTING[name]
@@ -729,6 +746,7 @@ Decline unrelated questions, including general web browsing, non-Drosophila topi
 APPROVED OUTPUT LINKS ONLY:
 You may only output links or images from these approved domains:
 - virtualflybrain.org and subdomains
+- neurofly.org and subdomains
 - flybase.org
 - doi.org
 - pubmed.ncbi.nlm.nih.gov
@@ -745,14 +763,15 @@ TOOLS:
 - vfb_search_terms: search VFB terms with filters
 - vfb_get_term_info: fetch detailed VFB term information
 - vfb_run_query: run VFB analyses returned by vfb_get_term_info
-- search_reviewed_docs: search a reviewed local index of approved VFB and FlyBase pages only
+- search_reviewed_docs: search approved VFB, NeuroFly, and reviewed FlyBase pages using a server-side site index
+- get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
 - biorxiv_search_preprints / biorxiv_get_preprint / biorxiv_search_published_preprints / biorxiv_get_categories: preprint discovery
 
 TOOL SELECTION:
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
 - Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
-- Questions about VFB or approved FlyBase documentation pages: use search_reviewed_docs
+- Questions about VFB, NeuroFly, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
 CITATIONS:
@@ -783,6 +802,10 @@ function getStatusForTool(toolName) {
 
   if (toolName === 'search_reviewed_docs') {
     return { message: 'Searching reviewed VFB docs', phase: 'docs' }
+  }
+
+  if (toolName === 'get_reviewed_page') {
+    return { message: 'Reading approved VFB page', phase: 'docs' }
   }
 
   return { message: 'Processing results', phase: 'llm' }

@@ -5,7 +5,7 @@ VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data 
 ## What Changed
 
 - Native `web_search` has been removed from the model toolset.
-- Search is limited to a reviewed local index of approved `virtualflybrain.org` and reviewed `flybase.org` pages.
+- Search is limited to approved `virtualflybrain.org` and `neurofly.org` pages plus reviewed `flybase.org` pages through server-side, domain-restricted tools.
 - Outbound links are sanitized server-side to approved domains only.
 - Raw IP-based security logs are retained for up to 30 days under `/logs/security`.
 - Aggregated analytics and structured feedback are retained under `/logs/analytics` and `/logs/feedback`.
@@ -31,13 +31,22 @@ The app now uses a 3-layer logging model rooted at `LOG_ROOT_DIR`:
   - stored only when a user explicitly attaches a conversation to negative feedback
   - short retention, capped at 30 days
 
-## Reviewed Search Index
+## Reviewed Site Search
 
-The reviewed documentation search tool reads from `config/reviewed-docs-index.json` by default. This is a curated, static index of approved pages and should be changed through review, not by runtime crawling.
+The reviewed documentation search path uses two server-side sources:
+
+- a seed index from `config/reviewed-docs-index.json`
+- a domain-restricted discovery path for approved `virtualflybrain.org` and `neurofly.org` pages using configured sitemap and robots sources
+
+This keeps search scoped to approved domains while avoiding a hand-maintained list of every VFB news or documentation page.
 
 Environment variable:
 
 - `REVIEWED_DOCS_INDEX_FILE`
+- `REVIEWED_DOCS_DISCOVERY_URLS`
+- `REVIEWED_DOCS_CACHE_MINUTES`
+- `REVIEWED_DOCS_MAX_URLS`
+- `REVIEWED_DOCS_FETCH_TIMEOUT_MS`
 
 ## Runtime Configuration
 
@@ -61,8 +70,8 @@ Optional:
 
 Default allow-lists:
 
-- Search allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`
-- Outbound allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `doi.org`, `pubmed.ncbi.nlm.nih.gov`, `biorxiv.org`, `medrxiv.org`
+- Search allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`
+- Outbound allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`, `doi.org`, `pubmed.ncbi.nlm.nih.gov`, `biorxiv.org`, `medrxiv.org`
 
 ## Local Development
 
@@ -101,6 +110,8 @@ This keeps security, analytics, and feedback logs outside the application filesy
 - `POST /api/chat`
   - Streams assistant responses over SSE
   - emits `result` events with `requestId` and `responseId`
+  - approved site search uses `search_reviewed_docs`
+  - approved page extraction uses `get_reviewed_page`
 - `GET /api/rate-info`
   - returns the current per-IP daily usage counters
 - `POST /api/feedback`
