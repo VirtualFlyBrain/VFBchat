@@ -3,17 +3,40 @@
 import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
+import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
+
+const FEEDBACK_REASON_LABELS = {
+  helpful: 'Helpful',
+  wrong: 'Wrong',
+  unclear: 'Unclear',
+  missing_citation_links: 'Missing citation/link',
+  not_specific_enough: 'Not specific enough',
+  tool_failed: 'Tool failed',
+  out_of_scope_refusal: 'Out of scope/refusal'
+}
 
 // ── Memoized single-message bubble ──────────────────────────────────
 // Only re-renders when its own props change, NOT when sibling messages
 // are added or the thinking indicator ticks.
-const ChatMessage = memo(function ChatMessage({ msg, markdownComponents }) {
+const ChatMessage = memo(function ChatMessage({
+  msg,
+  markdownComponents,
+  feedbackState,
+  onSubmitHelpful,
+  onSelectNeedsWork,
+  onSubmitFeedbackReason,
+  onToggleIncludeConversation
+}) {
   const getDisplayName = (role) => {
     if (role === 'user') return 'Researcher'
     if (role === 'assistant') return 'VFB'
     if (role === 'reasoning') return 'VFB'
     return role
   }
+
+  const canCollectFeedback = msg.role === 'assistant' && msg.requestId && msg.responseId
+  const isSubmittingFeedback = feedbackState?.status === 'submitting'
+  const isFeedbackSubmitted = feedbackState?.status === 'submitted'
 
   return (
     <div style={{
@@ -65,6 +88,114 @@ const ChatMessage = memo(function ChatMessage({ msg, markdownComponents }) {
           ))}
         </div>
       )}
+      {canCollectFeedback && (
+        <div style={{
+          marginTop: '10px',
+          paddingTop: '8px',
+          borderTop: '1px solid #1f1f1f'
+        }}>
+          {isFeedbackSubmitted ? (
+            <div style={{ fontSize: '0.75em', color: '#7ec699' }}>
+              Feedback recorded. Thank you.
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: '0.75em', color: '#888', marginBottom: '6px' }}>
+                Was this response useful?
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => onSubmitHelpful(msg)}
+                  disabled={isSubmittingFeedback}
+                  style={{
+                    padding: '4px 10px',
+                    backgroundColor: '#173522',
+                    color: '#dff7e7',
+                    border: '1px solid #29543a',
+                    borderRadius: '999px',
+                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
+                    fontSize: '0.75em'
+                  }}
+                >
+                  Helpful
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectNeedsWork(msg)}
+                  disabled={isSubmittingFeedback}
+                  style={{
+                    padding: '4px 10px',
+                    backgroundColor: feedbackState?.selectedRating === 'down' ? '#3b1d22' : '#25161a',
+                    color: '#ffdede',
+                    border: '1px solid #5d2a33',
+                    borderRadius: '999px',
+                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
+                    fontSize: '0.75em'
+                  }}
+                >
+                  Needs work
+                </button>
+              </div>
+              {feedbackState?.selectedRating === 'down' && (
+                <>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '8px',
+                      marginTop: '10px',
+                      fontSize: '0.75em',
+                      color: '#b8d7ff',
+                      cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(feedbackState?.attachConversation)}
+                      disabled={isSubmittingFeedback}
+                      onChange={(event) => onToggleIncludeConversation(msg, event.target.checked)}
+                      style={{ marginTop: '2px' }}
+                    />
+                    <span>
+                      Attach the full visible conversation for investigation.
+                      <span style={{ display: 'block', color: '#888', marginTop: '3px' }}>
+                        Only do this if you are comfortable sharing the chat text. Attached conversations are retained for up to 30 days.
+                      </span>
+                    </span>
+                  </label>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
+                    {NEGATIVE_FEEDBACK_REASON_CODES.map((reasonCode) => (
+                      <button
+                        key={reasonCode}
+                        type="button"
+                        onClick={() => onSubmitFeedbackReason(msg, reasonCode, Boolean(feedbackState?.attachConversation))}
+                        disabled={isSubmittingFeedback}
+                        style={{
+                          padding: '4px 10px',
+                          backgroundColor: '#101820',
+                          color: '#c9e6ff',
+                          border: '1px solid #284055',
+                          borderRadius: '999px',
+                          cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
+                          fontSize: '0.72em'
+                        }}
+                      >
+                        {FEEDBACK_REASON_LABELS[reasonCode]}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {feedbackState?.status === 'error' && (
+                <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff9e9e' }}>
+                  Unable to record feedback right now. Please try again.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 })
@@ -82,6 +213,7 @@ export default function Home() {
   const [thinkingDots, setThinkingDots] = useState('.')
   const [rateInfo, setRateInfo] = useState({ used: 0, limit: 50, remaining: 50 })
   const [thinkingMessage, setThinkingMessage] = useState('Thinking')
+  const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
 
@@ -126,6 +258,18 @@ export default function Home() {
     ...extras
   }), [])
 
+  const updateFeedbackState = useCallback((responseId, patch) => {
+    if (!responseId) return
+
+    setFeedbackStateByResponseId(prev => ({
+      ...prev,
+      [responseId]: {
+        ...(prev[responseId] || {}),
+        ...patch
+      }
+    }))
+  }, [])
+
   // Auto-scroll to bottom when messages change or thinking starts/stops
   // NOT on thinkingDots – that would cause layout jumps every 500ms
   useEffect(() => {
@@ -163,6 +307,7 @@ export default function Home() {
     }
   }, [])
 
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     fetchRateInfo()
 
@@ -173,9 +318,13 @@ export default function Home() {
 
 **Important AI Usage Guidelines:**
 - Always verify information from AI responses with primary sources
-- Conversations are monitored for quality control and system improvement
+- We log limited technical and usage data, including IP addresses for abuse prevention
+- Raw security logs are retained for up to 30 days
+- We do not store full chat content for routine analytics
+- If you report a problem, you can optionally attach the visible chat for investigation for up to 30 days
 - Do not share confidential or sensitive information
 - Use this tool to enhance your understanding of neuroscience concepts
+- See the [Privacy Notice](/privacy) for more information
 
 Here are some example queries you can try:
 - What neurons are involved in visual processing?
@@ -187,12 +336,108 @@ Here are some example queries you can try:
 Feel free to ask about neural circuits, gene expression, connectome data, or any VFB-related topics!`)])
     }
   }, [fetchRateInfo])
+  /* eslint-enable react-hooks/exhaustive-deps */
+
+  const buildAttachedConversation = useCallback((targetMsg) => {
+    if (!targetMsg?.id) return []
+
+    const transcript = []
+
+    for (const item of messages) {
+      if (item.role === 'user' || item.role === 'assistant') {
+        const conversationItem = {
+          role: item.role,
+          content: item.content
+        }
+
+        if (Array.isArray(item.images) && item.images.length > 0) {
+          conversationItem.images = item.images
+        }
+
+        transcript.push(conversationItem)
+      }
+
+      if (item.id === targetMsg.id) {
+        break
+      }
+    }
+
+    return transcript
+  }, [messages])
+
+  const submitFeedback = useCallback(async (msg, rating, reasonCode, options = {}) => {
+    if (!msg?.requestId || !msg?.responseId) return
+    const attachConversation = Boolean(options.attachConversation && rating === 'down')
+    const conversation = attachConversation ? buildAttachedConversation(msg) : null
+
+    updateFeedbackState(msg.responseId, {
+      status: 'submitting',
+      selectedRating: rating,
+      attachConversation
+    })
+
+    try {
+      const response = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: msg.requestId,
+          response_id: msg.responseId,
+          rating,
+          reason_code: reasonCode,
+          attach_conversation: attachConversation,
+          conversation
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      updateFeedbackState(msg.responseId, {
+        status: 'submitted',
+        rating,
+        reasonCode,
+        selectedRating: rating,
+        attachConversation
+      })
+    } catch {
+      updateFeedbackState(msg.responseId, {
+        status: 'error',
+        selectedRating: rating,
+        attachConversation
+      })
+    }
+  }, [buildAttachedConversation, updateFeedbackState])
+
+  const handleSubmitHelpful = useCallback((msg) => {
+    submitFeedback(msg, 'up', 'helpful')
+  }, [submitFeedback])
+
+  const handleSelectNeedsWork = useCallback((msg) => {
+    updateFeedbackState(msg.responseId, {
+      status: 'idle',
+      selectedRating: 'down',
+      attachConversation: false
+    })
+  }, [updateFeedbackState])
+
+  const handleToggleIncludeConversation = useCallback((msg, checked) => {
+    updateFeedbackState(msg.responseId, {
+      attachConversation: Boolean(checked)
+    })
+  }, [updateFeedbackState])
+
+  const handleSubmitFeedbackReason = useCallback((msg, reasonCode, attachConversation = false) => {
+    submitFeedback(msg, 'down', reasonCode, { attachConversation })
+  }, [submitFeedback])
 
   const handleSend = async (messageText = null) => {
     const textToSend = (typeof messageText === 'string' ? messageText : null) || input
     if (!textToSend.trim()) return
 
     const userMessage = makeMsg('user', textToSend)
+    const outboundMessages = [...messages, userMessage]
     setMessages(prev => [...prev, userMessage])
     if (!messageText) setInput('')
     setIsThinking(true)
@@ -202,7 +447,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage], scene })
+        body: JSON.stringify({ messages: outboundMessages, scene })
       })
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -232,13 +477,20 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
               } else if (currentEvent === 'result') {
-                setMessages(prev => [...prev, makeMsg('assistant', data.response, { images: data.images })])
+                setMessages(prev => [...prev, makeMsg('assistant', data.response, {
+                  images: data.images,
+                  requestId: data.requestId,
+                  responseId: data.responseId
+                })])
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
                 fetchRateInfo()
                 return
               } else if (currentEvent === 'error') {
-                setMessages(prev => [...prev, makeMsg('assistant', data.message)])
+                setMessages(prev => [...prev, makeMsg('assistant', data.message, {
+                  requestId: data.requestId,
+                  responseId: data.responseId
+                })])
                 setIsThinking(false)
                 fetchRateInfo()
                 return
@@ -254,85 +506,6 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       setIsThinking(false)
       fetchRateInfo()
     }
-  }
-
-  // Extract suggested questions from the end of assistant messages
-  const extractSuggestedQuestions = (content) => {
-    // Strong intro phrases that definitively indicate follow-up suggestions
-    const strongIntroPatterns = [
-      'What would you like',
-      'What would you like next',
-      'What do you want to',
-      'Would you like',
-      'Would you like me to',
-      'If you\'d like',
-      'If you\'re interested',
-      'Feel free to ask',
-      'You could also ask',
-      'You might want to',
-      'Try asking',
-      'Some follow-up questions',
-      'Further questions',
-      'Next steps',
-      'want to explore',
-      'would you like to',
-      'any follow-up',
-      'other questions'
-    ]
-    
-    // Look for a bulleted/numbered list in the last 2 paragraphs
-    const paragraphs = content.split('\n\n')
-    
-    if (paragraphs.length < 2) return []
-    
-    // Check the last 2 sections for follow-up suggestions
-    for (let i = Math.max(0, paragraphs.length - 2); i < paragraphs.length; i++) {
-      const para = paragraphs[i]
-      
-      // Check if this paragraph has an intro phrase at the START or very early
-      const hasStrongIntro = strongIntroPatterns.some(phrase => {
-        const lowerPara = para.toLowerCase()
-        const phraseIndex = lowerPara.indexOf(phrase.toLowerCase())
-        return phraseIndex >= 0 && phraseIndex < 100 // Intro must be near the start
-      })
-      
-      if (hasStrongIntro) {
-        // Extract list items from this specific paragraph
-        const listItems = para
-          .split('\n')
-          .filter(line => {
-            const trimmed = line.trim()
-            // Only match direct list items (not nested)
-            return /^[-•*]\s+[^-•*]|^\d+\.\s+|^\d+\)\s+/.test(trimmed)
-          })
-          .map(line => {
-            // Remove bullet/number prefix and strip leading dash
-            let cleaned = line
-              .replace(/^[-•*]\s+/, '')
-              .replace(/^\d+[.)]\s+/, '')
-              .trim()
-            // Remove any leading single dash that's part of markdown
-            cleaned = cleaned.replace(/^-\s+/, '')
-            return cleaned
-          })
-          .filter(item => {
-            // Filter out empty items and non-question-like content
-            return item.length > 8 && 
-                   item.length < 150 &&
-                   !item.includes('http') &&
-                   !item.includes('[') &&
-                   !item.startsWith('The ') && // Likely explanatory, not a question
-                   !item.startsWith('There ') &&
-                   !item.match(/^[A-Z][a-z]+\s+is\s+/) // Avoid definition-like items
-          })
-        
-        if (listItems.length >= 2) {
-          return listItems.slice(0, 5)
-        }
-      }
-    }
-    
-    return []
   }
 
   // Custom renderers for react-markdown
@@ -372,6 +545,17 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     }
     
     if (href && !href.startsWith('http')) {
+      if (href.startsWith('/')) {
+        return (
+          <a
+            href={href}
+            style={{ color: '#66d9ff', textDecoration: 'underline', textDecorationColor: '#66d9ff40' }}
+          >
+            {children}
+          </a>
+        )
+      }
+
       if (href.startsWith('FBrf')) {
         // FlyBase references should link to FlyBase
         url = `https://flybase.org/reports/${href}`
@@ -612,6 +796,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   // Memoize markdown component renderers so they are referentially stable
   // across renders. This is critical for React.memo on ChatMessage to work.
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  /* eslint-disable react-hooks/exhaustive-deps */
   const markdownComponents = useMemo(() => ({
     a: renderLink,
     img: renderImage,
@@ -631,6 +816,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     th: ({ children }) => <th style={{ border: '1px solid #444', padding: '4px 8px', backgroundColor: '#1a1a2e', color: '#fff', textAlign: 'left' }}>{children}</th>,
     td: ({ children }) => <td style={{ border: '1px solid #444', padding: '4px 8px', color: '#e0e0e0' }}>{children}</td>,
   }), []) // stable – renderLink/renderImage/convertUrlsToLinks use handleSend which is stable via closure
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   return (
     <div style={{
@@ -664,7 +850,16 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         minHeight: 0
       }}>
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} msg={msg} markdownComponents={markdownComponents} />
+          <ChatMessage
+            key={msg.id}
+            msg={msg}
+            markdownComponents={markdownComponents}
+            feedbackState={feedbackStateByResponseId[msg.responseId]}
+            onSubmitHelpful={handleSubmitHelpful}
+            onSelectNeedsWork={handleSelectNeedsWork}
+            onSubmitFeedbackReason={handleSubmitFeedbackReason}
+            onToggleIncludeConversation={handleToggleIncludeConversation}
+          />
         ))}
         {isThinking && (
           <div style={{
@@ -760,8 +955,12 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         flexShrink: 0
       }}>
         <strong>AI Response Notice:</strong> This tool provides AI-generated information based on Virtual Fly Brain data.
-        Always verify critical information with primary sources. Conversations are recorded for quality assurance and system improvement.
-        Do not share confidential, sensitive, or personal information.
+        {' '}Always verify critical information with primary sources. We log limited technical and usage data,
+        including IP addresses for abuse prevention, and retain raw security logs for up to 30 days.
+        {' '}We do not store full chat content for routine analytics, except when you explicitly attach a conversation while reporting a problem for short-term investigation. See our{' '}
+        <a href="/privacy" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
+          Privacy Notice
+        </a>.
       </div>
 
       <style jsx global>{`

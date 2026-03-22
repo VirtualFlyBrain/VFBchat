@@ -7,13 +7,21 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - LOG_ROOT_DIR=/logs
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - APPROVED_ELM_BASE_URL=${APPROVED_ELM_BASE_URL}
+      - APPROVED_ELM_MODEL=${APPROVED_ELM_MODEL}
       - RATE_LIMIT_PER_IP=${RATE_LIMIT_PER_IP:-50}
+      - SEARCH_ALLOWLIST=${SEARCH_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org}
+      - OUTBOUND_ALLOWLIST=${OUTBOUND_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org,doi.org,pubmed.ncbi.nlm.nih.gov,biorxiv.org,medrxiv.org}
+      - REVIEWED_DOCS_INDEX_FILE=${REVIEWED_DOCS_INDEX_FILE:-/app/config/reviewed-docs-index.json}
+      - GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID}
+      - GA_API_SECRET=${GA_API_SECRET}
     volumes:
-      - rate-data:/app/data
+      - vfb-logs:/logs
 
 volumes:
-  rate-data:
+  vfb-logs:
     driver: local

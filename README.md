@@ -1,152 +1,123 @@
 # VFB Chat Client
 
-A web-based chat client for exploring Virtual Fly Brain (VFB) data and Drosophila neuroscience using a guardrailed LLM with tool calling, connected to the VFB MCP server via the OpenAI API.
+VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data with grounded tool use. The production build is aligned to the governance and privacy controls for launch: structured logging, no free-text analytics logging, reviewed-domain search only, outbound link allow-listing, and production fail-closed checks for the approved ELM endpoint and model.
 
-## Features
+## What Changed
 
-- URL parameter support for initial queries and existing scene context (`?query=...&i=...&id=...`)
-- Chat interface to explore Drosophila neuroanatomy, neural circuits, and research
-- Access to VFB datasets, connectome data, and morphological analysis
-- Display image thumbnails and construct 3D visualization scenes
-- Generate URLs for VFB 3D browser with proper scene management
-- Guardrailed responses covering VFB-related topics including papers, techniques, and methodologies
-- **Security**: Advanced jailbreak detection to prevent attempts to bypass safety restrictions
+- Native `web_search` has been removed from the model toolset.
+- Search is limited to a reviewed local index of approved `virtualflybrain.org` and reviewed `flybase.org` pages.
+- Outbound links are sanitized server-side to approved domains only.
+- Raw IP-based security logs are retained for up to 30 days under `/logs/security`.
+- Aggregated analytics and structured feedback are retained under `/logs/analytics` and `/logs/feedback`.
+- Users can explicitly attach a visible chat transcript to negative feedback; those transcripts are stored separately for up to 30 days.
+- Google Analytics is optional and receives structured metrics only. No free-text user queries or model responses are sent.
+- Production fails closed unless `OPENAI_BASE_URL` matches the approved ELM gateway and `OPENAI_MODEL` matches the approved model.
 
-## Security
+## Logging Model
 
-The VFB Chat client includes comprehensive protection against common jailbreak attempts used to bypass LLM safety restrictions. The system automatically detects and blocks messages containing:
+The app now uses a 3-layer logging model rooted at `LOG_ROOT_DIR`:
 
-- Attempts to override or ignore system instructions
-- Requests to enter "developer mode," "uncensored mode," or similar unrestricted states
-- Role-playing as alternative AI personas (e.g., DAN, uncensored AI)
-- Commands to modify system prompts or disregard rules
-- Encoded or hidden prompts designed to circumvent filters
+- Layer A: `/logs/security`
+  - JSONL security events
+  - blocked-site audit events
+  - rate-limit state with raw IP retention capped at 30 days
+- Layer B: `/logs/analytics`
+  - daily aggregated service metrics only
+  - no raw prompts or raw responses
+- Layer C: `/logs/feedback`
+  - structured thumbs up/down feedback plus fixed reason codes
+  - no free-text feedback comments
+- Feedback transcript attachments: `/logs/feedback-transcripts`
+  - stored only when a user explicitly attaches a conversation to negative feedback
+  - short retention, capped at 30 days
 
-When a jailbreak attempt is detected, users receive a clear warning message and the request is blocked. This ensures the chat remains focused on Drosophila neuroscience and VFB-related topics.
+## Reviewed Search Index
 
-## Usage Monitoring and AI Guidelines
+The reviewed documentation search tool reads from `config/reviewed-docs-index.json` by default. This is a curated, static index of approved pages and should be changed through review, not by runtime crawling.
 
-### Analytics and Quality Control
-The VFB Chat client includes Google Analytics integration to monitor usage patterns and ensure quality control. All user queries and AI responses are tracked anonymously for:
-- Usage monitoring and system performance analysis
-- Quality control and improvement of responses
-- Research into user interaction patterns with neuroscience data
+Environment variable:
 
-**Data Collected:**
-- Query text (truncated to 200 characters for privacy)
-- Query and response lengths
-- Processing duration
-- Session identifiers (anonymous)
-- Timestamps
+- `REVIEWED_DOCS_INDEX_FILE`
 
-**Privacy Protection:**
-- Query text is truncated to prevent storage of long or sensitive content
-- No personally identifiable information is collected
-- Analytics data is used solely for quality control and system improvement
-- A clear disclaimer is displayed at the bottom of the chat interface
+## Runtime Configuration
 
-### Important AI Usage Guidelines
-**Please verify all information provided by the AI assistant:**
-- AI-generated responses may contain inaccuracies or outdated information
-- Always cross-reference critical information with primary sources
-- Use VFB links provided in responses to access authoritative data
-- Report any concerns about response quality to the development team
+Required for production:
 
-**Privacy and Security:**
-- Conversations may be monitored for quality control purposes
-- No personally identifiable information should be shared in queries
-- Confidential or sensitive research data should not be included in prompts
-- The system is designed for educational and research purposes within Drosophila neuroscience
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
+- `APPROVED_ELM_BASE_URL`
+- `APPROVED_ELM_MODEL`
+- `LOG_ROOT_DIR=/logs`
 
-**Responsible Use:**
-- Use this tool to enhance, not replace, your understanding of neuroscience concepts
-- Cite appropriate sources when using information in research or publications
-- Respect intellectual property and data usage rights of VFB and related resources
+Optional:
 
-## Setup
+- `RATE_LIMIT_PER_IP`
+- `SEARCH_ALLOWLIST`
+- `OUTBOUND_ALLOWLIST`
+- `REVIEWED_DOCS_INDEX_FILE`
+- `GA_MEASUREMENT_ID`
+- `GA_API_SECRET`
 
-1. Ensure Docker and Docker Compose are installed.
+Default allow-lists:
 
-2. Clone this repository.
+- Search allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`
+- Outbound allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `doi.org`, `pubmed.ncbi.nlm.nih.gov`, `biorxiv.org`, `medrxiv.org`
 
-3. Set your OpenAI API key: `export OPENAI_API_KEY=your-key-here`
+## Local Development
 
-4. Run `docker-compose up --build` to start the app.
+Create `.env.local` with explicit values:
 
-5. To use a different model, set the `OPENAI_MODEL` environment variable: `OPENAI_MODEL=gpt-4o docker-compose up --build`
+```bash
+OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://your-elm-gateway.example/v1
+OPENAI_MODEL=your-approved-model
+APPROVED_ELM_BASE_URL=https://your-elm-gateway.example/v1
+APPROVED_ELM_MODEL=your-approved-model
+LOG_ROOT_DIR=./logs
+```
 
-## Deployment
+Then run:
 
-### Local Development
+```bash
+npm install
+npm run dev
+```
 
-For development without Docker:
-1. Create a `.env.local` file with your API configuration:
-   ```
-   OPENAI_API_KEY=your-key-here
-   OPENAI_BASE_URL=https://api.openai.com/v1
-   OPENAI_MODEL=gpt-4o-mini
-   ```
-2. Run `npm install`
-3. Run `npm run dev`
+The local default for `LOG_ROOT_DIR` falls back to `./logs` when not running in production.
 
-### Docker Hub Deployment via GitHub Actions
-The project includes a GitHub Actions workflow (`.github/workflows/docker.yml`) that automatically builds and pushes Docker images to Docker Hub on pushes and pull requests.
+## Docker
 
-1. Set up Docker Hub repository: Create a repository named `vfbchat` under your Docker Hub account (e.g., `robbie1977/vfbchat`).
+The provided `docker-compose.yml` mounts a named volume at `/logs`:
 
-2. Configure GitHub Secrets:
-   - Go to your repository settings > Secrets and variables > Actions
-   - Add `DOCKER_HUB_USER`: Your Docker Hub username
-   - Add `DOCKER_HUB_PASSWORD`: Your Docker Hub password or access token
+```bash
+docker-compose up --build
+```
 
-3. The workflow will trigger on:
-   - Pushes to any branch or tags starting with `v*`
-   - Pull requests to `main`
+This keeps security, analytics, and feedback logs outside the application filesystem.
 
-4. Images are built for `linux/amd64` and `linux/arm64` platforms and tagged appropriately.
+## API Surface
 
-## Usage
+- `POST /api/chat`
+  - Streams assistant responses over SSE
+  - emits `result` events with `requestId` and `responseId`
+- `GET /api/rate-info`
+  - returns the current per-IP daily usage counters
+- `POST /api/feedback`
+  - accepts `{ request_id, response_id, rating, reason_code }`
+  - negative feedback may also include `{ attach_conversation: true, conversation }`
+- `GET /privacy`
+  - serves the VFB Chat privacy addendum page
 
-- Access the app at `http://localhost:3000`
-- Without URL parameters, the chat starts with a welcome message and example queries
-- Append URL parameters for initial setup, e.g., `http://localhost:3000?query=medulla&i=VFB_00101567&id=VFB_00102107`
-- Chat with the assistant to explore VFB data
-- Click "Open in VFB 3D Browser" to view the scene
+## UI Notes
 
-## LLM Configuration
+- The welcome text and footer now reflect the launch privacy position.
+- Assistant messages with IDs support structured feedback:
+  - thumbs up submits `helpful`
+  - thumbs down requires a fixed reason code
+  - thumbs down can optionally attach the visible conversation transcript for short-term investigation
 
-- **Model**: Default is `gpt-4o-mini`, configurable via `OPENAI_MODEL` env var. Any OpenAI-compatible model with tool calling support will work.
-- **API Endpoint**: Default is `https://api.openai.com/v1`, configurable via `OPENAI_BASE_URL` for use with OpenAI-compatible proxies (e.g., ELM at Edinburgh).
-- **Guardrailing**: Implemented via system prompt allowing responses about Drosophila neuroscience, VFB data/tools, research papers, and methodologies while using MCP tools for accurate information.
-- **MCP Integration**: The LLM calls VFB MCP tools (`get_term_info`, `search_terms`, `run_query`) via the OpenAI tool calling API.
+## Verification Notes
 
-## VFB MCP Details
-
-- **Server URL**: https://vfb3-mcp.virtualflybrain.org/
-- **Tools**:
-  - `get_term_info(id)`: Retrieves term details, including images keyed by template.
-  - `search_terms(query)`: Searches for terms matching the query.
-  - `run_query(id, query_type)`: Runs specific queries (e.g., PaintedDomains) on terms.
-- **Data Structure**:
-  - Terms have IDs like `VFB_00102107` or `FBbt_00003748`.
-  - Images are associated with templates (e.g., `VFB_00101567` for JRC2018Unisex).
-  - Thumbnails: `https://www.virtualflybrain.org/data/VFB/i/.../thumbnail.png`
-- **URL Construction for Scenes**:
-  - `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=<focus_term_id>&i=<template_id>,<image_id1>,<image_id2>`
-  - `id`: Focus term (only one, site shows its info).
-  - `i`: Comma-separated list starting with template ID, followed by image IDs.
-- **Limitations**:
-  - Images must be aligned to the same template to view together.
-  - Only one term can be the focus per scene, but all term info is accessible in the chat.
-  - Templates define the coordinate space.
-
-## Development
-
-- **Docker**: `docker-compose up --build`
-- **Local**: `npm run dev` (requires `.env.local` with API credentials)
-- Build: `npm run build`
-- API: POST to `/api/chat` with `{ message, scene }`
-
-## License
-
-See LICENSE file.
+- `npm run lint` should be used for local verification after changes.
+- `npm run build` may fail in restricted sandboxes because Next.js attempts to bind a local IPC port during build; rerun it in the target environment before release.

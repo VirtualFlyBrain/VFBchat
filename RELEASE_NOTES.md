@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.2.0
+- Release v3.2.0: Add governance-ready logging with `/logs` volume support, reviewed-domain search controls, outbound link allow-listing, structured feedback, privacy updates, and opt-in transcript attachments for problem reports
+
 ## v3.1.0
 - Release v3.1.0: Add per-IP daily rate limiting and rate-info endpoint; backend data storage in data/rate-limits.json; client-side usage counter in UI
 

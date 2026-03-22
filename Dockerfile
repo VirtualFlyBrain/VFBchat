@@ -2,7 +2,7 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-RUN mkdir -p /app/data
+RUN mkdir -p /logs/security /logs/analytics /logs/feedback
 
 COPY package*.json ./
 
