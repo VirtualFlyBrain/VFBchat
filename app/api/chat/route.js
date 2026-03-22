@@ -104,6 +104,94 @@ function buildRateLimitDetails(rateCheck) {
   }
 }
 
+function summarizeToolUsage(toolUsage = {}) {
+  const entries = Object.entries(toolUsage)
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+
+  if (entries.length === 0) return 'No tool results were gathered.'
+
+  return entries
+    .map(([toolName, count]) => `- ${toolName}: ${count}`)
+    .join('\n')
+}
+
+function buildClarifyingQuestions(message = '') {
+  const lowerMessage = message.toLowerCase()
+  const questions = []
+
+  if (/\bdataset\b/i.test(lowerMessage)) {
+    questions.push('- Which single dataset should I focus on first?')
+  }
+
+  if (/\b(gabaergic|cholinergic|glutamatergic|transmitter|neurotransmitter)\b/i.test(lowerMessage)) {
+    questions.push('- Do you want one transmitter class at a time, or a short mixed summary across all classes?')
+  }
+
+  if (/\b(gal4|driver|label)\b/i.test(lowerMessage)) {
+    questions.push('- Do you want pan-labeling lines, subtype-specific lines, or just a short list of the best-known examples?')
+  }
+
+  if (/\b(connectome|connectivity|presynaptic|postsynaptic|synapse|synaptic)\b/i.test(lowerMessage)) {
+    questions.push('- Should I focus on one connectivity question at a time, such as inputs, outputs, or one specific neuron class?')
+  }
+
+  if (/\b(medulla|lobula|lamina|mushroom body|antennal lobe|central complex)\b/i.test(lowerMessage)) {
+    questions.push('- Should I keep this to one brain region and one question type first?')
+  }
+
+  questions.push('- Would you like a capped result, such as the first 5 or 10 matches, instead of an exhaustive list?')
+  questions.push('- Would you prefer a short partial summary first, then we can drill into one branch together?')
+
+  return Array.from(new Set(questions)).slice(0, 4)
+}
+
+function extractImagesFromResponseText(responseText = '') {
+  const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
+  const images = []
+  let match
+
+  while ((match = thumbnailRegex.exec(responseText)) !== null) {
+    images.push({
+      id: match[2],
+      template: match[1],
+      thumbnail: match[0],
+      label: `VFB Image ${match[2]}`
+    })
+  }
+
+  return images
+}
+
+function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList }) {
+  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(responseText, outboundAllowList)
+  const images = extractImagesFromResponseText(sanitizedText)
+
+  return {
+    ok: true,
+    responseId,
+    toolUsage,
+    toolRounds,
+    responseText: sanitizedText,
+    images,
+    blockedResponseDomains: blockedDomains
+  }
+}
+
+function buildToolRoundLimitMessage({ message, toolUsage, toolRounds, maxToolRounds }) {
+  const questions = buildClarifyingQuestions(message)
+
+  return `I found some relevant results, but answering this fully would require more than the current tool-step budget, so I stopped before the query turned into a long tool loop.
+
+What happened:
+- Tool rounds used: ${toolRounds} of ${maxToolRounds}
+- Tools used so far:
+${summarizeToolUsage(toolUsage)}
+
+To help me continue in a focused way, please tell me:
+${questions.join('\n')}`
+}
+
 function looksLikeEmptyResult(text = '') {
   return /\b(no results|did not find|didn't find|could not find|couldn't find|no matching|no reviewed page|no reviewed pages)\b/i.test(text)
 }
@@ -232,7 +320,7 @@ async function getVfbMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(VFB_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-client', version: '3.2.1' },
+    { name: 'vfb-chat-client', version: '3.2.2' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -245,7 +333,7 @@ async function getBiorxivMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(BIORXIV_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-biorxiv', version: '3.2.1' },
+    { name: 'vfb-chat-biorxiv', version: '3.2.2' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -774,6 +862,13 @@ TOOL SELECTION:
 - Questions about VFB, NeuroFly, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
+TOOL ECONOMY:
+- Prefer the fewest tool steps needed to produce a useful answer.
+- Do not keep calling tools just to exhaustively enumerate large result sets.
+- If the question is broad or combinatorial, stop once you have enough evidence to give a partial answer.
+- If the question is broad or underspecified, it is good to ask 1-3 short clarifying questions instead of trying to enumerate everything immediately.
+- When stopping early, clearly summarize what you found so far and end with 2-4 direct clarifying questions the user can answer to narrow the query (for example: one dataset, one transmitter class, one neuron subtype, one brain region, or a capped number of results).
+
 CITATIONS:
 - Only cite publications returned by VFB, PubMed, or bioRxiv/medRxiv tools
 - Use markdown links with human-readable titles, not bare URLs or raw IDs when a title is available
@@ -906,16 +1001,156 @@ async function readResponseStream(apiResponse, sendEvent) {
   return { textAccumulator, functionCalls, responseId, failed, errorMessage }
 }
 
-async function processResponseStream({ apiResponse, sendEvent, conversationInput, apiBaseUrl, apiKey, apiModel }) {
+async function requestToolLimitSummary({
+  sendEvent,
+  conversationInput,
+  accumulatedItems,
+  apiBaseUrl,
+  apiKey,
+  apiModel,
+  outboundAllowList,
+  toolUsage,
+  toolRounds,
+  maxToolRounds,
+  userMessage
+}) {
+  if (accumulatedItems.length === 0) return null
+
+  sendEvent('status', { message: 'Summarizing partial results', phase: 'llm' })
+
+  const summaryInstruction = `The original user request was:
+"${userMessage}"
+
+The request hit the tool-round limit after ${toolRounds} rounds (current budget: ${maxToolRounds}).
+
+Using only the gathered tool outputs already provided in this conversation:
+- give the best partial answer you can
+- clearly say that the answer is partial because the request branched into too many tool steps
+- summarize the strongest findings you already have
+- end with 2-4 direct clarification questions the user can answer so you can continue in a narrower, lower-tool way
+
+Do not call tools. Do not ask to browse the web.`
+
+  const summaryResponse = await fetch(`${apiBaseUrl}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model: apiModel,
+      instructions: systemPrompt,
+      input: [
+        ...conversationInput,
+        ...accumulatedItems,
+        { role: 'user', content: summaryInstruction }
+      ],
+      tools: [],
+      stream: true
+    })
+  })
+
+  if (!summaryResponse.ok) {
+    return null
+  }
+
+  const { textAccumulator, responseId, failed } = await readResponseStream(summaryResponse, sendEvent)
+  if (failed || !textAccumulator) {
+    return null
+  }
+
+  return buildSuccessfulTextResult({
+    responseText: textAccumulator,
+    responseId,
+    toolUsage,
+    toolRounds,
+    outboundAllowList
+  })
+}
+
+async function requestClarifyingFollowUp({
+  sendEvent,
+  conversationInput,
+  accumulatedItems,
+  apiBaseUrl,
+  apiKey,
+  apiModel,
+  outboundAllowList,
+  toolUsage,
+  toolRounds,
+  userMessage,
+  reason
+}) {
+  sendEvent('status', { message: 'Clarifying next step', phase: 'llm' })
+
+  const clarificationInstruction = `The original user request was:
+"${userMessage}"
+
+The previous attempt did not produce a stable final answer.
+Reason: ${reason}.
+
+Using only the existing conversation and any tool outputs already provided:
+- give a brief summary of what direction is available so far
+- do not invent missing facts
+- ask 2-4 short clarifying questions the user can answer so the next turn can be narrower and easier to resolve
+
+Do not call tools. Do not ask to browse the web.`
+
+  const clarificationResponse = await fetch(`${apiBaseUrl}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model: apiModel,
+      instructions: systemPrompt,
+      input: [
+        ...conversationInput,
+        ...accumulatedItems,
+        { role: 'user', content: clarificationInstruction }
+      ],
+      tools: [],
+      stream: true
+    })
+  })
+
+  if (!clarificationResponse.ok) {
+    return null
+  }
+
+  const { textAccumulator, responseId, failed } = await readResponseStream(clarificationResponse, sendEvent)
+  if (failed || !textAccumulator) {
+    return null
+  }
+
+  return buildSuccessfulTextResult({
+    responseText: textAccumulator,
+    responseId,
+    toolUsage,
+    toolRounds,
+    outboundAllowList
+  })
+}
+
+async function processResponseStream({
+  apiResponse,
+  sendEvent,
+  conversationInput,
+  apiBaseUrl,
+  apiKey,
+  apiModel,
+  userMessage
+}) {
   const outboundAllowList = getOutboundAllowList()
   const toolUsage = {}
   const accumulatedItems = []
-  const maxFunctionRounds = 5
+  const maxToolRounds = 10
   let currentResponse = apiResponse
   let latestResponseId = null
   let toolRounds = 0
 
-  for (let round = 0; round <= maxFunctionRounds; round++) {
+  for (let round = 0; round < maxToolRounds; round++) {
     const { textAccumulator, functionCalls, responseId, failed, errorMessage } = await readResponseStream(currentResponse, sendEvent)
     if (responseId) latestResponseId = responseId
 
@@ -1008,6 +1243,24 @@ async function processResponseStream({ apiResponse, sendEvent, conversationInput
     }
 
     if (!textAccumulator) {
+      const clarification = await requestClarifyingFollowUp({
+        sendEvent,
+        conversationInput,
+        accumulatedItems,
+        apiBaseUrl,
+        apiKey,
+        apiModel,
+        outboundAllowList,
+        toolUsage,
+        toolRounds,
+        userMessage,
+        reason: 'empty_response'
+      })
+
+      if (clarification) {
+        return clarification
+      }
+
       return {
         ok: false,
         responseId: latestResponseId,
@@ -1018,28 +1271,31 @@ async function processResponseStream({ apiResponse, sendEvent, conversationInput
       }
     }
 
-    const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(textAccumulator, outboundAllowList)
-    const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
-    const images = []
-    let match
-    while ((match = thumbnailRegex.exec(sanitizedText)) !== null) {
-      images.push({
-        id: match[2],
-        template: match[1],
-        thumbnail: match[0],
-        label: `VFB Image ${match[2]}`
-      })
-    }
-
-    return {
-      ok: true,
+    return buildSuccessfulTextResult({
+      responseText: textAccumulator,
       responseId: latestResponseId,
       toolUsage,
       toolRounds,
-      responseText: sanitizedText,
-      images,
-      blockedResponseDomains: blockedDomains
-    }
+      outboundAllowList
+    })
+  }
+
+  const partialSummary = await requestToolLimitSummary({
+    sendEvent,
+    conversationInput,
+    accumulatedItems,
+    apiBaseUrl,
+    apiKey,
+    apiModel,
+    outboundAllowList,
+    toolUsage,
+    toolRounds,
+    maxToolRounds,
+    userMessage
+  })
+
+  if (partialSummary) {
+    return partialSummary
   }
 
   return {
@@ -1047,7 +1303,12 @@ async function processResponseStream({ apiResponse, sendEvent, conversationInput
     responseId: latestResponseId,
     toolUsage,
     toolRounds,
-    errorMessage: 'The response required too many tool calls. Please try a simpler question.',
+    errorMessage: buildToolRoundLimitMessage({
+      message: userMessage,
+      toolUsage,
+      toolRounds,
+      maxToolRounds
+    }),
     errorCategory: 'tool_round_limit_exceeded'
   }
 }
@@ -1293,7 +1554,8 @@ export async function POST(request) {
         conversationInput,
         apiBaseUrl,
         apiKey,
-        apiModel
+        apiModel,
+        userMessage: message
       })
 
       if (!result.ok) {

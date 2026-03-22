@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kenyon Cell GAL4 Lines</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        background: #000;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        padding: 12px 16px;
+      }
+      a {
+        color: #66d9ff;
+      }
+      .page {
+        width: 1600px;
+        min-height: 1450px;
+        background: #000;
+        color: #e0e0e0;
+      }
+      .title {
+        color: #fff;
+        margin: 0 0 8px 0;
+        font-size: 1.3em;
+        font-weight: 600;
+      }
+      .chat {
+        padding: 12px;
+        background: #0a0a0a;
+        border: 1px solid #222;
+        border-radius: 8px;
+      }
+      .composer {
+        margin-top: 16px;
+        display: grid;
+        grid-template-columns: 1fr 72px 148px;
+        gap: 16px;
+        align-items: center;
+      }
+      .input {
+        border: 1px solid #333;
+        border-radius: 14px;
+        min-height: 76px;
+        background: #111;
+        color: #777;
+        display: flex;
+        align-items: center;
+        padding: 0 24px;
+        font-size: 32px;
+      }
+      .counter {
+        color: #999;
+        font-size: 20px;
+        text-align: center;
+      }
+      .button {
+        min-height: 76px;
+        border-radius: 14px;
+        border: none;
+        background: #4a9eff;
+        color: #fff;
+        font-weight: 700;
+        font-size: 28px;
+      }
+      .footer {
+        margin-top: 16px;
+        padding: 16px 20px;
+        border: 1px solid #333;
+        border-radius: 8px;
+        background: #111;
+        color: #777;
+        font-size: 20px;
+        line-height: 1.4;
+      }
+      .footer strong {
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <h1 class="title">Virtual Fly Brain</h1>
+      <div class="chat">
+    <div style="margin-bottom:12px;padding:8px 12px;background:#1a1a2e;border-radius:6px;border-left:3px solid #4a9eff;">
+      <div style="font-size:0.75em;font-weight:600;color:#4a9eff;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">RESEARCHER</div>
+      <div class="message-content"><p style="margin:0.4em 0">Which GAL4 lines label Kenyon cells</p></div>
+      
+    </div>
+  
+
+    <div style="margin-bottom:12px;padding:8px 12px;background:transparent;border-radius:6px;border-left:3px solid #2a6a3a;">
+      <div style="font-size:0.75em;font-weight:600;color:#4ade80;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">VFB</div>
+      <div class="message-content"><p style="margin:0.4em 0">Partial answer (due to tool round limit): The best-verified GAL4 line that labels Kenyon cells from the gathered outputs is OK107-GAL4 (ScerGAL4 ey-OK107), which is a pan-Kenyon cell driver. In the retrieved result set, this is shown as FBal0058772 with the label ScerGAL4[ey-OK107]. Other GAL4 lines appear in the dataset (notably several JRC lines such as R93A07-GAL4, R78E05-GAL4, R83B05-GAL4, R81G07-GAL4, R75H10-GAL4, R25A06-GAL4, R60C09-GAL4, etc.), but their specific Kenyon cell labeling (pan-Kenyon vs. subsets) is not explicitly confirmed in those entries. The classic pan-Kenyon driver MB247-GAL4 is widely used in the literature, but an explicit MB247-GAL4 entry did not appear in the retrieved results here. So, the list of GAL4 lines labeling Kenyon cells is not yet complete based on the current outputs.</p>
+<p style="margin:0.4em 0">Strongest findings from what’s available</p>
+<ul style="margin:0.4em 0;padding-left:22px">
+<li style="margin:0.22em 0">OK107-GAL4 (ScerGAL4 ey-OK107) is a validated Kenyon cell driver in VFB terms (pan-Kenyon coverage). This is the most clearly documented KC-labeling GAL4 line in the gathered results.</li>
+<li style="margin:0.22em 0">The dataset includes multiple JRC GAL4 lines (for example R93A07-GAL4, R78E05-GAL4, R83B05-GAL4, R81G07-GAL4, R75H10-GAL4, R25A06-GAL4, R60C09-GAL4) that reside in mushroom body-related contexts, but their exact KC-labeling patterns need explicit verification from their term pages.</li>
+<li style="margin:0.22em 0">The term set also contains explicit Kenyon-cell–related anatomical entries (e.g., gamma Kenyon cell, alpha/beta Kenyon cell), but these are anatomical classes, not necessarily driver lines.</li>
+</ul>
+<p style="margin:0.4em 0">Concrete follow-up options to reduce further tool use</p>
+<ul style="margin:0.4em 0;padding-left:22px">
+<li style="margin:0.22em 0">Option 1: Retrieve the VFB term pages for OK107-GAL4 and for MB247-GAL4 to confirm their exact expression patterns (pan-Kenyon vs. subtypes) in adult mushroom bodies.</li>
+<li style="margin:0.22em 0">Option 2: Narrow to Kenyon-cell subtype drivers by querying for gamma Kenyon cell–specific GAL4 lines (e.g., lines annotated for gamma or alpha’/beta’ KCs) to identify drivers with KC-subtype specificity.</li>
+<li style="margin:0.22em 0">Option 3: Focus on the JRC-GAL4 lines in the list (e.g., R93A07-GAL4, R78E05-GAL4, R83B05-GAL4, R81G07-GAL4, R60C09-GAL4, R75H10-GAL4, R25A06-GAL4) and verify, via their VFB term pages, whether their expression includes Kenyon cells (pan-KC or KC-subtype) to assemble a short, verified subset.</li>
+<li style="margin:0.22em 0">Option 4: If you want a compact, high-confidence set, ask me to compile 2–4 lines with confirmed KC labeling (pan-Kenyon or clearly defined subtypes) and provide VFB-based citations.</li>
+</ul>
+<p style="margin:0.4em 0">If you’d like, I can fetch the specific VFB term pages for OK107-GAL4 and for MB247-GAL4 to confirm their exact Kenyon cell expression patterns, and then extend the list from there.</p></div>
+      
+    </div>
+  </div>
+      <div class="composer">
+        <div class="input">Ask about Drosophila neuroanatomy...</div>
+        <div class="counter">8 / 100</div>
+        <button class="button">Send</button>
+      </div>
+      <div class="footer"><strong>AI Response Notice:</strong> This tool provides AI-generated information based on Virtual Fly Brain data. Always verify critical information with primary sources. We log limited technical and usage data, including IP addresses for abuse prevention, and retain raw security logs for up to 30 days. If you report a problem, you can explicitly attach a conversation while reporting the problem for short-term investigation. See our Privacy Notice.</div>
+    </div>
+  </body>
+</html>

@@ -1,6 +1,6 @@
 # VFB Chat Client
 
-VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data with grounded tool use. The production build is aligned to the governance and privacy controls for launch: structured logging, no free-text analytics logging, reviewed-domain search only, outbound link allow-listing, and production fail-closed checks for the approved ELM endpoint and model.
+VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data with grounded tool use. The production build is aligned to the governance and privacy controls for launch: structured logging, no free-text analytics logging, reviewed-domain search only, outbound link allow-listing, and production checks that can enforce an approved ELM endpoint and model when explicit approval values are configured.
 
 ## What Changed
 
@@ -11,7 +11,7 @@ VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data 
 - Aggregated analytics and structured feedback are retained under `/logs/analytics` and `/logs/feedback`.
 - Users can explicitly attach a visible chat transcript to negative feedback; those transcripts are stored separately for up to 30 days.
 - Google Analytics is optional and receives structured metrics only. No free-text user queries or model responses are sent.
-- Production fails closed unless `OPENAI_BASE_URL` matches the approved ELM gateway and `OPENAI_MODEL` matches the approved model.
+- Production fails closed when explicit `APPROVED_ELM_*` values are configured and do not match the active gateway/model.
 
 ## Logging Model
 
@@ -53,20 +53,22 @@ Environment variable:
 Required for production:
 
 - `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
-- `APPROVED_ELM_BASE_URL`
-- `APPROVED_ELM_MODEL`
+- `OPENAI_BASE_URL` or `APPROVED_ELM_BASE_URL`
+- `OPENAI_MODEL` or `APPROVED_ELM_MODEL`
 - `LOG_ROOT_DIR=/logs`
 
 Optional:
 
+- `APPROVED_ELM_BASE_URL`
+- `APPROVED_ELM_MODEL`
 - `RATE_LIMIT_PER_IP`
 - `SEARCH_ALLOWLIST`
 - `OUTBOUND_ALLOWLIST`
 - `REVIEWED_DOCS_INDEX_FILE`
 - `GA_MEASUREMENT_ID`
 - `GA_API_SECRET`
+
+When `APPROVED_ELM_BASE_URL` and/or `APPROVED_ELM_MODEL` are provided, production enforces that they exactly match the active `OPENAI_*` values. If they are omitted, the app uses the active gateway/model as the approved baseline so existing single-config deployments continue to work.
 
 Default allow-lists:
 
@@ -81,9 +83,14 @@ Create `.env.local` with explicit values:
 OPENAI_API_KEY=your-key-here
 OPENAI_BASE_URL=https://your-elm-gateway.example/v1
 OPENAI_MODEL=your-approved-model
+LOG_ROOT_DIR=./logs
+```
+
+Optional hardening:
+
+```bash
 APPROVED_ELM_BASE_URL=https://your-elm-gateway.example/v1
 APPROVED_ELM_MODEL=your-approved-model
-LOG_ROOT_DIR=./logs
 ```
 
 Then run:
