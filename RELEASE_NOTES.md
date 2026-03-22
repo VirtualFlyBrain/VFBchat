@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.2.3
+- Release v3.2.3: Recover with partial answers or clarifying follow-ups after upstream stream failures when tool evidence already exists, prioritize gene-expression classification over connectivity for analytics, and bias broad transgene-expression requests toward short representative lists
+
 ## v3.2.2
 - Release v3.2.2: Restore production compatibility when explicit approved ELM values are not configured, add partial-summary and clarification fallbacks for broad tool-heavy queries, raise the tool-round budget to 10, and add named example asset generation
 

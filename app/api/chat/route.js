@@ -207,12 +207,12 @@ function classifyTopicCategory(message = '', toolUsage = {}) {
     return 'publications'
   }
 
-  if (toolUsage.vfb_run_query || /\b(connectivity|connectome|synapse|synaptic|nblast|projection|presynaptic|postsynaptic)\b/i.test(lowerMessage)) {
-    return 'connectivity'
-  }
-
   if (/\b(gene|expression|transgene|gal4|driver|reporter)\b/i.test(lowerMessage)) {
     return 'gene expression'
+  }
+
+  if (toolUsage.vfb_run_query || /\b(connectivity|connectome|synapse|synaptic|nblast|projection|presynaptic|postsynaptic)\b/i.test(lowerMessage)) {
+    return 'connectivity'
   }
 
   if (/\b(image|images|thumbnail|picture|pictures|visuali[sz]e|3d|scene)\b/i.test(lowerMessage)) {
@@ -320,7 +320,7 @@ async function getVfbMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(VFB_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-client', version: '3.2.2' },
+    { name: 'vfb-chat-client', version: '3.2.3' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -333,7 +333,7 @@ async function getBiorxivMcpClient() {
 
   const transport = new StreamableHTTPClientTransport(new URL(BIORXIV_MCP_URL))
   const client = new Client(
-    { name: 'vfb-chat-biorxiv', version: '3.2.2' },
+    { name: 'vfb-chat-biorxiv', version: '3.2.3' },
     { capabilities: {} }
   )
   await client.connect(transport)
@@ -866,6 +866,7 @@ TOOL ECONOMY:
 - Prefer the fewest tool steps needed to produce a useful answer.
 - Do not keep calling tools just to exhaustively enumerate large result sets.
 - If the question is broad or combinatorial, stop once you have enough evidence to give a partial answer.
+- For broad gene-expression or transgene-pattern requests, prefer a short representative list (about 3-5 items) and ask how the user wants to narrow further instead of trying to enumerate everything in one turn.
 - If the question is broad or underspecified, it is good to ask 1-3 short clarifying questions instead of trying to enumerate everything immediately.
 - When stopping early, clearly summarize what you found so far and end with 2-4 direct clarifying questions the user can answer to narrow the query (for example: one dataset, one transmitter class, one neuron subtype, one brain region, or a capped number of results).
 
@@ -1001,6 +1002,66 @@ async function readResponseStream(apiResponse, sendEvent) {
   return { textAccumulator, functionCalls, responseId, failed, errorMessage }
 }
 
+async function requestNoToolFallbackResponse({
+  sendEvent,
+  conversationInput,
+  accumulatedItems,
+  partialAssistantText = '',
+  apiBaseUrl,
+  apiKey,
+  apiModel,
+  outboundAllowList,
+  toolUsage,
+  toolRounds,
+  statusMessage,
+  instruction
+}) {
+  sendEvent('status', { message: statusMessage, phase: 'llm' })
+
+  const fallbackInput = [
+    ...conversationInput,
+    ...accumulatedItems
+  ]
+
+  if (partialAssistantText.trim()) {
+    fallbackInput.push({ role: 'assistant', content: partialAssistantText.trim() })
+  }
+
+  fallbackInput.push({ role: 'user', content: instruction })
+
+  const fallbackResponse = await fetch(`${apiBaseUrl}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model: apiModel,
+      instructions: systemPrompt,
+      input: fallbackInput,
+      tools: [],
+      stream: true
+    })
+  })
+
+  if (!fallbackResponse.ok) {
+    return null
+  }
+
+  const { textAccumulator, responseId, failed } = await readResponseStream(fallbackResponse, sendEvent)
+  if (failed || !textAccumulator) {
+    return null
+  }
+
+  return buildSuccessfulTextResult({
+    responseText: textAccumulator,
+    responseId,
+    toolUsage,
+    toolRounds,
+    outboundAllowList
+  })
+}
+
 async function requestToolLimitSummary({
   sendEvent,
   conversationInput,
@@ -1016,8 +1077,6 @@ async function requestToolLimitSummary({
 }) {
   if (accumulatedItems.length === 0) return null
 
-  sendEvent('status', { message: 'Summarizing partial results', phase: 'llm' })
-
   const summaryInstruction = `The original user request was:
 "${userMessage}"
 
@@ -1031,40 +1090,18 @@ Using only the gathered tool outputs already provided in this conversation:
 
 Do not call tools. Do not ask to browse the web.`
 
-  const summaryResponse = await fetch(`${apiBaseUrl}/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
-    },
-    body: JSON.stringify({
-      model: apiModel,
-      instructions: systemPrompt,
-      input: [
-        ...conversationInput,
-        ...accumulatedItems,
-        { role: 'user', content: summaryInstruction }
-      ],
-      tools: [],
-      stream: true
-    })
-  })
-
-  if (!summaryResponse.ok) {
-    return null
-  }
-
-  const { textAccumulator, responseId, failed } = await readResponseStream(summaryResponse, sendEvent)
-  if (failed || !textAccumulator) {
-    return null
-  }
-
-  return buildSuccessfulTextResult({
-    responseText: textAccumulator,
-    responseId,
+  return requestNoToolFallbackResponse({
+    sendEvent,
+    conversationInput,
+    accumulatedItems,
+    apiBaseUrl,
+    apiKey,
+    apiModel,
+    outboundAllowList,
     toolUsage,
     toolRounds,
-    outboundAllowList
+    statusMessage: 'Summarizing partial results',
+    instruction: summaryInstruction
   })
 }
 
@@ -1072,6 +1109,7 @@ async function requestClarifyingFollowUp({
   sendEvent,
   conversationInput,
   accumulatedItems,
+  partialAssistantText = '',
   apiBaseUrl,
   apiKey,
   apiModel,
@@ -1081,8 +1119,6 @@ async function requestClarifyingFollowUp({
   userMessage,
   reason
 }) {
-  sendEvent('status', { message: 'Clarifying next step', phase: 'llm' })
-
   const clarificationInstruction = `The original user request was:
 "${userMessage}"
 
@@ -1096,40 +1132,65 @@ Using only the existing conversation and any tool outputs already provided:
 
 Do not call tools. Do not ask to browse the web.`
 
-  const clarificationResponse = await fetch(`${apiBaseUrl}/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
-    },
-    body: JSON.stringify({
-      model: apiModel,
-      instructions: systemPrompt,
-      input: [
-        ...conversationInput,
-        ...accumulatedItems,
-        { role: 'user', content: clarificationInstruction }
-      ],
-      tools: [],
-      stream: true
-    })
-  })
-
-  if (!clarificationResponse.ok) {
-    return null
-  }
-
-  const { textAccumulator, responseId, failed } = await readResponseStream(clarificationResponse, sendEvent)
-  if (failed || !textAccumulator) {
-    return null
-  }
-
-  return buildSuccessfulTextResult({
-    responseText: textAccumulator,
-    responseId,
+  return requestNoToolFallbackResponse({
+    sendEvent,
+    conversationInput,
+    accumulatedItems,
+    partialAssistantText,
+    apiBaseUrl,
+    apiKey,
+    apiModel,
+    outboundAllowList,
     toolUsage,
     toolRounds,
-    outboundAllowList
+    statusMessage: 'Clarifying next step',
+    instruction: clarificationInstruction
+  })
+}
+
+async function requestStreamFailureRecovery({
+  sendEvent,
+  conversationInput,
+  accumulatedItems,
+  partialAssistantText = '',
+  apiBaseUrl,
+  apiKey,
+  apiModel,
+  outboundAllowList,
+  toolUsage,
+  toolRounds,
+  userMessage,
+  reason
+}) {
+  if (accumulatedItems.length === 0 && !partialAssistantText.trim()) return null
+
+  const recoveryInstruction = `The original user request was:
+"${userMessage}"
+
+The previous attempt ended unexpectedly before a stable final answer was produced.
+Reason: ${reason}.
+
+Using only the existing conversation, any tool outputs already provided, and any partial answer text already shown above:
+- give the best partial answer you can
+- if the evidence is still too incomplete, say that briefly and ask 2-4 short clarifying questions
+- prefer a short concrete answer over more questions if the available evidence already supports one
+- do not invent missing facts
+
+Do not call tools. Do not ask to browse the web.`
+
+  return requestNoToolFallbackResponse({
+    sendEvent,
+    conversationInput,
+    accumulatedItems,
+    partialAssistantText,
+    apiBaseUrl,
+    apiKey,
+    apiModel,
+    outboundAllowList,
+    toolUsage,
+    toolRounds,
+    statusMessage: 'Recovering partial answer',
+    instruction: recoveryInstruction
   })
 }
 
@@ -1155,6 +1216,25 @@ async function processResponseStream({
     if (responseId) latestResponseId = responseId
 
     if (failed) {
+      const recovery = await requestStreamFailureRecovery({
+        sendEvent,
+        conversationInput,
+        accumulatedItems,
+        partialAssistantText: textAccumulator,
+        apiBaseUrl,
+        apiKey,
+        apiModel,
+        outboundAllowList,
+        toolUsage,
+        toolRounds,
+        userMessage,
+        reason: errorMessage || 'The AI service returned an unexpected stream error.'
+      })
+
+      if (recovery) {
+        return recovery
+      }
+
       return {
         ok: false,
         responseId: latestResponseId,
@@ -1247,6 +1327,7 @@ async function processResponseStream({
         sendEvent,
         conversationInput,
         accumulatedItems,
+        partialAssistantText: textAccumulator,
         apiBaseUrl,
         apiKey,
         apiModel,
