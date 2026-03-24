@@ -106,6 +106,37 @@ const scenarios = [
   }
 ]
 
+function parseCliArgs(argv) {
+  const selectedSlugs = []
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+
+    if (arg === '--slug' || arg === '--scenario') {
+      const value = argv[index + 1]
+      if (!value) {
+        throw new Error(`${arg} requires a scenario slug`)
+      }
+      selectedSlugs.push(value)
+      index += 1
+      continue
+    }
+
+    if (arg.startsWith('--slug=')) {
+      selectedSlugs.push(arg.slice('--slug='.length))
+      continue
+    }
+
+    if (arg.startsWith('--scenario=')) {
+      selectedSlugs.push(arg.slice('--scenario='.length))
+    }
+  }
+
+  return {
+    selectedSlugs: Array.from(new Set(selectedSlugs.filter(Boolean)))
+  }
+}
+
 function cleanCitationArtifacts(text) {
   let cleaned = text.replace(/\u3010[^\u3011]*\u3011/g, '')
   cleaned = cleaned.replace(/citeturn[\w?]*\d*/g, '')
@@ -450,6 +481,17 @@ async function ensureOutputRoot() {
   await fs.mkdir(outputRoot, { recursive: true })
 }
 
+async function readExistingManifest() {
+  try {
+    const manifestPath = path.join(outputRoot, 'manifest.json')
+    const content = await fs.readFile(manifestPath, 'utf8')
+    const parsed = JSON.parse(content)
+    return Array.isArray(parsed.scenarios) ? parsed.scenarios : []
+  } catch {
+    return []
+  }
+}
+
 async function writeScenarioFiles(scenario, messages) {
   const scenarioDir = path.join(outputRoot, scenario.slug)
   await fs.mkdir(scenarioDir, { recursive: true })
@@ -515,14 +557,29 @@ function capturePng(htmlPath, pngPath, viewport) {
 async function main() {
   await ensureOutputRoot()
 
-  const manifest = []
+  const { selectedSlugs } = parseCliArgs(process.argv.slice(2))
+  const scenariosToGenerate = selectedSlugs.length > 0
+    ? scenarios.filter((scenario) => selectedSlugs.includes(scenario.slug))
+    : scenarios
 
-  for (const scenario of scenarios) {
+  const missingSlugs = selectedSlugs.filter((slug) => !scenarios.some((scenario) => scenario.slug === slug))
+  if (missingSlugs.length > 0) {
+    throw new Error(`Unknown scenario slug(s): ${missingSlugs.join(', ')}`)
+  }
+
+  const existingManifest = await readExistingManifest()
+  const manifestBySlug = new Map(existingManifest.map((entry) => [entry.slug, entry]))
+
+  for (const scenario of scenariosToGenerate) {
     console.log(`Generating ${scenario.slug}...`)
     const messages = await buildScenarioMessages(scenario)
     const files = await writeScenarioFiles(scenario, messages)
-    manifest.push(files)
+    manifestBySlug.set(files.slug, files)
   }
+
+  const manifest = scenarios
+    .map((scenario) => manifestBySlug.get(scenario.slug))
+    .filter(Boolean)
 
   await fs.writeFile(
     path.join(outputRoot, 'manifest.json'),
@@ -533,7 +590,7 @@ async function main() {
     }, null, 2)
   )
 
-  console.log(`Generated ${manifest.length} example asset sets in ${outputRoot}`)
+  console.log(`Generated ${scenariosToGenerate.length} example asset set(s) in ${outputRoot}`)
 }
 
 main().catch((error) => {
