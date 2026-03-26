@@ -22,6 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import {
   getConfiguredApiBaseUrl,
+  getConfiguredApiKey,
   getConfiguredModel,
   getOutboundAllowList,
   getSearchAllowList,
@@ -146,6 +147,35 @@ function buildClarifyingQuestions(message = '') {
   return Array.from(new Set(questions)).slice(0, 4)
 }
 
+function linkifyFollowUpQueryItems(text = '') {
+  if (!text) return text
+
+  const lines = text.split('\n')
+  const linkedLines = lines.map((line) => {
+    const listMatch = line.match(/^(\s*(?:[-*]|\d+\.)\s+)(.+)$/)
+    if (!listMatch) return line
+
+    const prefix = listMatch[1]
+    const rawItem = listMatch[2].trim()
+
+    // Skip lines that are already markdown links or contain explicit URLs.
+    if (!rawItem || rawItem.includes('](') || /https?:\/\//i.test(rawItem)) {
+      return line
+    }
+
+    const questionMatch = rawItem.match(/^(.+?\?)\s*$/)
+    if (!questionMatch) return line
+
+    const question = questionMatch[1].trim()
+    if (question.length < 6 || question.length > 220) return line
+
+    const queryUrl = `https://chat.virtualflybrain.org?query=${encodeURIComponent(question)}`
+    return `${prefix}[${question}](${queryUrl})`
+  })
+
+  return linkedLines.join('\n')
+}
+
 function extractImagesFromResponseText(responseText = '') {
   const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
   const images = []
@@ -165,14 +195,15 @@ function extractImagesFromResponseText(responseText = '') {
 
 function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList }) {
   const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(responseText, outboundAllowList)
-  const images = extractImagesFromResponseText(sanitizedText)
+  const linkedResponseText = linkifyFollowUpQueryItems(sanitizedText)
+  const images = extractImagesFromResponseText(linkedResponseText)
 
   return {
     ok: true,
     responseId,
     toolUsage,
     toolRounds,
-    responseText: sanitizedText,
+    responseText: linkedResponseText,
     images,
     blockedResponseDomains: blockedDomains
   }
@@ -466,7 +497,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'search_reviewed_docs',
-    description: 'Search approved Virtual Fly Brain, NeuroFly, and reviewed FlyBase pages using a server-side site index. Use this for documentation, news or blog posts, conference or event questions, and other approved website questions.',
+    description: 'Search approved Virtual Fly Brain, NeuroFly, VFB Connect documentation, and reviewed FlyBase pages using a server-side site index. Use this for documentation, news or blog posts, conference or event questions, and approved Python usage guidance pages.',
     parameters: {
       type: 'object',
       properties: {
@@ -480,7 +511,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'get_reviewed_page',
-    description: 'Fetch and extract content from an approved Virtual Fly Brain, NeuroFly, or reviewed FlyBase page URL returned by search_reviewed_docs.',
+    description: 'Fetch and extract content from an approved Virtual Fly Brain, NeuroFly, VFB Connect documentation, or reviewed FlyBase page URL returned by search_reviewed_docs.',
     parameters: {
       type: 'object',
       properties: {
@@ -835,6 +866,7 @@ APPROVED OUTPUT LINKS ONLY:
 You may only output links or images from these approved domains:
 - virtualflybrain.org and subdomains
 - neurofly.org and subdomains
+- vfb-connect.readthedocs.io
 - flybase.org
 - doi.org
 - pubmed.ncbi.nlm.nih.gov
@@ -851,7 +883,7 @@ TOOLS:
 - vfb_search_terms: search VFB terms with filters
 - vfb_get_term_info: fetch detailed VFB term information
 - vfb_run_query: run VFB analyses returned by vfb_get_term_info
-- search_reviewed_docs: search approved VFB, NeuroFly, and reviewed FlyBase pages using a server-side site index
+- search_reviewed_docs: search approved VFB, NeuroFly, VFB Connect docs, and reviewed FlyBase pages using a server-side site index
 - get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
 - biorxiv_search_preprints / biorxiv_get_preprint / biorxiv_search_published_preprints / biorxiv_get_categories: preprint discovery
@@ -859,7 +891,9 @@ TOOLS:
 TOOL SELECTION:
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
 - Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
-- Questions about VFB, NeuroFly, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
+- Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
+- For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
+- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query).
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
 TOOL ECONOMY:
@@ -880,8 +914,13 @@ FORMATTING VFB REFERENCES:
 - When thumbnail URLs are present in tool output, include them using markdown image syntax
 - Only use thumbnail URLs that actually appear in tool results
 
+TOOL RELAY:
+- You can request server-side tool execution using the tool relay protocol.
+- If tool results are available, use them directly and do not invent missing values.
+- If a question needs data and no results are available yet, request tools first, then answer after results arrive.
+
 FOLLOW-UP QUESTIONS:
-When useful, suggest 2-3 short follow-up questions relevant to Drosophila neuroscience and actionable with the available tools.`
+When useful, suggest 2-3 short follow-up questions relevant to Drosophila neuroscience and actionable in this chat.`
 
 function getStatusForTool(toolName) {
   if (toolName.startsWith('vfb_')) {
@@ -907,7 +946,239 @@ function getStatusForTool(toolName) {
   return { message: 'Processing results', phase: 'llm' }
 }
 
+const CHAT_COMPLETIONS_ENDPOINT = '/chat/completions'
+const CHAT_COMPLETION_ALLOWED_ROLES = new Set(['system', 'user', 'assistant'])
+const TOOL_DEFINITIONS = getToolConfig()
+const TOOL_NAME_SET = new Set(TOOL_DEFINITIONS.map(tool => tool.name))
+
+function normalizeChatRole(role) {
+  if (role === 'reasoning') return 'assistant'
+  if (typeof role !== 'string') return 'assistant'
+  return CHAT_COMPLETION_ALLOWED_ROLES.has(role) ? role : 'assistant'
+}
+
+function normalizeChatMessage(message) {
+  if (!message || typeof message.content !== 'string') return null
+  return {
+    role: normalizeChatRole(message.role),
+    content: message.content
+  }
+}
+
+function buildToolRelaySystemPrompt() {
+  const toolSchemas = TOOL_DEFINITIONS.map(tool => ({
+    name: tool.name,
+    required: tool.parameters?.required || [],
+    parameters: Object.entries(tool.parameters?.properties || {}).reduce((acc, [key, value]) => {
+      acc[key] = {
+        type: value?.type || 'any',
+        enum: Array.isArray(value?.enum) ? value.enum : undefined
+      }
+      return acc
+    }, {})
+  }))
+
+  return `TOOL RELAY PROTOCOL:
+- When you need tools, respond with JSON only, with no markdown and no extra text.
+- Valid JSON format:
+{"tool_calls":[{"name":"tool_name","arguments":{}}]}
+- "name" must be one of the available tool names.
+- "arguments" must be a JSON object matching that tool schema.
+- You may request multiple tool calls in one response.
+- After server tool execution, you will receive a user message starting with "TOOL_RESULTS_JSON:".
+- If more data is needed, emit another JSON tool call payload.
+- When you are ready to answer the user, return a normal assistant response (not JSON).
+
+AVAILABLE TOOL SCHEMAS (JSON):
+${JSON.stringify(toolSchemas)}`
+}
+
+const TOOL_RELAY_SYSTEM_PROMPT = buildToolRelaySystemPrompt()
+
+function extractJsonCandidates(text = '') {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+
+  const candidates = [trimmed]
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  let match
+
+  while ((match = fenceRegex.exec(trimmed)) !== null) {
+    const candidate = match[1]?.trim()
+    if (candidate) candidates.push(candidate)
+  }
+
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1).trim())
+  }
+
+  return Array.from(new Set(candidates))
+}
+
+function normalizeRelayedToolCall(toolCall) {
+  if (!toolCall || typeof toolCall !== 'object') return null
+
+  const name = typeof toolCall.name === 'string' ? toolCall.name.trim() : ''
+  if (!name || !TOOL_NAME_SET.has(name)) return null
+
+  let args = toolCall.arguments
+  if (args === undefined || args === null) args = {}
+
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args)
+    } catch {
+      return { name, arguments: {} }
+    }
+  }
+
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    args = {}
+  }
+
+  return { name, arguments: args }
+}
+
+function parseRelayedToolCalls(responseText = '') {
+  const candidates = extractJsonCandidates(responseText)
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      const rawCalls = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.tool_calls)
+          ? parsed.tool_calls
+          : parsed?.tool_call
+            ? [parsed.tool_call]
+            : []
+
+      const normalizedCalls = rawCalls
+        .map(normalizeRelayedToolCall)
+        .filter(Boolean)
+
+      if (normalizedCalls.length > 0) {
+        return normalizedCalls
+      }
+    } catch {
+      // Keep checking other JSON candidates.
+    }
+  }
+
+  return []
+}
+
+function truncateToolOutput(output = '', maxChars = 12000) {
+  const text = typeof output === 'string' ? output : JSON.stringify(output)
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`
+}
+
+function buildRelayedToolResultsMessage(toolOutputs = []) {
+  const payload = toolOutputs.map(item => ({
+    name: item.name,
+    arguments: item.arguments,
+    output: truncateToolOutput(item.output)
+  }))
+
+  return `TOOL_RESULTS_JSON:
+${JSON.stringify(payload)}
+
+Use these results to continue. If more tools are needed, send another JSON tool call payload. Otherwise, provide the final answer to the user.`
+}
+
+function hasExplicitVfbRunQueryRequest(message = '') {
+  return /\bvfb_run_query\b/i.test(message)
+}
+
+function hasConnectivityIntent(message = '') {
+  return /\b(connectome|connectivity|connection|connections|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast)\b/i.test(message)
+}
+
+function isDocsOnlyToolCallSet(toolCalls = []) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return false
+  return toolCalls.every(call => call.name === 'search_reviewed_docs' || call.name === 'get_reviewed_page')
+}
+
+function buildToolPolicyCorrectionMessage({
+  userMessage = '',
+  explicitRunQueryRequested = false,
+  connectivityIntent = false,
+  missingRunQueryExecution = false
+}) {
+  const policyBullets = [
+    '- For this request, prioritize VFB tools over reviewed-doc search.',
+    '- Use vfb_search_terms and/or vfb_get_term_info to identify the target entity and valid query types.',
+    '- Use vfb_run_query when a relevant query_type is available.'
+  ]
+
+  if (explicitRunQueryRequested) {
+    policyBullets.push('- The user explicitly asked for vfb_run_query, so include a plan that leads to vfb_run_query.')
+  }
+
+  if (connectivityIntent) {
+    policyBullets.push('- This is a connectivity-style request; do not default to search_reviewed_docs first.')
+  }
+
+  if (missingRunQueryExecution) {
+    policyBullets.push('- You have not executed vfb_run_query yet in this turn; correct that now if feasible.')
+  }
+
+  return `TOOL_POLICY_CORRECTION:
+The original user request was:
+"${userMessage}"
+
+${policyBullets.join('\n')}
+
+Return JSON only using the tool relay format:
+{"tool_calls":[{"name":"tool_name","arguments":{}}}
+
+Do not provide a final prose answer until tool calls are executed.`
+}
+
+function buildChatCompletionMessages(conversationInput = [], extraMessages = [], allowToolRelay = false) {
+  const normalizedConversation = conversationInput
+    .map(normalizeChatMessage)
+    .filter(Boolean)
+
+  const normalizedExtras = extraMessages
+    .map(normalizeChatMessage)
+    .filter(Boolean)
+
+  return [
+    { role: 'system', content: systemPrompt },
+    ...(allowToolRelay ? [{ role: 'system', content: TOOL_RELAY_SYSTEM_PROMPT }] : []),
+    ...normalizedConversation,
+    ...normalizedExtras
+  ]
+}
+
+function createChatCompletionsRequestBody({
+  apiModel,
+  conversationInput,
+  extraMessages = [],
+  allowToolRelay = false
+}) {
+  return {
+    model: apiModel,
+    messages: buildChatCompletionMessages(conversationInput, extraMessages, allowToolRelay),
+    stream: true
+  }
+}
+
 async function readResponseStream(apiResponse, sendEvent) {
+  if (!apiResponse?.body) {
+    return {
+      textAccumulator: '',
+      functionCalls: [],
+      responseId: null,
+      failed: true,
+      errorMessage: 'The AI service returned an empty stream response.'
+    }
+  }
+
   const reader = apiResponse.body.getReader()
   const decoder = new TextDecoder()
   const functionCalls = []
@@ -932,10 +1203,36 @@ async function readResponseStream(apiResponse, sendEvent) {
         if (!line.startsWith('data: ')) continue
 
         const dataStr = line.slice(6).trim()
+        if (!dataStr) continue
         if (dataStr === '[DONE]') continue
 
         try {
           const event = JSON.parse(dataStr)
+
+          if (event?.error?.message) {
+            failed = true
+            errorMessage = event.error.message
+            return { textAccumulator, functionCalls, responseId, failed, errorMessage }
+          }
+
+          // OpenAI-compatible /chat/completions streaming chunks:
+          // { id, choices: [{ delta: { content } }] }
+          if (Array.isArray(event?.choices)) {
+            responseId = event.id || responseId
+
+            const firstChoice = event.choices[0]
+            const deltaContent = firstChoice?.delta?.content
+            const messageContent = firstChoice?.message?.content
+
+            if (typeof deltaContent === 'string' && deltaContent.length > 0) {
+              textAccumulator += deltaContent
+            } else if (typeof messageContent === 'string' && messageContent.length > 0) {
+              textAccumulator += messageContent
+            }
+
+            continue
+          }
+
           const eventType = event.type
 
           switch (eventType) {
@@ -1027,21 +1324,20 @@ async function requestNoToolFallbackResponse({
     fallbackInput.push({ role: 'assistant', content: partialAssistantText.trim() })
   }
 
-  fallbackInput.push({ role: 'user', content: instruction })
+  const fallbackExtraMessages = [{ role: 'user', content: instruction }]
 
-  const fallbackResponse = await fetch(`${apiBaseUrl}/responses`, {
+  const fallbackResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
     },
-    body: JSON.stringify({
-      model: apiModel,
-      instructions: systemPrompt,
-      input: fallbackInput,
-      tools: [],
-      stream: true
-    })
+    body: JSON.stringify(createChatCompletionsRequestBody({
+      apiModel,
+      conversationInput: fallbackInput,
+      extraMessages: fallbackExtraMessages,
+      allowToolRelay: false
+    }))
   })
 
   if (!fallbackResponse.ok) {
@@ -1207,9 +1503,13 @@ async function processResponseStream({
   const toolUsage = {}
   const accumulatedItems = []
   const maxToolRounds = 10
+  const maxToolPolicyCorrections = 3
+  const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage)
+  const connectivityIntent = hasConnectivityIntent(userMessage)
   let currentResponse = apiResponse
   let latestResponseId = null
   let toolRounds = 0
+  let toolPolicyCorrections = 0
 
   for (let round = 0; round < maxToolRounds; round++) {
     const { textAccumulator, functionCalls, responseId, failed, errorMessage } = await readResponseStream(currentResponse, sendEvent)
@@ -1245,74 +1545,145 @@ async function processResponseStream({
       }
     }
 
-    if (functionCalls.length > 0) {
+    const relayedToolCalls = parseRelayedToolCalls(textAccumulator)
+    const legacyFunctionCalls = functionCalls
+      .map(functionCall => {
+        let args = {}
+
+        if (typeof functionCall?.arguments === 'string') {
+          try {
+            args = JSON.parse(functionCall.arguments)
+          } catch {
+            args = {}
+          }
+        } else if (functionCall?.arguments && typeof functionCall.arguments === 'object' && !Array.isArray(functionCall.arguments)) {
+          args = functionCall.arguments
+        }
+
+        return normalizeRelayedToolCall({
+          name: functionCall?.name,
+          arguments: args
+        })
+      })
+      .filter(Boolean)
+
+    const requestedToolCalls = relayedToolCalls.length > 0
+      ? relayedToolCalls
+      : legacyFunctionCalls
+
+    if (requestedToolCalls.length > 0) {
+      const hasVfbToolCall = requestedToolCalls.some(toolCall => toolCall.name.startsWith('vfb_'))
+      const docsOnlyToolCalls = isDocsOnlyToolCallSet(requestedToolCalls)
+      const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
+        (explicitRunQueryRequested && !hasVfbToolCall) ||
+        (connectivityIntent && docsOnlyToolCalls)
+      )
+
+      if (shouldCorrectToolChoice) {
+        sendEvent('status', { message: 'Refining tool choice for VFB query', phase: 'llm' })
+
+        if (textAccumulator.trim()) {
+          accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+        }
+
+        accumulatedItems.push({
+          role: 'user',
+          content: buildToolPolicyCorrectionMessage({
+            userMessage,
+            explicitRunQueryRequested,
+            connectivityIntent
+          })
+        })
+
+        const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+          },
+          body: JSON.stringify(createChatCompletionsRequestBody({
+            apiModel,
+            conversationInput: [...conversationInput, ...accumulatedItems],
+            allowToolRelay: true
+          }))
+        })
+
+        if (!correctionResponse.ok) {
+          const correctionErrorText = await correctionResponse.text()
+          return {
+            ok: false,
+            responseId: latestResponseId,
+            toolUsage,
+            toolRounds,
+            errorMessage: `Failed to apply tool policy correction. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+            errorCategory: 'tool_policy_correction_failed',
+            errorStatus: correctionResponse.status
+          }
+        }
+
+        toolPolicyCorrections += 1
+        currentResponse = correctionResponse
+        continue
+      }
+
       toolRounds += 1
 
-      const toolOutputs = await Promise.all(functionCalls.map(async (functionCall) => {
+      const announcedStatuses = new Set()
+      for (const toolCall of requestedToolCalls) {
+        if (!announcedStatuses.has(toolCall.name)) {
+          sendEvent('status', getStatusForTool(toolCall.name))
+          announcedStatuses.add(toolCall.name)
+        }
+      }
+
+      const toolOutputs = await Promise.all(requestedToolCalls.map(async (toolCall) => {
+        toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
+
         try {
-          const args = typeof functionCall.arguments === 'string'
-            ? JSON.parse(functionCall.arguments)
-            : functionCall.arguments
-
-          toolUsage[functionCall.name] = (toolUsage[functionCall.name] || 0) + 1
-
           return {
-            call_id: functionCall.call_id,
-            name: functionCall.name,
-            arguments: functionCall.arguments,
-            output: await executeFunctionTool(functionCall.name, args)
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            output: await executeFunctionTool(toolCall.name, toolCall.arguments)
           }
         } catch (error) {
-          toolUsage[functionCall.name] = (toolUsage[functionCall.name] || 0) + 1
-
           return {
-            call_id: functionCall.call_id,
-            name: functionCall.name,
-            arguments: functionCall.arguments,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
             output: JSON.stringify({ error: error.message })
           }
         }
       }))
 
-      for (const toolOutput of toolOutputs) {
-        accumulatedItems.push({
-          type: 'function_call',
-          call_id: toolOutput.call_id,
-          name: toolOutput.name,
-          arguments: typeof toolOutput.arguments === 'string'
-            ? toolOutput.arguments
-            : JSON.stringify(toolOutput.arguments)
-        })
-        accumulatedItems.push({
-          type: 'function_call_output',
-          call_id: toolOutput.call_id,
-          output: toolOutput.output
-        })
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
       }
 
-      const submitResponse = await fetch(`${apiBaseUrl}/responses`, {
+      accumulatedItems.push({
+        role: 'user',
+        content: buildRelayedToolResultsMessage(toolOutputs)
+      })
+
+      const submitResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify({
-          model: apiModel,
-          instructions: systemPrompt,
-          input: [...conversationInput, ...accumulatedItems],
-          tools: getToolConfig(),
-          stream: true
-        })
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
       })
 
       if (!submitResponse.ok) {
-        const errorText = await submitResponse.text()
+        const submitErrorText = await submitResponse.text()
         return {
           ok: false,
           responseId: latestResponseId,
           toolUsage,
           toolRounds,
-          errorMessage: `Failed to process tool results. ${sanitizeApiError(submitResponse.status, errorText)}`,
+          errorMessage: `Failed to process tool results. ${sanitizeApiError(submitResponse.status, submitErrorText)}`,
           errorCategory: 'tool_submission_failed',
           errorStatus: submitResponse.status
         }
@@ -1322,7 +1693,55 @@ async function processResponseStream({
       continue
     }
 
-    if (!textAccumulator) {
+    if (explicitRunQueryRequested && (toolUsage.vfb_run_query || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring requested vfb_run_query workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          missingRunQueryExecution: true
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor requested vfb_run_query flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'vfb_run_query_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (!textAccumulator.trim()) {
       const clarification = await requestClarifyingFollowUp({
         sendEvent,
         conversationInput,
@@ -1349,6 +1768,39 @@ async function processResponseStream({
         toolRounds,
         errorMessage: 'The AI did not generate a response. Please try again.',
         errorCategory: 'empty_response'
+      }
+    }
+
+    const trimmedResponseText = textAccumulator.trim()
+    const looksLikeToolPayload = trimmedResponseText.startsWith('{') || trimmedResponseText.startsWith('```')
+
+    if (looksLikeToolPayload && /"tool_calls"\s*:/.test(trimmedResponseText) && relayedToolCalls.length === 0) {
+      const clarification = await requestClarifyingFollowUp({
+        sendEvent,
+        conversationInput,
+        accumulatedItems,
+        partialAssistantText: textAccumulator,
+        apiBaseUrl,
+        apiKey,
+        apiModel,
+        outboundAllowList,
+        toolUsage,
+        toolRounds,
+        userMessage,
+        reason: 'invalid_tool_call_payload'
+      })
+
+      if (clarification) {
+        return clarification
+      }
+
+      return {
+        ok: false,
+        responseId: latestResponseId,
+        toolUsage,
+        toolRounds,
+        errorMessage: 'The AI returned an invalid tool-call payload. Please try again.',
+        errorCategory: 'invalid_tool_call_payload'
       }
     }
 
@@ -1505,7 +1957,7 @@ export async function POST(request) {
     })
 
     const responseId = `local-${requestId}`
-    const refusalMessage = `I can only search reviewed Virtual Fly Brain and FlyBase pages. The requested domain${blockedRequestedDomains.length === 1 ? '' : 's'} ${blockedRequestedDomains.join(', ')} ${blockedRequestedDomains.length === 1 ? 'is' : 'are'} not approved for search in this service.`
+    const refusalMessage = `I can only search reviewed Virtual Fly Brain, NeuroFly, VFB Connect docs, and FlyBase pages. The requested domain${blockedRequestedDomains.length === 1 ? '' : 's'} ${blockedRequestedDomains.join(', ')} ${blockedRequestedDomains.length === 1 ? 'is' : 'are'} not approved for search in this service.`
 
     await finalizeGovernanceEvent({
       requestId,
@@ -1527,13 +1979,18 @@ export async function POST(request) {
 
   return buildSseResponse(async (sendEvent) => {
     const resolvedUserMessage = replaceTermsWithLinks(message)
+    const priorMessages = messages
+      .slice(0, -1)
+      .map(normalizeChatMessage)
+      .filter(Boolean)
+
     const conversationInput = [
-      ...messages.slice(0, -1).map(item => ({ role: item.role, content: item.content })),
+      ...priorMessages,
       { role: 'user', content: resolvedUserMessage }
     ]
 
     const apiBaseUrl = getConfiguredApiBaseUrl()
-    const apiKey = process.env.OPENAI_API_KEY?.trim() || ''
+    const apiKey = getConfiguredApiKey()
     const apiModel = getConfiguredModel()
 
     sendEvent('status', { message: 'Thinking...', phase: 'llm' })
@@ -1544,19 +2001,17 @@ export async function POST(request) {
       const abortController = new AbortController()
       const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
 
-      apiResponse = await fetch(`${apiBaseUrl}/responses`, {
+      apiResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify({
-          model: apiModel,
-          instructions: systemPrompt,
-          input: conversationInput,
-          tools: getToolConfig(),
-          stream: true
-        }),
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput,
+          allowToolRelay: true
+        })),
         signal: abortController.signal
       })
 
@@ -1576,19 +2031,17 @@ export async function POST(request) {
             const retryTimeoutId = setTimeout(() => retryAbort.abort(), timeoutMs)
 
             try {
-              const retryResponse = await fetch(`${apiBaseUrl}/responses`, {
+              const retryResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
                 },
-                body: JSON.stringify({
-                  model: apiModel,
-                  instructions: systemPrompt,
-                  input: conversationInput,
-                  tools: getToolConfig(),
-                  stream: true
-                }),
+                body: JSON.stringify(createChatCompletionsRequestBody({
+                  apiModel,
+                  conversationInput,
+                  allowToolRelay: true
+                })),
                 signal: retryAbort.signal
               })
 

@@ -8,14 +8,17 @@ services:
     environment:
       - NODE_ENV=production
       - LOG_ROOT_DIR=/logs
+      - ELM_API_KEY=${ELM_API_KEY}
+      - ELM_BASE_URL=${ELM_BASE_URL}
+      - ELM_MODEL=${ELM_MODEL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
       - OPENAI_MODEL=${OPENAI_MODEL}
       - APPROVED_ELM_BASE_URL=${APPROVED_ELM_BASE_URL}
       - APPROVED_ELM_MODEL=${APPROVED_ELM_MODEL}
       - RATE_LIMIT_PER_IP=${RATE_LIMIT_PER_IP:-50}
-      - SEARCH_ALLOWLIST=${SEARCH_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org,neurofly.org,*.neurofly.org}
-      - OUTBOUND_ALLOWLIST=${OUTBOUND_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org,neurofly.org,*.neurofly.org,doi.org,pubmed.ncbi.nlm.nih.gov,biorxiv.org,medrxiv.org}
+      - SEARCH_ALLOWLIST=${SEARCH_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org,neurofly.org,*.neurofly.org,vfb-connect.readthedocs.io}
+      - OUTBOUND_ALLOWLIST=${OUTBOUND_ALLOWLIST:-virtualflybrain.org,*.virtualflybrain.org,flybase.org,neurofly.org,*.neurofly.org,vfb-connect.readthedocs.io,doi.org,pubmed.ncbi.nlm.nih.gov,biorxiv.org,medrxiv.org}
       - REVIEWED_DOCS_INDEX_FILE=${REVIEWED_DOCS_INDEX_FILE:-/app/config/reviewed-docs-index.json}
       - GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID}
       - GA_API_SECRET=${GA_API_SECRET}

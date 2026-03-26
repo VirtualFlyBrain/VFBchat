@@ -5,7 +5,7 @@ VFB Chat is a Next.js chat interface for exploring Virtual Fly Brain (VFB) data 
 ## What Changed
 
 - Native `web_search` has been removed from the model toolset.
-- Search is limited to approved `virtualflybrain.org` and `neurofly.org` pages plus reviewed `flybase.org` pages through server-side, domain-restricted tools.
+- Search is limited to approved `virtualflybrain.org`, `neurofly.org`, and `vfb-connect.readthedocs.io` pages plus reviewed `flybase.org` pages through server-side, domain-restricted tools.
 - Outbound links are sanitized server-side to approved domains only.
 - Raw IP-based security logs are retained for up to 30 days under `/logs/security`.
 - Aggregated analytics and structured feedback are retained under `/logs/analytics` and `/logs/feedback`.
@@ -36,7 +36,7 @@ The app now uses a 3-layer logging model rooted at `LOG_ROOT_DIR`:
 The reviewed documentation search path uses two server-side sources:
 
 - a seed index from `config/reviewed-docs-index.json`
-- a domain-restricted discovery path for approved `virtualflybrain.org` and `neurofly.org` pages using configured sitemap and robots sources
+- a domain-restricted discovery path for approved `virtualflybrain.org`, `neurofly.org`, and `vfb-connect.readthedocs.io` pages using configured sitemap and robots sources
 
 This keeps search scoped to approved domains while avoiding a hand-maintained list of every VFB news or documentation page.
 
@@ -52,13 +52,16 @@ Environment variable:
 
 Required for production:
 
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL` or `APPROVED_ELM_BASE_URL`
-- `OPENAI_MODEL` or `APPROVED_ELM_MODEL`
+- `ELM_API_KEY` (or `OPENAI_API_KEY` as backward-compatible fallback)
+- `ELM_BASE_URL` (or `OPENAI_BASE_URL`) or `APPROVED_ELM_BASE_URL`
+- `ELM_MODEL` (or `OPENAI_MODEL`) or `APPROVED_ELM_MODEL`
 - `LOG_ROOT_DIR=/logs`
 
 Optional:
 
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
 - `APPROVED_ELM_BASE_URL`
 - `APPROVED_ELM_MODEL`
 - `RATE_LIMIT_PER_IP`
@@ -68,21 +71,21 @@ Optional:
 - `GA_MEASUREMENT_ID`
 - `GA_API_SECRET`
 
-When `APPROVED_ELM_BASE_URL` and/or `APPROVED_ELM_MODEL` are provided, production enforces that they exactly match the active `OPENAI_*` values. If they are omitted, the app uses the active gateway/model as the approved baseline so existing single-config deployments continue to work.
+When `APPROVED_ELM_BASE_URL` and/or `APPROVED_ELM_MODEL` are provided, production enforces that they exactly match the active configured gateway/model (resolved from `ELM_*` first, then `OPENAI_*`). If they are omitted, the app uses the active gateway/model as the approved baseline so existing single-config deployments continue to work.
 
 Default allow-lists:
 
-- Search allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`
-- Outbound allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`, `doi.org`, `pubmed.ncbi.nlm.nih.gov`, `biorxiv.org`, `medrxiv.org`
+- Search allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`, `vfb-connect.readthedocs.io`
+- Outbound allow-list: `virtualflybrain.org`, `*.virtualflybrain.org`, `flybase.org`, `neurofly.org`, `*.neurofly.org`, `vfb-connect.readthedocs.io`, `doi.org`, `pubmed.ncbi.nlm.nih.gov`, `biorxiv.org`, `medrxiv.org`
 
 ## Local Development
 
 Create `.env.local` with explicit values:
 
 ```bash
-OPENAI_API_KEY=your-key-here
-OPENAI_BASE_URL=https://your-elm-gateway.example/v1
-OPENAI_MODEL=your-approved-model
+ELM_API_KEY=elm-xxxxxxxx-xxxxxxxxxxxxxxxx
+ELM_BASE_URL=https://elm.edina.ac.uk/api/v1
+ELM_MODEL=meta-llama/Llama-3.3-70B-Instruct
 LOG_ROOT_DIR=./logs
 ```
 
