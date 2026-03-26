@@ -78,7 +78,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph, graphKey }) {
           {graph.title}
         </div>
       )}
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={graph?.title || 'Network graph visualization'} style={{ width: '100%', height: 'auto', display: 'block' }}>
         {graph?.directed !== false && (
           <defs>
             <marker
@@ -191,14 +191,14 @@ const ChatMessage = memo(function ChatMessage({
   const isFeedbackSubmitted = feedbackState?.status === 'submitted'
 
   return (
-    <div style={{
+    <div role="article" aria-label={`${getDisplayName(msg.role)} message`} style={{
       marginBottom: '12px',
       padding: '8px 12px',
       backgroundColor: msg.role === 'user' ? '#1a1a2e' : 'transparent',
       borderRadius: '6px',
       borderLeft: msg.role === 'user' ? '3px solid #4a9eff' : '3px solid #2a6a3a'
     }}>
-      <div style={{
+      <div aria-hidden="true" style={{
         fontSize: '0.75em',
         fontWeight: 600,
         color: msg.role === 'user' ? '#4a9eff' : '#4ade80',
@@ -263,7 +263,7 @@ const ChatMessage = memo(function ChatMessage({
             </div>
           ) : (
             <>
-              <div style={{ fontSize: '0.75em', color: '#888', marginBottom: '6px' }}>
+              <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>
                 Was this response useful?
               </div>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -365,7 +365,8 @@ const ChatMessage = memo(function ChatMessage({
 
 export default function Home() {
   const searchParams = useSearchParams()
-  const initialQuery = searchParams.get('query') || ''
+  const rawQuery = searchParams.get('query') || ''
+  const initialQuery = (() => { try { return decodeURIComponent(rawQuery) } catch { return rawQuery } })()
   const existingI = searchParams.get('i') || ''
   const existingId = searchParams.get('id') || ''
 
@@ -379,6 +380,7 @@ export default function Home() {
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
+  const initialSendFired = useRef(false) // prevent double-send from StrictMode
 
   // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
   // become clickable links to the corresponding Virtual Fly Brain report page.
@@ -474,9 +476,10 @@ export default function Home() {
   useEffect(() => {
     fetchRateInfo()
 
-    if (initialQuery) {
+    if (initialQuery && !initialSendFired.current) {
+      initialSendFired.current = true
       handleSend()
-    } else {
+    } else if (!initialQuery) {
       setMessages([makeMsg('assistant', `Welcome to VFB Chat! I'm here to help you explore Drosophila neuroanatomy and neuroscience using Virtual Fly Brain data.
 
 **Important AI Usage Guidelines:**
@@ -739,7 +742,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         style={{ color: '#66d9ff', textDecoration: 'underline', textDecorationColor: '#66d9ff40' }}
         title={title}
       >
-        {children}
+        {children}<span className="sr-only"> (opens in new tab)</span>
       </a>
     )
   }
@@ -948,7 +951,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     if (Array.isArray(children)) {
       return children.map((child, idx) => {
         if (typeof child === 'string') {
-          return <>{convertUrlsToLinks(child)}</>
+          const converted = convertUrlsToLinks(child)
+          return <span key={`url-child-${idx}`}>{converted}</span>
         }
         return child
       })
@@ -993,26 +997,53 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       boxSizing: 'border-box',
       overflow: 'hidden'
     }}>
-      <h1 style={{
-        color: '#fff',
-        margin: '0 0 8px 0',
-        fontSize: '1.3em',
-        fontWeight: 600,
-        flexShrink: 0
-      }}>
-        Virtual Fly Brain
-      </h1>
+      {/* Skip to main content link for keyboard/screen reader users */}
+      <a
+        href="#chat-input"
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: '0',
+          zIndex: 100,
+          padding: '8px 16px',
+          backgroundColor: '#4a9eff',
+          color: '#fff',
+          textDecoration: 'none',
+          fontWeight: 600
+        }}
+        onFocus={e => { e.target.style.left = '16px' }}
+        onBlur={e => { e.target.style.left = '-9999px' }}
+      >
+        Skip to chat input
+      </a>
+
+      <header>
+        <h1 style={{
+          color: '#fff',
+          margin: '0 0 8px 0',
+          fontSize: '1.3em',
+          fontWeight: 600,
+          flexShrink: 0
+        }}>
+          Virtual Fly Brain
+        </h1>
+      </header>
 
       {/* Chat messages area - fills available space */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '12px',
-        backgroundColor: '#0a0a0a',
-        border: '1px solid #222',
-        borderRadius: '8px',
-        minHeight: 0
-      }}>
+      <main
+        role="log"
+        aria-label="Chat conversation"
+        aria-live="polite"
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '12px',
+          backgroundColor: '#0a0a0a',
+          border: '1px solid #222',
+          borderRadius: '8px',
+          minHeight: 0
+        }}
+      >
         {messages.map((msg) => (
           <ChatMessage
             key={msg.id}
@@ -1026,20 +1057,24 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
           />
         ))}
         {isThinking && (
-          <div style={{
-            marginBottom: '12px',
-            padding: '8px 12px',
-            fontSize: '0.9em',
-            fontStyle: 'italic',
-            color: '#666',
-            borderLeft: '3px solid #333',
-            borderRadius: '6px'
-          }}>
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              marginBottom: '12px',
+              padding: '8px 12px',
+              fontSize: '0.9em',
+              fontStyle: 'italic',
+              color: '#999',
+              borderLeft: '3px solid #333',
+              borderRadius: '6px'
+            }}
+          >
             {thinkingMessage}{thinkingDots}
           </div>
         )}
         <div ref={chatEndRef} />
-      </div>
+      </main>
 
       {/* Input area */}
       <div style={{
@@ -1049,10 +1084,12 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         alignItems: 'center',
         flexShrink: 0
       }}>
+        <label htmlFor="chat-input" className="sr-only">Ask about Drosophila neuroanatomy</label>
         <input
+          id="chat-input"
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyPress={e => e.key === 'Enter' && handleSend()}
+          onKeyDown={e => e.key === 'Enter' && handleSend()}
           placeholder="Ask about Drosophila neuroanatomy..."
           style={{
             flex: 1,
@@ -1061,22 +1098,25 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             color: '#fff',
             border: '1px solid #333',
             borderRadius: '6px',
-            fontSize: '14px',
-            outline: 'none'
+            fontSize: '14px'
           }}
         />
-        <div style={{
-          fontSize: '10px',
-          color: 'rgb(255, 255, 255)',
-          opacity: 0.4,
-          fontFamily: 'monospace',
-          whiteSpace: 'nowrap'
-        }}>
+        <div
+          aria-label={`${rateInfo.used} of ${rateInfo.limit} daily queries used`}
+          style={{
+            fontSize: '10px',
+            color: 'rgb(255, 255, 255)',
+            opacity: 0.4,
+            fontFamily: 'monospace',
+            whiteSpace: 'nowrap'
+          }}
+        >
           {`${rateInfo.used}/${rateInfo.limit}`}
         </div>
         <button
           onClick={handleSend}
           disabled={isThinking}
+          aria-label={isThinking ? 'Sending message, please wait' : 'Send message'}
           style={{
             padding: '10px 20px',
             backgroundColor: isThinking ? '#333' : '#4a9eff',
@@ -1101,20 +1141,20 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             rel="noopener noreferrer"
             style={{ color: '#66d9ff', textDecoration: 'none', fontSize: '0.85em' }}
           >
-            Open in VFB 3D Browser &rarr;
+            Open in VFB 3D Browser (opens in new tab) &rarr;
           </a>
         </div>
       )}
 
       {/* Footer disclaimer */}
-      <div style={{
+      <footer style={{
         marginTop: '12px',
         padding: '8px 12px',
         backgroundColor: '#1a1a1a',
         border: '1px solid #333',
         borderRadius: '4px',
         fontSize: '0.75em',
-        color: '#888',
+        color: '#aaa',
         lineHeight: '1.3',
         flexShrink: 0
       }}>
@@ -1124,15 +1164,33 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         {' '}We do not store full chat content for routine analytics, except when you explicitly attach a conversation while reporting a problem for short-term investigation. See our{' '}
         <a href="/privacy" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Privacy Notice
+        </a>{' | '}
+        <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
+          Accessibility Statement
         </a>.
-      </div>
+      </footer>
 
       <style jsx global>{`
+        .sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
         .vfb-thumb-wrap:hover .vfb-thumb-expanded {
           display: block !important;
         }
         .vfb-thumb-wrap:hover .vfb-thumb {
           opacity: 0.7;
+        }
+        *:focus-visible {
+          outline: 2px solid #4a9eff;
+          outline-offset: 2px;
         }
       `}</style>
     </div>

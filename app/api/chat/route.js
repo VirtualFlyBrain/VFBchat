@@ -339,8 +339,24 @@ function extractImagesFromResponseText(responseText = '') {
   return images
 }
 
+function stripLeakedToolCallJson(text = '') {
+  if (!text) return text
+
+  // Remove code-fenced JSON blocks that contain "tool_calls" or "name"+"arguments" patterns
+  let cleaned = text.replace(/```(?:json)?\s*\{[\s\S]*?"(?:tool_calls|name)"[\s\S]*?\}[\s\S]*?```/g, '')
+
+  // Remove bare JSON objects that look like tool call payloads (start with { and contain "tool_calls")
+  cleaned = cleaned.replace(/\{[\s\S]*?"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '')
+
+  // Clean up excess whitespace left behind
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim()
+
+  return cleaned || text
+}
+
 function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList, graphSpecs = [] }) {
-  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(responseText, outboundAllowList)
+  const strippedText = stripLeakedToolCallJson(responseText)
+  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(strippedText, outboundAllowList)
   const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
   const linkedResponseText = linkifyFollowUpQueryItems(textWithoutGraphs)
   const images = extractImagesFromResponseText(linkedResponseText)
@@ -2374,6 +2390,31 @@ function extractJsonCandidates(text = '') {
   return Array.from(new Set(candidates))
 }
 
+function normalizeToolArgValue(value) {
+  if (typeof value !== 'string') return value
+
+  const trimmed = value.trim()
+  if (!trimmed) return value
+
+  // If the value is a markdown link like [FBbt_00003624](https://...),
+  // extract just the VFB term ID from it
+  const canonicalId = extractCanonicalVfbTermId(trimmed)
+  if (canonicalId) return canonicalId
+
+  // Also strip markdown link wrapping even for non-VFB IDs
+  return stripMarkdownLinkText(trimmed)
+}
+
+function normalizeToolArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+
+  const normalized = {}
+  for (const [key, value] of Object.entries(args)) {
+    normalized[key] = normalizeToolArgValue(value)
+  }
+  return normalized
+}
+
 function normalizeRelayedToolCall(toolCall) {
   if (!toolCall || typeof toolCall !== 'object') return null
 
@@ -2395,7 +2436,7 @@ function normalizeRelayedToolCall(toolCall) {
     args = {}
   }
 
-  return { name, arguments: args }
+  return { name, arguments: normalizeToolArgs(args) }
 }
 
 function parseRelayedToolCalls(responseText = '') {
@@ -3167,6 +3208,43 @@ async function processResponseStream({
 
     const trimmedResponseText = textAccumulator.trim()
     const looksLikeToolPayload = trimmedResponseText.startsWith('{') || trimmedResponseText.startsWith('```')
+
+    // Detect when the model describes tool usage in prose instead of actually calling them.
+    // Common patterns: "I will use vfb_get_term_info", "let me call vfb_run_query", etc.
+    const describesToolUsageWithoutCalling = toolRounds === 0
+      && relayedToolCalls.length === 0
+      && /\b(I (?:will|can|'ll|need to) (?:use|call|run|query|start)|let me (?:use|call|run|start|find)|Please wait for the results)\b/i.test(trimmedResponseText)
+      && /\bvfb_\w+\b/.test(trimmedResponseText)
+
+    if (describesToolUsageWithoutCalling) {
+      // The model described what tools it would use but didn't actually produce
+      // tool call JSON. Re-prompt with the tool relay format instruction.
+      sendEvent('status', { message: 'Retrying tool execution', phase: 'llm' })
+
+      accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      accumulatedItems.push({
+        role: 'user',
+        content: `You described which tools to use but did not actually call them. Do not describe your plan — execute it now by returning valid JSON in this exact format:\n{"tool_calls":[{"name":"tool_name","arguments":{}}]}\n\nCall the tools you just described.`
+      })
+
+      const retryResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (retryResponse.ok) {
+        currentResponse = retryResponse
+        continue
+      }
+    }
 
     if (looksLikeToolPayload && /"tool_calls"\s*:/.test(trimmedResponseText) && relayedToolCalls.length === 0) {
       const clarification = await requestClarifyingFollowUp({
