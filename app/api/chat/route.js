@@ -1594,6 +1594,115 @@ function extractRowsFromRunQueryPayload(rawPayload) {
   return rows
 }
 
+function normalizeEndpointSearchText(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function singularizeEndpointSearchText(value = '') {
+  const text = normalizeEndpointSearchText(value)
+  if (!text) return text
+  if (text.endsWith('ies')) return `${text.slice(0, -3)}y`
+  if (text.endsWith(' neurons')) return text.slice(0, -1)
+  if (text.endsWith(' classes')) return text.slice(0, -2)
+  if (text.endsWith('s') && !text.endsWith('ss')) return text.slice(0, -1)
+  return text
+}
+
+function extractDocsFromSearchTermsPayload(rawPayload) {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return []
+
+  if (Array.isArray(parsed?.response?.docs)) {
+    return parsed.response.docs
+  }
+
+  if (Array.isArray(parsed.docs)) {
+    return parsed.docs
+  }
+
+  const docs = []
+  for (const value of Object.values(parsed)) {
+    if (!value || typeof value !== 'object') continue
+    if (Array.isArray(value?.response?.docs)) {
+      docs.push(...value.response.docs)
+    } else if (Array.isArray(value.docs)) {
+      docs.push(...value.docs)
+    }
+  }
+
+  return docs
+}
+
+function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
+  const shortForm = String(doc.short_form || doc.shortForm || '').trim()
+  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const queryNorm = normalizeEndpointSearchText(queryText)
+  const querySingular = singularizeEndpointSearchText(queryNorm)
+  const labelSingular = singularizeEndpointSearchText(labelNorm)
+  const synonyms = Array.isArray(doc.synonym)
+    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
+    : []
+  const facets = Array.isArray(doc.facets_annotation)
+    ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
+    : []
+
+  if (!shortForm || !queryNorm) return Number.NEGATIVE_INFINITY
+
+  let score = 0
+  if (/^FBbt_\d{8}$/i.test(shortForm)) score += 30
+
+  if (labelNorm === queryNorm || labelNorm === querySingular || labelSingular === queryNorm) {
+    score += 220
+  } else if (synonyms.includes(queryNorm) || synonyms.includes(querySingular)) {
+    score += 180
+  }
+
+  if (labelNorm && (labelNorm.includes(queryNorm) || queryNorm.includes(labelNorm))) {
+    score += 70
+  }
+
+  if (synonyms.some(syn => syn && (syn.includes(queryNorm) || queryNorm.includes(syn)))) {
+    score += 55
+  }
+
+  const queryTokens = queryNorm.split(' ').filter(Boolean)
+  const labelTokens = new Set(labelNorm.split(' ').filter(Boolean))
+  const overlap = queryTokens.filter(token => labelTokens.has(token)).length
+  score += overlap * 5
+  if (queryTokens.length > 0 && overlap === queryTokens.length) {
+    score += 35
+  }
+
+  if (facets.includes('neuron')) score += 10
+  if (facets.includes('class')) score += 5
+
+  return score
+}
+
+function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
+  if (!Array.isArray(docs) || docs.length === 0) return null
+
+  const fbbtDocs = docs.filter(doc => /^FBbt_\d{8}$/i.test(String(doc?.short_form || doc?.shortForm || '').trim()))
+  const candidateDocs = fbbtDocs.length > 0 ? fbbtDocs : docs
+
+  let bestDoc = null
+  let bestScore = Number.NEGATIVE_INFINITY
+  for (const doc of candidateDocs) {
+    const score = scoreSearchDocForConnectivityEndpoint(doc, queryText)
+    if (score > bestScore) {
+      bestScore = score
+      bestDoc = doc
+    }
+  }
+
+  return bestDoc
+}
+
 function extractNeuronClassCandidatesFromRows(rows = [], limit = 10) {
   if (!Array.isArray(rows) || rows.length === 0) return []
 
@@ -1676,15 +1785,43 @@ async function callVfbToolTextWithFallback(client, toolName, toolArguments = {})
   }
 }
 
+async function resolveConnectivityEndpointValue(client, rawValue = '') {
+  const normalizedValue = normalizeConnectivityEndpointValue(rawValue)
+  const canonicalId = extractCanonicalVfbTermId(normalizedValue)
+  if (canonicalId && VFB_NEURON_CLASS_ID_REGEX.test(canonicalId)) return canonicalId
+  if (canonicalId) return normalizedValue
+
+  const queryText = stripMarkdownLinkText(normalizedValue).trim()
+  if (!queryText) return normalizedValue
+
+  try {
+    const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
+      query: queryText,
+      rows: 25,
+      minimize_results: true
+    })
+    const docs = extractDocsFromSearchTermsPayload(searchText)
+    const bestDoc = pickBestConnectivityEndpointDoc(docs, queryText)
+    if (!bestDoc) return normalizedValue
+
+    const bestId = extractCanonicalVfbTermId(bestDoc.short_form || bestDoc.shortForm || bestDoc.id || '')
+    return bestId || normalizedValue
+  } catch {
+    return normalizedValue
+  }
+}
+
 async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue }) {
   const normalizedValue = normalizeConnectivityEndpointValue(rawValue)
-  const termId = extractCanonicalVfbTermId(normalizedValue)
+  const resolvedValue = await resolveConnectivityEndpointValue(client, normalizedValue)
+  const termId = extractCanonicalVfbTermId(resolvedValue)
 
   if (!termId || !VFB_NEURON_CLASS_ID_REGEX.test(termId)) {
     return {
       side,
       raw_input: String(rawValue || ''),
       normalized_input: normalizedValue,
+      resolved_input: resolvedValue,
       requires_selection: false
     }
   }
@@ -1697,6 +1834,7 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
       side,
       raw_input: String(rawValue || ''),
       normalized_input: normalizedValue,
+      resolved_input: termId,
       term_id: termId,
       requires_selection: false
     }
@@ -1709,6 +1847,7 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
       side,
       raw_input: String(rawValue || ''),
       normalized_input: normalizedValue,
+      resolved_input: termId,
       term_id: termId,
       term_name: termName,
       requires_selection: false
@@ -1748,6 +1887,7 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
     side,
     raw_input: String(rawValue || ''),
     normalized_input: normalizedValue,
+    resolved_input: termId,
     term_id: termId,
     term_name: termName,
     super_types: Array.isArray(termRecord.SuperTypes) ? termRecord.SuperTypes : [],
@@ -1849,6 +1989,15 @@ async function executeFunctionTool(name, args) {
           rawValue: cleanArgs.downstream_type
         })
       ])
+
+      const upstreamCheck = endpointChecks.find(check => check.side === 'upstream')
+      const downstreamCheck = endpointChecks.find(check => check.side === 'downstream')
+      if (upstreamCheck?.resolved_input) {
+        cleanArgs.upstream_type = upstreamCheck.resolved_input
+      }
+      if (downstreamCheck?.resolved_input) {
+        cleanArgs.downstream_type = downstreamCheck.resolved_input
+      }
 
       const selectionsNeeded = endpointChecks.filter(check => check.requires_selection)
       if (selectionsNeeded.length > 0) {
@@ -2223,10 +2372,10 @@ function buildVfbQueryLinkSkill() {
 - In term-info JSON, read short names from Queries[].query and user-facing descriptions from Queries[].label.
 - Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
 - When you answer with query findings, include matching query-result links when useful.
-- Examples:
-  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,ListAllAvailableImages
-  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,SubclassesOf
-  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,ref_upstream_class_connectivity_query
+- Example templates:
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,ListAllAvailableImages
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,SubclassesOf
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,ref_upstream_class_connectivity_query
 - Query short names and descriptions (from geppetto-vfb/model):
 ${queryLines}`
 }
@@ -2285,6 +2434,9 @@ TOOL SELECTION:
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
 - vfb_query_connectivity requires neuron class inputs. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
+- For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
+- Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
+- Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
 - Questions about published papers or recent literature (only when explicitly asked): use PubMed first, optionally bioRxiv/medRxiv for preprints
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
@@ -2700,10 +2852,16 @@ function hasConnectivityIntent(message = '') {
   return /\b(connectome|connectivity|connection|connections|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast)\b/i.test(message)
 }
 
+function hasDirectionalConnectivityRequest(message = '') {
+  if (!hasConnectivityIntent(message)) return false
+  return /\bfrom\b[\s\S]{1,160}\bto\b/i.test(message) || /\bbetween\b[\s\S]{1,160}\band\b/i.test(message)
+}
+
 function buildToolPolicyCorrectionMessage({
   userMessage = '',
   explicitRunQueryRequested = false,
   connectivityIntent = false,
+  requireConnectivityComparison = false,
   missingRunQueryExecution = false,
   requestedQueryTypes = [],
   hasCanonicalIdInUserMessage = false
@@ -2732,6 +2890,11 @@ function buildToolPolicyCorrectionMessage({
 
   if (connectivityIntent) {
     policyBullets.push('- This is a connectivity-style request; favor VFB connectivity/query tools over docs-only search.')
+  }
+
+  if (requireConnectivityComparison) {
+    policyBullets.push('- This request is directional connectivity between two entities; call vfb_query_connectivity with upstream_type = source term and downstream_type = target term.')
+    policyBullets.push('- Do not conclude \"no connection\" from only NeuronsPresynapticHere/NeuronsPostsynapticHere on a single term. Use vfb_query_connectivity output as the primary evidence.')
   }
 
   if (missingRunQueryExecution) {
@@ -3131,6 +3294,7 @@ async function processResponseStream({
   const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage) || requestedQueryTypes.length > 0
   const hasCanonicalIdInUserMessage = hasCanonicalVfbOrFlybaseId(userMessage)
   const connectivityIntent = hasConnectivityIntent(userMessage)
+  const directionalConnectivityRequested = hasDirectionalConnectivityRequest(userMessage)
   const collectedGraphSpecs = []
   let currentResponse = apiResponse
   let latestResponseId = null
@@ -3206,6 +3370,7 @@ async function processResponseStream({
       const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
         (explicitRunQueryRequested && !hasVfbToolCall) ||
         (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
+        (directionalConnectivityRequested && !hasConnectivityComparisonCall) ||
         (requestedQueryTypes.length > 0 && hasConnectivityComparisonCall && !hasVfbRunQueryToolCall)
       )
 
@@ -3222,6 +3387,7 @@ async function processResponseStream({
             userMessage,
             explicitRunQueryRequested,
             connectivityIntent,
+            requireConnectivityComparison: directionalConnectivityRequested,
             requestedQueryTypes,
             hasCanonicalIdInUserMessage
           })
@@ -3355,6 +3521,7 @@ async function processResponseStream({
           userMessage,
           explicitRunQueryRequested,
           connectivityIntent,
+          requireConnectivityComparison: directionalConnectivityRequested,
           missingRunQueryExecution: true,
           requestedQueryTypes,
           hasCanonicalIdInUserMessage
@@ -3383,6 +3550,56 @@ async function processResponseStream({
           toolRounds,
           errorMessage: `Failed to honor requested vfb_run_query flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
           errorCategory: 'vfb_run_query_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (directionalConnectivityRequested && (toolUsage.vfb_query_connectivity || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring directional connectivity workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireConnectivityComparison: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor directional connectivity flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'directional_connectivity_enforcement_failed',
           errorStatus: correctionResponse.status
         }
       }
