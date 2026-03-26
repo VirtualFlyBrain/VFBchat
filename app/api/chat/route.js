@@ -176,6 +176,139 @@ function linkifyFollowUpQueryItems(text = '') {
   return linkedLines.join('\n')
 }
 
+function normalizeGraphSpec(rawSpec = {}) {
+  if (!rawSpec || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) return null
+
+  const rawNodes = Array.isArray(rawSpec.nodes) ? rawSpec.nodes : []
+  const rawEdges = Array.isArray(rawSpec.edges) ? rawSpec.edges : []
+  if (rawNodes.length === 0 || rawEdges.length === 0) return null
+
+  const nodes = []
+  const nodeIdSet = new Set()
+  for (const rawNode of rawNodes.slice(0, 80)) {
+    if (!rawNode || typeof rawNode !== 'object') continue
+    const id = String(rawNode.id || '').trim()
+    if (!id || nodeIdSet.has(id)) continue
+    nodeIdSet.add(id)
+
+    const label = String(rawNode.label || id).trim() || id
+    const group = rawNode.group === undefined || rawNode.group === null
+      ? null
+      : String(rawNode.group).trim() || null
+    const color = typeof rawNode.color === 'string' && /^#[0-9a-f]{6}$/i.test(rawNode.color.trim())
+      ? rawNode.color.trim()
+      : null
+    const parsedSize = Number(rawNode.size)
+    const size = Number.isFinite(parsedSize)
+      ? Math.min(Math.max(parsedSize, 0.5), 4)
+      : 1
+
+    nodes.push({ id, label, group, color, size })
+  }
+
+  if (nodes.length === 0) return null
+
+  const knownNodeIds = new Set(nodes.map(node => node.id))
+  const edges = []
+  for (const rawEdge of rawEdges.slice(0, 200)) {
+    if (!rawEdge || typeof rawEdge !== 'object') continue
+    const source = String(rawEdge.source || '').trim()
+    const target = String(rawEdge.target || '').trim()
+    if (!source || !target) continue
+
+    if (!knownNodeIds.has(source)) {
+      knownNodeIds.add(source)
+      nodes.push({ id: source, label: source, group: null, color: null, size: 1 })
+    }
+    if (!knownNodeIds.has(target)) {
+      knownNodeIds.add(target)
+      nodes.push({ id: target, label: target, group: null, color: null, size: 1 })
+    }
+
+    const label = rawEdge.label === undefined || rawEdge.label === null
+      ? null
+      : String(rawEdge.label).trim() || null
+    const parsedWeight = Number(rawEdge.weight)
+    const weight = Number.isFinite(parsedWeight)
+      ? Math.min(Math.max(parsedWeight, 0), 1_000_000)
+      : null
+
+    edges.push({ source, target, label, weight })
+  }
+
+  if (edges.length === 0) return null
+
+  const layout = rawSpec.layout === 'radial' ? 'radial' : 'circle'
+  const directed = rawSpec.directed !== false
+  const title = rawSpec.title === undefined || rawSpec.title === null
+    ? null
+    : String(rawSpec.title).trim() || null
+
+  return {
+    type: 'basic_graph',
+    version: 1,
+    title,
+    directed,
+    layout,
+    nodes,
+    edges
+  }
+}
+
+function extractGraphSpecsFromResponseText(responseText = '') {
+  if (!responseText) return { textWithoutGraphs: responseText, graphs: [] }
+
+  const graphs = []
+  const graphBlockRegex = /```(?:vfb-graph|vfb_graph|graphjson|graph-json)\s*([\s\S]*?)```/gi
+  const textWithoutGraphs = responseText.replace(graphBlockRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      const normalized = normalizeGraphSpec(parsed)
+      if (normalized) {
+        graphs.push(normalized)
+        return ''
+      }
+    } catch {
+      // Keep original block when parsing fails.
+    }
+    return match
+  })
+
+  return { textWithoutGraphs, graphs }
+}
+
+function extractGraphSpecsFromToolOutputs(toolOutputs = []) {
+  const graphs = []
+  for (const output of toolOutputs) {
+    if (output?.name !== 'create_basic_graph') continue
+    const normalized = normalizeGraphSpec(output.output)
+    if (normalized) graphs.push(normalized)
+  }
+  return graphs
+}
+
+function dedupeGraphSpecs(graphs = []) {
+  const deduped = []
+  const seen = new Set()
+
+  for (const graph of graphs) {
+    const normalized = normalizeGraphSpec(graph)
+    if (!normalized) continue
+    const key = JSON.stringify({
+      title: normalized.title,
+      directed: normalized.directed,
+      layout: normalized.layout,
+      nodes: normalized.nodes.map(node => node.id).sort(),
+      edges: normalized.edges.map(edge => `${edge.source}->${edge.target}:${edge.label || ''}:${edge.weight || ''}`).sort()
+    })
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(normalized)
+  }
+
+  return deduped.slice(0, 3)
+}
+
 function extractImagesFromResponseText(responseText = '') {
   const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
   const images = []
@@ -193,10 +326,12 @@ function extractImagesFromResponseText(responseText = '') {
   return images
 }
 
-function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList }) {
+function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList, graphSpecs = [] }) {
   const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(responseText, outboundAllowList)
-  const linkedResponseText = linkifyFollowUpQueryItems(sanitizedText)
+  const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
+  const linkedResponseText = linkifyFollowUpQueryItems(textWithoutGraphs)
   const images = extractImagesFromResponseText(linkedResponseText)
+  const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...inlineGraphs])
 
   return {
     ok: true,
@@ -205,6 +340,7 @@ function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRo
     toolRounds,
     responseText: linkedResponseText,
     images,
+    graphs,
     blockedResponseDomains: blockedDomains
   }
 }
@@ -534,6 +670,50 @@ function getToolConfig() {
         group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs' },
         exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
       }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'create_basic_graph',
+    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Optional graph title' },
+        directed: { type: 'boolean', description: 'Whether edges are directed (default true)' },
+        layout: { type: 'string', enum: ['circle', 'radial'], description: 'Simple layout hint (default circle)' },
+        nodes: {
+          type: 'array',
+          description: 'Graph nodes',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Unique node identifier' },
+              label: { type: 'string', description: 'Display label for the node' },
+              group: { type: 'string', description: 'Optional group/type' },
+              color: { type: 'string', description: 'Optional color in #RRGGBB format' },
+              size: { type: 'number', description: 'Optional relative node size (1-3 recommended)' }
+            },
+            required: ['id']
+          }
+        },
+        edges: {
+          type: 'array',
+          description: 'Graph edges',
+          items: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', description: 'Source node id' },
+              target: { type: 'string', description: 'Target node id' },
+              label: { type: 'string', description: 'Optional edge label' },
+              weight: { type: 'number', description: 'Optional edge weight for styling/labels' }
+            },
+            required: ['source', 'target']
+          }
+        }
+      },
+      required: ['nodes', 'edges']
     }
   })
 
@@ -1243,6 +1423,14 @@ async function fetchCachedVfbRunQuery(id, queryType) {
   }
 }
 
+function createBasicGraph(args = {}) {
+  const normalized = normalizeGraphSpec(args)
+  if (!normalized) {
+    throw new Error('Invalid graph spec. Provide non-empty nodes and edges with valid ids, source, and target fields.')
+  }
+  return normalized
+}
+
 async function executeFunctionTool(name, args) {
   if (name === 'search_pubmed') {
     return searchPubmed(args.query, args.max_results, args.sort)
@@ -1258,6 +1446,10 @@ async function executeFunctionTool(name, args) {
 
   if (name === 'get_reviewed_page') {
     return getReviewedPage(args.url)
+  }
+
+  if (name === 'create_basic_graph') {
+    return createBasicGraph(args)
   }
 
   const routing = MCP_TOOL_ROUTING[name]
@@ -1584,6 +1776,7 @@ TOOLS:
 - vfb_resolve_entity / vfb_find_stocks: resolve FlyBase entity names and find relevant stocks
 - vfb_resolve_combination / vfb_find_combo_publications: resolve split-GAL4 combinations and fetch linked publications
 - vfb_list_connectome_datasets / vfb_query_connectivity: comparative class-level or neuron-level connectivity across datasets
+- create_basic_graph: package node/edge graph specs for UI graph rendering
 - search_reviewed_docs: search approved VFB, NeuroFly, VFB Connect docs, and reviewed FlyBase pages using a server-side site index
 - get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
@@ -1602,6 +1795,7 @@ TOOL SELECTION:
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
 - For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
+- When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
 ENTITY RESOLUTION RULES:
@@ -1628,6 +1822,12 @@ FORMATTING VFB REFERENCES:
 - When thumbnail URLs are present in tool output, include them using markdown image syntax
 - Only use thumbnail URLs that actually appear in tool results
 
+GRAPH VISUALS:
+- Graph rendering is optional and should be used only when it improves clarity for this specific answer.
+- For connectivity answers, use at most one concise graph (typically 4-20 nodes) when a visual summary is clearer than text alone.
+- Keep graph specs focused on the strongest relationships and avoid very dense or exhaustive graphs.
+- Skip graph output when a short table or plain-language summary is clearer.
+
 TOOL RELAY:
 - You can request server-side tool execution using the tool relay protocol.
 - If tool results are available, use them directly and do not invent missing values.
@@ -1637,6 +1837,10 @@ FOLLOW-UP QUESTIONS:
 When useful, suggest 2-3 short potential follow-up questions that are directly answerable with the available tools in this chat.`
 
 function getStatusForTool(toolName) {
+  if (toolName === 'create_basic_graph') {
+    return { message: 'Preparing graph view', phase: 'llm' }
+  }
+
   if (toolName === 'vfb_query_connectivity') {
     return { message: 'Comparing connectome datasets', phase: 'mcp' }
   }
@@ -1825,6 +2029,7 @@ function buildToolPolicyCorrectionMessage({
     '- Choose the smallest set of tools that best answers the user request.',
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
     '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
+    '- If the result is connectivity-heavy and a graph would help, consider create_basic_graph for a compact node/edge view.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
     '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
   ]
@@ -2025,6 +2230,7 @@ async function requestNoToolFallbackResponse({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   statusMessage,
   instruction
 }) {
@@ -2069,7 +2275,8 @@ async function requestNoToolFallbackResponse({
     responseId,
     toolUsage,
     toolRounds,
-    outboundAllowList
+    outboundAllowList,
+    graphSpecs
   })
 }
 
@@ -2083,6 +2290,7 @@ async function requestToolLimitSummary({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   maxToolRounds,
   userMessage
 }) {
@@ -2112,6 +2320,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Summarizing partial results',
     instruction: summaryInstruction
   })
@@ -2128,6 +2337,7 @@ async function requestClarifyingFollowUp({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   userMessage,
   reason
 }) {
@@ -2156,6 +2366,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Clarifying next step',
     instruction: clarificationInstruction
   })
@@ -2172,6 +2383,7 @@ async function requestStreamFailureRecovery({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   userMessage,
   reason
 }) {
@@ -2203,6 +2415,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Recovering partial answer',
     instruction: recoveryInstruction
   })
@@ -2224,6 +2437,7 @@ async function processResponseStream({
   const maxToolPolicyCorrections = 3
   const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage)
   const connectivityIntent = hasConnectivityIntent(userMessage)
+  const collectedGraphSpecs = []
   let currentResponse = apiResponse
   let latestResponseId = null
   let toolRounds = 0
@@ -2245,6 +2459,7 @@ async function processResponseStream({
         outboundAllowList,
         toolUsage,
         toolRounds,
+        graphSpecs: collectedGraphSpecs,
         userMessage,
         reason: errorMessage || 'The AI service returned an unexpected stream error.'
       })
@@ -2370,6 +2585,11 @@ async function processResponseStream({
         }
       }))
 
+      const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
+      if (graphSpecsFromTools.length > 0) {
+        collectedGraphSpecs.push(...graphSpecsFromTools)
+      }
+
       if (textAccumulator.trim()) {
         accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
       }
@@ -2469,6 +2689,7 @@ async function processResponseStream({
         outboundAllowList,
         toolUsage,
         toolRounds,
+        graphSpecs: collectedGraphSpecs,
         userMessage,
         reason: 'empty_response'
       })
@@ -2502,6 +2723,7 @@ async function processResponseStream({
         outboundAllowList,
         toolUsage,
         toolRounds,
+        graphSpecs: collectedGraphSpecs,
         userMessage,
         reason: 'invalid_tool_call_payload'
       })
@@ -2525,7 +2747,8 @@ async function processResponseStream({
       responseId: latestResponseId,
       toolUsage,
       toolRounds,
-      outboundAllowList
+      outboundAllowList,
+      graphSpecs: collectedGraphSpecs
     })
   }
 
@@ -2539,6 +2762,7 @@ async function processResponseStream({
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs: collectedGraphSpecs,
     maxToolRounds,
     userMessage
   })
@@ -2852,6 +3076,7 @@ export async function POST(request) {
       sendEvent('result', {
         response: result.responseText,
         images: result.images,
+        graphs: result.graphs,
         newScene: scene,
         requestId,
         responseId

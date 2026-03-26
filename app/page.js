@@ -15,6 +15,158 @@ const FEEDBACK_REASON_LABELS = {
   out_of_scope_refusal: 'Out of scope/refusal'
 }
 
+const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
+
+function hashString(value = '') {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+const BasicGraphView = memo(function BasicGraphView({ graph, graphKey }) {
+  const width = 640
+  const height = 360
+  const centerX = width / 2
+  const centerY = height / 2
+
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
+  const edges = Array.isArray(graph?.edges) ? graph.edges : []
+  if (nodes.length === 0 || edges.length === 0) return null
+
+  const radius = Math.max(90, Math.min(width, height) / 2 - 64)
+  const positionedNodes = nodes.map((node, index) => {
+    const angle = nodes.length === 1
+      ? 0
+      : ((2 * Math.PI * index) / nodes.length) - (Math.PI / 2)
+
+    return {
+      ...node,
+      x: centerX + (radius * Math.cos(angle)),
+      y: centerY + (radius * Math.sin(angle))
+    }
+  })
+
+  const nodeById = new Map(positionedNodes.map(node => [String(node.id), node]))
+  const visibleEdges = edges
+    .map(edge => ({
+      ...edge,
+      source: String(edge.source),
+      target: String(edge.target)
+    }))
+    .filter(edge => nodeById.has(edge.source) && nodeById.has(edge.target))
+
+  const markerId = `arrow-${hashString(String(graphKey || graph?.title || 'graph'))}`
+
+  return (
+    <div style={{
+      marginTop: '10px',
+      border: '1px solid #2a2a2a',
+      borderRadius: '8px',
+      backgroundColor: '#0f0f12',
+      padding: '10px'
+    }}>
+      {graph?.title && (
+        <div style={{
+          fontSize: '0.82em',
+          color: '#9ecbff',
+          marginBottom: '6px',
+          fontWeight: 600
+        }}>
+          {graph.title}
+        </div>
+      )}
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+        {graph?.directed !== false && (
+          <defs>
+            <marker
+              id={markerId}
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280" />
+            </marker>
+          </defs>
+        )}
+
+        {visibleEdges.map((edge, index) => {
+          const sourceNode = nodeById.get(edge.source)
+          const targetNode = nodeById.get(edge.target)
+          const rawWeight = Number(edge.weight)
+          const strokeWidth = Number.isFinite(rawWeight)
+            ? Math.min(4, Math.max(1, 1 + (Math.log10(rawWeight + 1))))
+            : 1.4
+          const midX = (sourceNode.x + targetNode.x) / 2
+          const midY = (sourceNode.y + targetNode.y) / 2
+          const edgeText = edge.label || (Number.isFinite(rawWeight) ? `${rawWeight}` : '')
+
+          return (
+            <g key={`edge-${index}-${edge.source}-${edge.target}`}>
+              <line
+                x1={sourceNode.x}
+                y1={sourceNode.y}
+                x2={targetNode.x}
+                y2={targetNode.y}
+                stroke="#6b7280"
+                strokeWidth={strokeWidth}
+                opacity={0.9}
+                markerEnd={graph?.directed === false ? undefined : `url(#${markerId})`}
+              />
+              {edgeText && (
+                <text
+                  x={midX}
+                  y={midY - 5}
+                  fill="#cbd5e1"
+                  fontSize="11"
+                  textAnchor="middle"
+                  style={{ paintOrder: 'stroke', stroke: '#0f0f12', strokeWidth: 3 }}
+                >
+                  {edgeText}
+                </text>
+              )}
+            </g>
+          )
+        })}
+
+        {positionedNodes.map((node, index) => {
+          const groupKey = String(node.group || node.label || node.id)
+          const color = (typeof node.color === 'string' && /^#[0-9a-f]{6}$/i.test(node.color))
+            ? node.color
+            : GRAPH_PALETTE[hashString(groupKey) % GRAPH_PALETTE.length]
+          const nodeRadius = Math.min(18, Math.max(7, 8 + (Number(node.size) || 1)))
+          return (
+            <g key={`node-${node.id}-${index}`}>
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={nodeRadius}
+                fill={color}
+                stroke="#111827"
+                strokeWidth="1.5"
+              />
+              <text
+                x={node.x}
+                y={node.y + nodeRadius + 13}
+                fill="#e5e7eb"
+                fontSize="12"
+                textAnchor="middle"
+              >
+                {node.label || node.id}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+})
+
 // ── Memoized single-message bubble ──────────────────────────────────
 // Only re-renders when its own props change, NOT when sibling messages
 // are added or the thinking indicator ticks.
@@ -66,6 +218,17 @@ const ChatMessage = memo(function ChatMessage({
           {msg.content}
         </ReactMarkdown>
       </div>
+      {Array.isArray(msg.graphs) && msg.graphs.length > 0 && (
+        <div>
+          {msg.graphs.map((graph, graphIndex) => (
+            <BasicGraphView
+              key={`${msg.id}-graph-${graphIndex}`}
+              graph={graph}
+              graphKey={`${msg.id}-${graphIndex}`}
+            />
+          ))}
+        </div>
+      )}
       {/* Image gallery from API images field */}
       {msg.images && msg.images.length > 0 && (
         <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -479,6 +642,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               } else if (currentEvent === 'result') {
                 setMessages(prev => [...prev, makeMsg('assistant', data.response, {
                   images: data.images,
+                  graphs: data.graphs,
                   requestId: data.requestId,
                   responseId: data.responseId
                 })])
