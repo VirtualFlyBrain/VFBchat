@@ -582,10 +582,10 @@ function getToolConfig() {
       properties: {
         id: {
           oneOf: [
-            { type: 'string', description: 'A single VFB ID such as VFB_00102107 or FBbt_00003748' },
-            { type: 'array', items: { type: 'string' }, description: 'Array of VFB IDs for batch lookup' }
+            { type: 'string', description: 'A single plain VFB ID such as VFB_00102107 or FBbt_00003748 — do NOT use markdown links, IRIs, or labels' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of plain VFB IDs (e.g. ["VFB_00102107", "FBbt_00003748"])' }
           ],
-          description: 'One or more VFB IDs to look up'
+          description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
         }
       },
       required: ['id']
@@ -601,10 +601,10 @@ function getToolConfig() {
       properties: {
         id: {
           oneOf: [
-            { type: 'string', description: 'A single VFB ID to query' },
-            { type: 'array', items: { type: 'string' }, description: 'Array of VFB IDs to query with the same query_type' }
+            { type: 'string', description: 'A single plain VFB ID (e.g. FBbt_00003748) — do NOT use markdown links, IRIs, or labels' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of plain VFB IDs' }
           ],
-          description: 'One or more VFB IDs'
+          description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
         },
         query_type: { type: 'string', description: 'A query type returned by vfb_get_term_info for that term' },
         queries: {
@@ -613,7 +613,7 @@ function getToolConfig() {
           items: {
             type: 'object',
             properties: {
-              id: { type: 'string', description: 'VFB ID' },
+              id: { type: 'string', description: 'Plain VFB ID (e.g. FBbt_00003748) — not a markdown link or IRI' },
               query_type: { type: 'string', description: 'Query type for this VFB ID' }
             },
             required: ['id', 'query_type']
@@ -693,8 +693,8 @@ function getToolConfig() {
     parameters: {
       type: 'object',
       properties: {
-        upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class label or FBbt ID' },
-        downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class label or FBbt ID' },
+        upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class plain FBbt ID (e.g. FBbt_00048241) or label — do NOT use markdown links or IRIs' },
+        downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class plain FBbt ID (e.g. FBbt_00047039) or label — do NOT use markdown links or IRIs' },
         weight: { type: 'number', description: 'Minimum synapse count threshold (default 5)' },
         group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true)' },
         exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
@@ -1489,6 +1489,35 @@ function extractQueryNamesFromTermInfoPayload(rawPayload) {
 const VFB_TERM_ID_TOKEN_REGEX = /\b(?:FBbt_\d{8}|VFB_\d{8})\b/i
 const VFB_NEURON_CLASS_ID_REGEX = /^FBbt_\d{8}$/i
 
+/**
+ * Sanitize a single VFB ID value that may arrive as a plain ID, markdown link,
+ * full IRI, or a mixture (e.g. "[FBbt_00048241](https://virtualflybrain.org/reports/FBbt_00048241)").
+ * Returns the canonical short-form ID (e.g. "FBbt_00048241") when one can be
+ * extracted, or the original trimmed string when no ID pattern is found
+ * (allowing labels/names to pass through for tools that accept them).
+ */
+function sanitizeVfbId(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  // Try to pull a canonical VFB/FBbt ID from anywhere in the string
+  const canonicalId = extractCanonicalVfbTermId(text)
+  if (canonicalId) return canonicalId
+
+  // Fall back: strip markdown link wrapper so at least the link text is used
+  return stripMarkdownLinkText(text)
+}
+
+/**
+ * Sanitize an `id` argument that may be a single value or an array.
+ */
+function sanitizeVfbIdParam(value) {
+  if (Array.isArray(value)) {
+    return value.map(v => sanitizeVfbId(v)).filter(Boolean)
+  }
+  return sanitizeVfbId(value)
+}
+
 function parseJsonPayload(rawPayload) {
   if (rawPayload === null || rawPayload === undefined) return null
   if (typeof rawPayload === 'object') return rawPayload
@@ -1767,6 +1796,20 @@ async function executeFunctionTool(name, args) {
     const cleanArgs = {}
     for (const [key, value] of Object.entries(args || {})) {
       if (value !== undefined && value !== null) cleanArgs[key] = value
+    }
+
+    // Sanitize VFB ID parameters across all VFB tools — the LLM sometimes
+    // passes markdown links, full IRIs, or a mixture instead of plain IDs.
+    if (routing.server === 'vfb') {
+      if (cleanArgs.id !== undefined) {
+        cleanArgs.id = sanitizeVfbIdParam(cleanArgs.id)
+      }
+      if (Array.isArray(cleanArgs.queries)) {
+        cleanArgs.queries = cleanArgs.queries.map(q => ({
+          ...q,
+          ...(q.id !== undefined ? { id: sanitizeVfbId(q.id) } : {})
+        }))
+      }
     }
 
     // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
@@ -2235,19 +2278,25 @@ ${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
 - Choose tools dynamically based on the user request and available evidence; the guidance below is preferred, not a rigid workflow.
+- IMPORTANT: Always prefer VFB data tools over literature search (PubMed/bioRxiv) for questions about anatomy, neurons, connectivity, gene expression, or any query that VFB tools can answer with data. Only use PubMed/bioRxiv when the user specifically asks about publications, or when VFB tool results reference a paper and the user wants more details.
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
 - For VFB entity questions where suitable query types are available, prefer vfb_get_term_info + vfb_run_query as a first pass because vfb_run_query is usually cached and faster.
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
 - vfb_query_connectivity requires neuron class inputs. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
-- Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
+- Questions about published papers or recent literature (only when explicitly asked): use PubMed first, optionally bioRxiv/medRxiv for preprints
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
-- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
+- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not search PubMed or reviewed-docs first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
 - If vfb_query_connectivity returns requires_user_selection: true, do not claim connectivity results. Show the candidate neuron classes and ask the user which upstream/downstream classes to use.
 - When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
+
+TOOL PARAMETER IDs:
+- When passing IDs to tool parameters, ALWAYS use plain short-form IDs (e.g. FBbt_00048241, VFB_00102107).
+- NEVER pass markdown links, full IRIs/URLs, labels, or symbols as ID parameters.
+- Markdown link formatting is for your response text only, not for tool arguments.
 
 ENTITY RESOLUTION RULES:
 - If vfb_resolve_entity or vfb_resolve_combination returns match_type SYNONYM or BROAD, confirm the resolved entity with the user before running downstream tools.
@@ -2268,8 +2317,8 @@ CITATIONS:
 - Use markdown links with human-readable titles, not bare URLs or raw IDs when a title is available
 - For FlyBase references, prefer author/year or paper title as the link text
 
-FORMATTING VFB REFERENCES:
-- Use markdown links with descriptive names, not bare VFB or FBbt IDs
+FORMATTING VFB REFERENCES (response text only — NOT for tool parameters):
+- Use markdown links with descriptive names, not bare VFB or FBbt IDs in your response text
 - When thumbnail URLs are present in tool output, include them using markdown image syntax
 - Only use thumbnail URLs that actually appear in tool results
 
