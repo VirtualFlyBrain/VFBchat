@@ -661,6 +661,96 @@ const MCP_TOOL_ROUTING = {
   biorxiv_get_categories: { server: 'biorxiv', mcpName: 'get_categories' }
 }
 
+const VFB_CACHED_TERM_INFO_URL = 'https://v3-cached.virtualflybrain.org/get_term_info'
+const VFB_CACHED_RUN_QUERY_URL = 'https://v3-cached.virtualflybrain.org/run_query'
+const VFB_CACHED_TERM_INFO_TIMEOUT_MS = 12000
+
+function isRetryableMcpError(error) {
+  const message = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('abort') ||
+    message.includes('network') ||
+    message.includes('fetch failed') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('enotfound') ||
+    message.includes('etimedout') ||
+    message.includes('eai_again') ||
+    message.includes('connectivity')
+  )
+}
+
+async function fetchCachedVfbTermInfo(id) {
+  const safeId = String(id || '').trim()
+  if (!safeId) throw new Error('Missing id for cached VFB get_term_info fallback.')
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
+
+  try {
+    const cacheUrl = `${VFB_CACHED_TERM_INFO_URL}?id=${encodeURIComponent(safeId)}`
+    const response = await fetch(cacheUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      throw new Error(`Cached VFB get_term_info failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
+    }
+
+    const responseText = await response.text()
+    try {
+      JSON.parse(responseText)
+    } catch {
+      throw new Error('Cached VFB get_term_info returned non-JSON payload.')
+    }
+
+    return responseText
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function fetchCachedVfbRunQuery(id, queryType) {
+  const safeId = String(id || '').trim()
+  const safeQueryType = String(queryType || '').trim()
+  if (!safeId || !safeQueryType) {
+    throw new Error('Missing id or query_type for cached VFB run_query fallback.')
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
+
+  try {
+    const cacheUrl = `${VFB_CACHED_RUN_QUERY_URL}?id=${encodeURIComponent(safeId)}&query_type=${encodeURIComponent(safeQueryType)}`
+    const response = await fetch(cacheUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      throw new Error(`Cached VFB run_query failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
+    }
+
+    const responseText = await response.text()
+    try {
+      JSON.parse(responseText)
+    } catch {
+      throw new Error('Cached VFB run_query returned non-JSON payload.')
+    }
+
+    return responseText
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 async function executeFunctionTool(name, args) {
   if (name === 'search_pubmed') {
     return searchPubmed(args.query, args.max_results, args.sort)
@@ -689,15 +779,55 @@ async function executeFunctionTool(name, args) {
       if (value !== undefined && value !== null) cleanArgs[key] = value
     }
 
-    const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
-    if (result?.content) {
-      const texts = result.content
-        .filter(item => item.type === 'text')
-        .map(item => item.text)
-      return texts.join('\n') || JSON.stringify(result.content)
-    }
+    try {
+      const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
+      if (result?.content) {
+        const texts = result.content
+          .filter(item => item.type === 'text')
+          .map(item => item.text)
+        return texts.join('\n') || JSON.stringify(result.content)
+      }
 
-    return JSON.stringify(result)
+      return JSON.stringify(result)
+    } catch (error) {
+      const shouldUseCachedTermInfoFallback =
+        name === 'vfb_get_term_info' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        isRetryableMcpError(error)
+
+      if (shouldUseCachedTermInfoFallback) {
+        try {
+          return await fetchCachedVfbTermInfo(cleanArgs.id)
+        } catch (fallbackError) {
+          throw new Error(
+            `VFB MCP get_term_info failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      const shouldUseCachedRunQueryFallback =
+        name === 'vfb_run_query' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        typeof cleanArgs.query_type === 'string' &&
+        cleanArgs.query_type.trim().length > 0 &&
+        isRetryableMcpError(error)
+
+      if (shouldUseCachedRunQueryFallback) {
+        try {
+          return await fetchCachedVfbRunQuery(cleanArgs.id, cleanArgs.query_type)
+        } catch (fallbackError) {
+          throw new Error(
+            `VFB MCP run_query failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      throw error
+    }
   }
 
   throw new Error(`Unknown function tool: ${name}`)
