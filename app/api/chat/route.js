@@ -2584,7 +2584,7 @@ async function processResponseStream({
   const outboundAllowList = getOutboundAllowList()
   const toolUsage = {}
   const accumulatedItems = []
-  const maxToolRounds = 10
+  const maxToolRounds = 50
   const maxToolPolicyCorrections = 3
   const requestedQueryTypes = extractRequestedVfbQueryShortNames(userMessage)
   const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage) || requestedQueryTypes.length > 0
