@@ -1550,10 +1550,23 @@ function normalizeConnectivityEndpointValue(value = '') {
   const text = String(value || '').trim()
   if (!text) return ''
 
+  const strippedText = stripMarkdownLinkText(text).trim()
   const canonicalId = extractCanonicalVfbTermId(text)
-  if (canonicalId) return canonicalId
+  if (canonicalId) {
+    const descriptiveText = strippedText
+      .replace(/\b(?:FBbt_\d{8}|VFB_\d{8})\b/ig, ' ')
+      .replace(/[\[\](){}<>.,;:]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
 
-  return stripMarkdownLinkText(text)
+    // When input mixes label text with an ID (for example a markdown link),
+    // prefer resolving from the label to avoid trusting a potentially wrong ID.
+    if (descriptiveText) return descriptiveText
+
+    return canonicalId
+  }
+
+  return strippedText
 }
 
 function extractTermInfoRecordFromPayload(rawPayload, requestedId = '') {
@@ -1689,10 +1702,17 @@ function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
 
   const fbbtDocs = docs.filter(doc => /^FBbt_\d{8}$/i.test(String(doc?.short_form || doc?.shortForm || '').trim()))
   const candidateDocs = fbbtDocs.length > 0 ? fbbtDocs : docs
+  const neuronDocs = candidateDocs.filter(doc => {
+    const facets = Array.isArray(doc?.facets_annotation)
+      ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
+      : []
+    return facets.includes('neuron')
+  })
+  const scoredDocs = neuronDocs.length > 0 ? neuronDocs : candidateDocs
 
   let bestDoc = null
   let bestScore = Number.NEGATIVE_INFINITY
-  for (const doc of candidateDocs) {
+  for (const doc of scoredDocs) {
     const score = scoreSearchDocForConnectivityEndpoint(doc, queryText)
     if (score > bestScore) {
       bestScore = score
@@ -1730,9 +1750,18 @@ function buildNeuronsPartHereLink(termId = '') {
   return `${VFB_QUERY_LINK_BASE}${encodeURIComponent(termId)},${encodeURIComponent('NeuronsPartHere')}`
 }
 
-function isNeuronClassTerm(termRecord) {
+function getSuperTypeSet(termRecord) {
   const superTypes = Array.isArray(termRecord?.SuperTypes) ? termRecord.SuperTypes : []
-  return superTypes.some(type => String(type || '').toLowerCase() === 'neuron')
+  return new Set(
+    superTypes
+      .map(type => String(type || '').trim().toLowerCase())
+      .filter(Boolean)
+  )
+}
+
+function isNeuronClassTerm(termRecord) {
+  const superTypeSet = getSuperTypeSet(termRecord)
+  return superTypeSet.has('neuron') && superTypeSet.has('class')
 }
 
 function getReadableTermName(termRecord, fallback = '') {
@@ -1859,11 +1888,17 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
       side,
       raw_input: String(rawValue || ''),
       normalized_input: normalizedValue,
+      resolved_input: termId,
       term_id: termId,
       term_name: termName,
       requires_selection: false
     }
   }
+
+  const superTypeSet = getSuperTypeSet(termRecord)
+  const missingRequiredSuperTypes = []
+  if (!superTypeSet.has('neuron')) missingRequiredSuperTypes.push('Neuron')
+  if (!superTypeSet.has('class')) missingRequiredSuperTypes.push('Class')
 
   const queryNames = extractQueryNamesFromTermInfoPayload(termInfoText)
   const hasNeuronsPartHere = queryNames.includes('NeuronsPartHere')
@@ -1891,6 +1926,7 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
     term_id: termId,
     term_name: termName,
     super_types: Array.isArray(termRecord.SuperTypes) ? termRecord.SuperTypes : [],
+    missing_required_supertypes: missingRequiredSuperTypes,
     requires_selection: true,
     selection_query: hasNeuronsPartHere ? 'NeuronsPartHere' : null,
     selection_query_link: suggestionLink,
@@ -2004,7 +2040,7 @@ async function executeFunctionTool(name, args) {
         return JSON.stringify({
           requires_user_selection: true,
           tool: 'vfb_query_connectivity',
-          message: 'vfb_query_connectivity requires neuron class inputs. One or more provided terms are anatomy regions rather than neuron classes.',
+          message: 'vfb_query_connectivity requires neuron class inputs. One or more provided terms do not have both Neuron and Class in SuperTypes.',
           instruction: 'Ask the user to choose one neuron class from each side before running connectivity.',
           selections_needed: selectionsNeeded
         })
@@ -2433,7 +2469,7 @@ TOOL SELECTION:
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
-- vfb_query_connectivity requires neuron class inputs. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
+- vfb_query_connectivity requires neuron class inputs, meaning each endpoint term should include both Neuron and Class in SuperTypes. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
 - For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
 - Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
 - Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
@@ -2810,7 +2846,14 @@ function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
       const termReference = formatSelectionTermReference(selection)
 
       lines.push('')
-      lines.push(`For the ${sideLabel} side, ${termReference} is an anatomy region rather than a neuron class.`)
+      const missingSuperTypes = Array.isArray(selection.missing_required_supertypes)
+        ? selection.missing_required_supertypes.filter(Boolean)
+        : []
+      if (missingSuperTypes.length > 0) {
+        lines.push(`For the ${sideLabel} side, ${termReference} is not a neuron class (missing SuperTypes: ${missingSuperTypes.join(', ')}).`)
+      } else {
+        lines.push(`For the ${sideLabel} side, ${termReference} is not a neuron class (required SuperTypes: Neuron, Class).`)
+      }
 
       const candidates = Array.isArray(selection.candidates) ? selection.candidates : []
       if (candidates.length > 0) {
