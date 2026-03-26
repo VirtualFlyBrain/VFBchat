@@ -343,7 +343,8 @@ async function finalizeGovernanceEvent({
 let vfbMcpClient = null
 let biorxivMcpClient = null
 
-const VFB_MCP_URL = 'https://vfb3-mcp.virtualflybrain.org/'
+const DEFAULT_VFB_MCP_URL = 'https://vfb3-mcp-preview.virtualflybrain.org/'
+const VFB_MCP_URL = (process.env.VFB_MCP_URL || '').trim() || DEFAULT_VFB_MCP_URL
 const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 
 async function getVfbMcpClient() {
@@ -410,11 +411,17 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_get_term_info',
-    description: 'Get detailed information about a VFB term by ID, including definitions, relationships, images, queries, and references.',
+    description: 'Get detailed information from VFB by ID. Supports batch requests using an array of IDs.',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The VFB term ID such as VFB_00102107 or FBbt_00003748' }
+        id: {
+          oneOf: [
+            { type: 'string', description: 'A single VFB ID such as VFB_00102107 or FBbt_00003748' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of VFB IDs for batch lookup' }
+          ],
+          description: 'One or more VFB IDs to look up'
+        }
       },
       required: ['id']
     }
@@ -423,14 +430,110 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_run_query',
-    description: 'Run analyses such as PaintedDomains, NBLAST, or connectivity on a VFB entity. Only use query types returned by vfb_get_term_info.',
+    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only query types returned by vfb_get_term_info.',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The VFB term ID to query' },
-        query_type: { type: 'string', description: 'A query type returned for the term by vfb_get_term_info' }
+        id: {
+          oneOf: [
+            { type: 'string', description: 'A single VFB ID to query' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of VFB IDs to query with the same query_type' }
+          ],
+          description: 'One or more VFB IDs'
+        },
+        query_type: { type: 'string', description: 'A query type returned by vfb_get_term_info for that term' },
+        queries: {
+          type: 'array',
+          description: 'Optional mixed batch input: each item has {id, query_type}. If provided, id/query_type are ignored.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'VFB ID' },
+              query_type: { type: 'string', description: 'Query type for this VFB ID' }
+            },
+            required: ['id', 'query_type']
+          }
+        }
+      }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_resolve_entity',
+    description: 'Resolve an unresolved FlyBase name/synonym to an ID and metadata (EXACT/SYNONYM/BROAD match).',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Raw unresolved FlyBase-related query, e.g. dpp, MB002B, SS04495, Hb9-GAL4' }
       },
-      required: ['id', 'query_type']
+      required: ['name']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_stocks',
+    description: 'Find fly stocks for a FlyBase feature ID (gene, allele, insertion, combination, or stock).',
+    parameters: {
+      type: 'object',
+      properties: {
+        feature_id: { type: 'string', description: 'FlyBase ID such as FBgn..., FBal..., FBti..., FBco..., or FBst...' },
+        collection_filter: { type: 'string', description: 'Optional stock centre filter, e.g. Bloomington, Kyoto, VDRC' }
+      },
+      required: ['feature_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_resolve_combination',
+    description: 'Resolve an unresolved split-GAL4 combination name/synonym to FBco ID and components.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Raw unresolved split-GAL4 combination text, e.g. MB002B or SS04495' }
+      },
+      required: ['name']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_combo_publications',
+    description: 'Find publications linked to a split-GAL4 combination by FBco ID, with DOI/PMID/PMCID when available.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fbco_id: { type: 'string', description: 'FlyBase combination ID such as FBco0000052' }
+      },
+      required: ['fbco_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_list_connectome_datasets',
+    description: 'List available connectome dataset symbols/labels for comparative connectivity queries.',
+    parameters: {
+      type: 'object',
+      properties: {}
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_query_connectivity',
+    description: 'Live comparative connectomics query between neuron classes across datasets. Can be slow.',
+    parameters: {
+      type: 'object',
+      properties: {
+        upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class label or FBbt ID' },
+        downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class label or FBbt ID' },
+        weight: { type: 'number', description: 'Minimum synapse count threshold (recommended default 5)' },
+        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs' },
+        exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
+      }
     }
   })
 
@@ -1038,6 +1141,12 @@ const MCP_TOOL_ROUTING = {
   vfb_search_terms: { server: 'vfb', mcpName: 'search_terms' },
   vfb_get_term_info: { server: 'vfb', mcpName: 'get_term_info' },
   vfb_run_query: { server: 'vfb', mcpName: 'run_query' },
+  vfb_resolve_entity: { server: 'vfb', mcpName: 'resolve_entity' },
+  vfb_find_stocks: { server: 'vfb', mcpName: 'find_stocks' },
+  vfb_resolve_combination: { server: 'vfb', mcpName: 'resolve_combination' },
+  vfb_find_combo_publications: { server: 'vfb', mcpName: 'find_combo_publications' },
+  vfb_list_connectome_datasets: { server: 'vfb', mcpName: 'list_connectome_datasets' },
+  vfb_query_connectivity: { server: 'vfb', mcpName: 'query_connectivity' },
   biorxiv_search_preprints: { server: 'biorxiv', mcpName: 'search_preprints' },
   biorxiv_get_preprint: { server: 'biorxiv', mcpName: 'get_preprint' },
   biorxiv_search_published_preprints: { server: 'biorxiv', mcpName: 'search_published_preprints' },
@@ -1472,6 +1581,9 @@ TOOLS:
 - vfb_search_terms: search VFB terms with filters
 - vfb_get_term_info: fetch detailed VFB term information
 - vfb_run_query: run VFB analyses returned by vfb_get_term_info
+- vfb_resolve_entity / vfb_find_stocks: resolve FlyBase entity names and find relevant stocks
+- vfb_resolve_combination / vfb_find_combo_publications: resolve split-GAL4 combinations and fetch linked publications
+- vfb_list_connectome_datasets / vfb_query_connectivity: comparative class-level or neuron-level connectivity across datasets
 - search_reviewed_docs: search approved VFB, NeuroFly, VFB Connect docs, and reviewed FlyBase pages using a server-side site index
 - get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
@@ -1480,15 +1592,26 @@ TOOLS:
 ${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
+- Choose tools dynamically based on the user request and available evidence; the guidance below is preferred, not a rigid workflow.
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
+- For VFB entity questions where suitable query types are available, prefer vfb_get_term_info + vfb_run_query as a first pass because vfb_run_query is usually cached and faster.
+- Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
+- Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
+- Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
 - Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
-- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query).
+- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
+
+ENTITY RESOLUTION RULES:
+- If vfb_resolve_entity or vfb_resolve_combination returns match_type SYNONYM or BROAD, confirm the resolved entity with the user before running downstream tools.
+- If resolver output includes multiple candidates, show a short disambiguation list and ask the user to choose before continuing.
+- If the user already provided a canonical FlyBase ID (for example FBgn..., FBal..., FBti..., FBco..., FBst...), you may call downstream tools directly.
 
 TOOL ECONOMY:
 - Prefer the fewest tool steps needed to produce a useful answer.
+- Start with cached vfb_run_query pathways when they can answer the question, then use other tools for deeper refinement only when needed.
 - Do not keep calling tools just to exhaustively enumerate large result sets.
 - If the question is broad or combinatorial, stop once you have enough evidence to give a partial answer.
 - For broad gene-expression or transgene-pattern requests, prefer a short representative list (about 3-5 items) and ask how the user wants to narrow further instead of trying to enumerate everything in one turn.
@@ -1511,9 +1634,13 @@ TOOL RELAY:
 - If a question needs data and no results are available yet, request tools first, then answer after results arrive.
 
 FOLLOW-UP QUESTIONS:
-When useful, suggest 2-3 short follow-up questions relevant to Drosophila neuroscience and actionable in this chat.`
+When useful, suggest 2-3 short potential follow-up questions that are directly answerable with the available tools in this chat.`
 
 function getStatusForTool(toolName) {
+  if (toolName === 'vfb_query_connectivity') {
+    return { message: 'Comparing connectome datasets', phase: 'mcp' }
+  }
+
   if (toolName.startsWith('vfb_')) {
     return { message: 'Querying the fly hive mind', phase: 'mcp' }
   }
@@ -1688,11 +1815,6 @@ function hasConnectivityIntent(message = '') {
   return /\b(connectome|connectivity|connection|connections|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast)\b/i.test(message)
 }
 
-function isDocsOnlyToolCallSet(toolCalls = []) {
-  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return false
-  return toolCalls.every(call => call.name === 'search_reviewed_docs' || call.name === 'get_reviewed_page')
-}
-
 function buildToolPolicyCorrectionMessage({
   userMessage = '',
   explicitRunQueryRequested = false,
@@ -1700,9 +1822,11 @@ function buildToolPolicyCorrectionMessage({
   missingRunQueryExecution = false
 }) {
   const policyBullets = [
-    '- For this request, prioritize VFB tools over reviewed-doc search.',
-    '- Use vfb_search_terms and/or vfb_get_term_info to identify the target entity and valid query types.',
-    '- Use vfb_run_query when a relevant query_type is available.'
+    '- Choose the smallest set of tools that best answers the user request.',
+    '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
+    '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
+    '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
+    '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
   ]
 
   if (explicitRunQueryRequested) {
@@ -1710,7 +1834,7 @@ function buildToolPolicyCorrectionMessage({
   }
 
   if (connectivityIntent) {
-    policyBullets.push('- This is a connectivity-style request; do not default to search_reviewed_docs first.')
+    policyBullets.push('- This is a connectivity-style request; favor VFB connectivity/query tools over docs-only search.')
   }
 
   if (missingRunQueryExecution) {
@@ -1974,6 +2098,7 @@ Using only the gathered tool outputs already provided in this conversation:
 - clearly say that the answer is partial because the request branched into too many tool steps
 - summarize the strongest findings you already have
 - end with 2-4 direct clarification questions the user can answer so you can continue in a narrower, lower-tool way
+- make those questions concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -2016,6 +2141,7 @@ Using only the existing conversation and any tool outputs already provided:
 - give a brief summary of what direction is available so far
 - do not invent missing facts
 - ask 2-4 short clarifying questions the user can answer so the next turn can be narrower and easier to resolve
+- keep clarifying questions concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -2062,6 +2188,7 @@ Using only the existing conversation, any tool outputs already provided, and any
 - if the evidence is still too incomplete, say that briefly and ask 2-4 short clarifying questions
 - prefer a short concrete answer over more questions if the available evidence already supports one
 - do not invent missing facts
+- if you ask questions, make them concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -2164,10 +2291,8 @@ async function processResponseStream({
 
     if (requestedToolCalls.length > 0) {
       const hasVfbToolCall = requestedToolCalls.some(toolCall => toolCall.name.startsWith('vfb_'))
-      const docsOnlyToolCalls = isDocsOnlyToolCallSet(requestedToolCalls)
       const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
-        (explicitRunQueryRequested && !hasVfbToolCall) ||
-        (connectivityIntent && docsOnlyToolCalls)
+        explicitRunQueryRequested && !hasVfbToolCall
       )
 
       if (shouldCorrectToolChoice) {
