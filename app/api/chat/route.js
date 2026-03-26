@@ -1470,6 +1470,249 @@ function extractQueryNamesFromTermInfoPayload(rawPayload) {
   return Array.from(new Set(queryNames))
 }
 
+const VFB_TERM_ID_TOKEN_REGEX = /\b(?:FBbt_\d{8}|VFB_\d{8})\b/i
+const VFB_NEURON_CLASS_ID_REGEX = /^FBbt_\d{8}$/i
+
+function parseJsonPayload(rawPayload) {
+  if (rawPayload === null || rawPayload === undefined) return null
+  if (typeof rawPayload === 'object') return rawPayload
+  if (typeof rawPayload !== 'string') return null
+
+  try {
+    return JSON.parse(rawPayload)
+  } catch {
+    return null
+  }
+}
+
+function stripMarkdownLinkText(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const markdownLinkMatch = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+  if (!markdownLinkMatch) return text
+
+  return markdownLinkMatch[1]?.trim() || text
+}
+
+function extractCanonicalVfbTermId(value = '') {
+  const text = String(value || '')
+  const tokenMatch = text.match(VFB_TERM_ID_TOKEN_REGEX)
+  return tokenMatch ? tokenMatch[0] : null
+}
+
+function normalizeConnectivityEndpointValue(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const canonicalId = extractCanonicalVfbTermId(text)
+  if (canonicalId) return canonicalId
+
+  return stripMarkdownLinkText(text)
+}
+
+function extractTermInfoRecordFromPayload(rawPayload, requestedId = '') {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return null
+
+  if (parsed.Id || Array.isArray(parsed.SuperTypes) || Array.isArray(parsed.Queries)) {
+    return parsed
+  }
+
+  if (requestedId && parsed[requestedId] && typeof parsed[requestedId] === 'object') {
+    return parsed[requestedId]
+  }
+
+  for (const value of Object.values(parsed)) {
+    if (!value || typeof value !== 'object') continue
+    if (value.Id || Array.isArray(value.SuperTypes) || Array.isArray(value.Queries)) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function extractRowsFromRunQueryPayload(rawPayload) {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return []
+
+  if (Array.isArray(parsed.rows)) return parsed.rows
+
+  const rows = []
+  for (const value of Object.values(parsed)) {
+    if (value && typeof value === 'object' && Array.isArray(value.rows)) {
+      rows.push(...value.rows)
+    }
+  }
+
+  return rows
+}
+
+function extractNeuronClassCandidatesFromRows(rows = [], limit = 10) {
+  if (!Array.isArray(rows) || rows.length === 0) return []
+
+  const candidates = []
+  const seenIds = new Set()
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+
+    const idCandidate = extractCanonicalVfbTermId(row.id || row.short_form || row.label || '')
+    if (!idCandidate || !VFB_NEURON_CLASS_ID_REGEX.test(idCandidate) || seenIds.has(idCandidate)) continue
+
+    seenIds.add(idCandidate)
+    const label = stripMarkdownLinkText(row.label || idCandidate) || idCandidate
+    candidates.push({ id: idCandidate, label })
+
+    if (candidates.length >= limit) break
+  }
+
+  return candidates
+}
+
+function buildNeuronsPartHereLink(termId = '') {
+  if (!VFB_NEURON_CLASS_ID_REGEX.test(termId)) return null
+  return `${VFB_QUERY_LINK_BASE}${encodeURIComponent(termId)},${encodeURIComponent('NeuronsPartHere')}`
+}
+
+function isNeuronClassTerm(termRecord) {
+  const superTypes = Array.isArray(termRecord?.SuperTypes) ? termRecord.SuperTypes : []
+  return superTypes.some(type => String(type || '').toLowerCase() === 'neuron')
+}
+
+function getReadableTermName(termRecord, fallback = '') {
+  if (typeof termRecord?.Name === 'string' && termRecord.Name.trim()) {
+    return termRecord.Name.trim()
+  }
+
+  if (typeof termRecord?.Meta?.Name === 'string' && termRecord.Meta.Name.trim()) {
+    return stripMarkdownLinkText(termRecord.Meta.Name)
+  }
+
+  return fallback
+}
+
+async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
+  try {
+    const result = await client.callTool({ name: toolName, arguments: toolArguments })
+    if (result?.content) {
+      const texts = result.content
+        .filter(item => item.type === 'text')
+        .map(item => item.text)
+      return texts.join('\n') || JSON.stringify(result.content)
+    }
+
+    return JSON.stringify(result)
+  } catch (error) {
+    const shouldFallbackTermInfo =
+      toolName === 'get_term_info' &&
+      typeof toolArguments?.id === 'string' &&
+      toolArguments.id.trim().length > 0 &&
+      isRetryableMcpError(error)
+
+    if (shouldFallbackTermInfo) {
+      return fetchCachedVfbTermInfo(toolArguments.id)
+    }
+
+    const shouldFallbackRunQuery =
+      toolName === 'run_query' &&
+      typeof toolArguments?.id === 'string' &&
+      toolArguments.id.trim().length > 0 &&
+      typeof toolArguments?.query_type === 'string' &&
+      toolArguments.query_type.trim().length > 0 &&
+      isRetryableMcpError(error)
+
+    if (shouldFallbackRunQuery) {
+      return fetchCachedVfbRunQuery(toolArguments.id, toolArguments.query_type)
+    }
+
+    throw error
+  }
+}
+
+async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue }) {
+  const normalizedValue = normalizeConnectivityEndpointValue(rawValue)
+  const termId = extractCanonicalVfbTermId(normalizedValue)
+
+  if (!termId || !VFB_NEURON_CLASS_ID_REGEX.test(termId)) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      requires_selection: false
+    }
+  }
+
+  let termInfoText = null
+  try {
+    termInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: termId })
+  } catch {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      term_id: termId,
+      requires_selection: false
+    }
+  }
+
+  const termRecord = extractTermInfoRecordFromPayload(termInfoText, termId)
+  const termName = getReadableTermName(termRecord, termId)
+  if (!termRecord) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      term_id: termId,
+      term_name: termName,
+      requires_selection: false
+    }
+  }
+
+  if (isNeuronClassTerm(termRecord)) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      term_id: termId,
+      term_name: termName,
+      requires_selection: false
+    }
+  }
+
+  const queryNames = extractQueryNamesFromTermInfoPayload(termInfoText)
+  const hasNeuronsPartHere = queryNames.includes('NeuronsPartHere')
+  const suggestionLink = buildNeuronsPartHereLink(termId)
+  let candidates = []
+
+  if (hasNeuronsPartHere) {
+    try {
+      const runQueryText = await callVfbToolTextWithFallback(client, 'run_query', {
+        id: termId,
+        query_type: 'NeuronsPartHere'
+      })
+      const rows = extractRowsFromRunQueryPayload(runQueryText)
+      candidates = extractNeuronClassCandidatesFromRows(rows, 10)
+    } catch {
+      // If candidate extraction fails, still return the selection guidance payload.
+    }
+  }
+
+  return {
+    side,
+    raw_input: String(rawValue || ''),
+    normalized_input: normalizedValue,
+    term_id: termId,
+    term_name: termName,
+    super_types: Array.isArray(termRecord.SuperTypes) ? termRecord.SuperTypes : [],
+    requires_selection: true,
+    selection_query: hasNeuronsPartHere ? 'NeuronsPartHere' : null,
+    selection_query_link: suggestionLink,
+    candidates
+  }
+}
+
 function createBasicGraph(args = {}) {
   const normalized = normalizeGraphSpec(args)
   if (!normalized) {
@@ -1512,6 +1755,9 @@ async function executeFunctionTool(name, args) {
 
     // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
     if (name === 'vfb_query_connectivity') {
+      cleanArgs.upstream_type = normalizeConnectivityEndpointValue(cleanArgs.upstream_type)
+      cleanArgs.downstream_type = normalizeConnectivityEndpointValue(cleanArgs.downstream_type)
+
       if (typeof cleanArgs.group_by_class === 'string') {
         const normalized = cleanArgs.group_by_class.trim().toLowerCase()
         if (normalized === 'true') cleanArgs.group_by_class = true
@@ -1530,6 +1776,30 @@ async function executeFunctionTool(name, args) {
 
       if (!Array.isArray(cleanArgs.exclude_dbs)) {
         cleanArgs.exclude_dbs = []
+      }
+
+      const endpointChecks = await Promise.all([
+        assessConnectivityEndpointForNeuronClass({
+          client,
+          side: 'upstream',
+          rawValue: cleanArgs.upstream_type
+        }),
+        assessConnectivityEndpointForNeuronClass({
+          client,
+          side: 'downstream',
+          rawValue: cleanArgs.downstream_type
+        })
+      ])
+
+      const selectionsNeeded = endpointChecks.filter(check => check.requires_selection)
+      if (selectionsNeeded.length > 0) {
+        return JSON.stringify({
+          requires_user_selection: true,
+          tool: 'vfb_query_connectivity',
+          message: 'vfb_query_connectivity requires neuron class inputs. One or more provided terms are anatomy regions rather than neuron classes.',
+          instruction: 'Ask the user to choose one neuron class from each side before running connectivity.',
+          selections_needed: selectionsNeeded
+        })
       }
     }
 
@@ -1954,10 +2224,12 @@ TOOL SELECTION:
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
+- vfb_query_connectivity requires neuron class inputs. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
 - Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
 - For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not use reviewed-doc search first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
+- If vfb_query_connectivity returns requires_user_selection: true, do not claim connectivity results. Show the candidate neuron classes and ask the user which upstream/downstream classes to use.
 - When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
