@@ -851,6 +851,71 @@ function replaceTermsWithLinks(text) {
   return result
 }
 
+const VFB_QUERY_LINK_BASE = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
+
+const VFB_QUERY_SHORT_NAMES = [
+  { name: 'ListAllAvailableImages', description: 'List all available images of $NAME' },
+  { name: 'TransgeneExpressionHere', description: 'Reports of transgene expression in $NAME' },
+  { name: 'ExpressionOverlapsHere', description: 'Anatomy $NAME is expressed in' },
+  { name: 'NeuronClassesFasciculatingHere', description: 'Neurons fasciculating in $NAME' },
+  { name: 'ImagesNeurons', description: 'Images of neurons with some part in $NAME' },
+  { name: 'NeuronsPartHere', description: 'Neurons with some part in $NAME' },
+  { name: 'epFrag', description: 'Images of fragments of $NAME' },
+  { name: 'NeuronsSynaptic', description: 'Neurons with synaptic terminals in $NAME' },
+  { name: 'NeuronsPresynapticHere', description: 'Neurons with presynaptic terminals in $NAME' },
+  { name: 'NeuronsPostsynapticHere', description: 'Neurons with postsynaptic terminals in $NAME' },
+  { name: 'PaintedDomains', description: 'List all painted anatomy available for $NAME' },
+  { name: 'DatasetImages', description: 'List all images included in $NAME' },
+  { name: 'TractsNervesInnervatingHere', description: 'Tracts/nerves innervating $NAME' },
+  { name: 'ComponentsOf', description: 'Components of $NAME' },
+  { name: 'LineageClonesIn', description: 'Lineage clones found in $NAME' },
+  { name: 'AllAlignedImages', description: 'List all images aligned to $NAME' },
+  { name: 'PartsOf', description: 'Parts of $NAME' },
+  { name: 'SubclassesOf', description: 'Subclasses of $NAME' },
+  { name: 'AlignedDatasets', description: 'List all datasets aligned to $NAME' },
+  { name: 'AllDatasets', description: 'List all datasets' },
+  { name: 'ref_neuron_region_connectivity_query', description: 'Show connectivity per region for $NAME' },
+  { name: 'ref_neuron_neuron_connectivity_query', description: 'Show neurons connected to $NAME' },
+  { name: 'ref_downstream_class_connectivity_query', description: 'Show downstream connectivity by class for $NAME' },
+  { name: 'ref_upstream_class_connectivity_query', description: 'Show upstream connectivity by class for $NAME' },
+  { name: 'SimilarMorphologyTo', description: 'Neurons with similar morphology to $NAME [NBLAST mean score]' },
+  { name: 'SimilarMorphologyToPartOf', description: 'Expression patterns with some similar morphology to $NAME [NBLAST mean score]' },
+  { name: 'TermsForPub', description: 'List all terms that reference $NAME' },
+  { name: 'SimilarMorphologyToPartOfexp', description: 'Neurons with similar morphology to part of $NAME [NBLAST mean score]' },
+  { name: 'SimilarMorphologyToNB', description: 'Neurons that overlap with $NAME [NeuronBridge]' },
+  { name: 'SimilarMorphologyToNBexp', description: 'Expression patterns that overlap with $NAME [NeuronBridge]' },
+  { name: 'anatScRNAseqQuery', description: 'Single cell transcriptomics data for $NAME' },
+  { name: 'clusterExpression', description: 'Genes expressed in $NAME' },
+  { name: 'scRNAdatasetData', description: 'List all Clusters for $NAME' },
+  { name: 'expressionCluster', description: 'scRNAseq clusters expressing $NAME' },
+  { name: 'SimilarMorphologyToUserData', description: 'Neurons with similar morphology to your upload $NAME [NBLAST mean score]' },
+  { name: 'ImagesThatDevelopFrom', description: 'List images of neurons that develop from $NAME' }
+]
+
+function buildVfbQueryLinkSkill() {
+  const queryLines = VFB_QUERY_SHORT_NAMES
+    .map(({ name, description }) => `- ${name}: ${description}`)
+    .join('\n')
+
+  return `VFB QUERY LINK SKILL:
+- Build direct VFB query-result links so users can open the full results list.
+- Link format: ${VFB_QUERY_LINK_BASE}<TERM_ID>,<QUERY_SHORT_NAME>
+- Construct links from the exact pair: term_id + query_name.
+- URL-encode TERM_ID and QUERY_SHORT_NAME independently before concatenating.
+- Only use query names returned by vfb_get_term_info for that specific term.
+- In term-info JSON, read short names from Queries[].query and user-facing descriptions from Queries[].label.
+- Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
+- When you answer with query findings, include matching query-result links when useful.
+- Examples:
+  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,ListAllAvailableImages
+  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,SubclassesOf
+  - ${VFB_QUERY_LINK_BASE}FBbt_00100482,ref_upstream_class_connectivity_query
+- Query short names and descriptions (from geppetto-vfb/model):
+${queryLines}`
+}
+
+const VFB_QUERY_LINK_SKILL = buildVfbQueryLinkSkill()
+
 const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant specialising in Drosophila melanogaster neuroanatomy, neuroscience, and related research.
 
 SCOPE:
@@ -887,6 +952,8 @@ TOOLS:
 - get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
 - biorxiv_search_preprints / biorxiv_get_preprint / biorxiv_search_published_preprints / biorxiv_get_categories: preprint discovery
+
+${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
