@@ -376,7 +376,7 @@ export default function Home() {
   const [isThinking, setIsThinking] = useState(false)
   const [thinkingDots, setThinkingDots] = useState('.')
   const [rateInfo, setRateInfo] = useState({ used: 0, limit: 50, remaining: 50 })
-  const [thinkingMessage, setThinkingMessage] = useState('Thinking')
+  const [thinkingSteps, setThinkingSteps] = useState([{ message: 'Thinking', done: false }])
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
@@ -607,7 +607,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     setMessages(prev => [...prev, userMessage])
     if (!messageText) setInput('')
     setIsThinking(true)
-    setThinkingMessage('Thinking')
+    setThinkingSteps([{ message: 'Thinking', done: false }])
 
     try {
       const response = await fetch('/api/chat', {
@@ -639,7 +639,12 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               const data = JSON.parse(line.slice(6))
 
               if (currentEvent === 'status') {
-                setThinkingMessage(data.message)
+                setThinkingSteps(prev => {
+                  const updated = prev.map(s => ({ ...s, done: true }))
+                  const alreadyExists = updated.some(s => s.message === data.message && !s.done)
+                  if (alreadyExists) return updated
+                  return [...updated, { message: data.message, done: false }]
+                })
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
               } else if (currentEvent === 'result') {
@@ -1063,14 +1068,28 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             style={{
               marginBottom: '12px',
               padding: '8px 12px',
-              fontSize: '0.9em',
-              fontStyle: 'italic',
+              fontSize: '0.85em',
               color: '#999',
               borderLeft: '3px solid #333',
               borderRadius: '6px'
             }}
           >
-            {thinkingMessage}{thinkingDots}
+            {thinkingSteps.map((step, i) => (
+              <div key={i} style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: i < thinkingSteps.length - 1 ? '3px' : 0,
+                color: step.done ? '#6b7280' : '#999'
+              }}>
+                <span style={{ fontSize: '0.9em', width: '16px', textAlign: 'center' }}>
+                  {step.done ? '\u2713' : '\u25CB'}
+                </span>
+                <span style={{ fontStyle: step.done ? 'normal' : 'italic' }}>
+                  {step.message}{!step.done ? thinkingDots : ''}
+                </span>
+              </div>
+            ))}
           </div>
         )}
         <div ref={chatEndRef} />
