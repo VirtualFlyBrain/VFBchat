@@ -90,6 +90,19 @@ function createImmediateErrorResponse(message, requestId, responseId) {
   })
 }
 
+function createImmediateResultResponse(message, requestId, responseId) {
+  return buildSseResponse(async (sendEvent) => {
+    sendEvent('result', {
+      response: message,
+      images: [],
+      graphs: [],
+      newScene: {},
+      requestId,
+      responseId
+    })
+  })
+}
+
 function getClientIp(request) {
   const xForwardedFor = request.headers.get('x-forwarded-for') || ''
   return (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
@@ -1423,6 +1436,40 @@ async function fetchCachedVfbRunQuery(id, queryType) {
   }
 }
 
+function extractQueryNamesFromTermInfoPayload(rawPayload) {
+  let parsed = rawPayload
+  if (typeof rawPayload === 'string') {
+    try {
+      parsed = JSON.parse(rawPayload)
+    } catch {
+      return []
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') return []
+
+  const candidateRecords = []
+  if (Array.isArray(parsed.Queries)) {
+    candidateRecords.push(parsed)
+  }
+
+  for (const value of Object.values(parsed)) {
+    if (value && typeof value === 'object' && Array.isArray(value.Queries)) {
+      candidateRecords.push(value)
+    }
+  }
+
+  const queryNames = []
+  for (const record of candidateRecords) {
+    for (const entry of record.Queries || []) {
+      const queryName = typeof entry?.query === 'string' ? entry.query.trim() : ''
+      if (queryName) queryNames.push(queryName)
+    }
+  }
+
+  return Array.from(new Set(queryNames))
+}
+
 function createBasicGraph(args = {}) {
   const normalized = normalizeGraphSpec(args)
   if (!normalized) {
@@ -1506,6 +1553,47 @@ async function executeFunctionTool(name, args) {
         } catch (fallbackError) {
           throw new Error(
             `VFB MCP run_query failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      const shouldEnrichRunQueryError =
+        name === 'vfb_run_query' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        typeof cleanArgs.query_type === 'string' &&
+        cleanArgs.query_type.trim().length > 0 &&
+        /\b(query[_\s-]?type|invalid query|not available for this id|not a valid query|available queries|http\s*400|status code 400|bad request)\b/i.test(error?.message || '')
+
+      if (shouldEnrichRunQueryError) {
+        let termInfoPayload = null
+
+        try {
+          const termInfoResult = await client.callTool({
+            name: 'get_term_info',
+            arguments: { id: cleanArgs.id }
+          })
+          const termInfoText = termInfoResult?.content
+            ?.filter(item => item.type === 'text')
+            ?.map(item => item.text)
+            ?.join('\n')
+
+          if (termInfoText) termInfoPayload = termInfoText
+        } catch (termInfoError) {
+          if (isRetryableMcpError(termInfoError)) {
+            try {
+              termInfoPayload = await fetchCachedVfbTermInfo(cleanArgs.id)
+            } catch {
+              // Keep the original run_query error when enrichment lookup fails.
+            }
+          }
+        }
+
+        const availableQueryTypes = extractQueryNamesFromTermInfoPayload(termInfoPayload)
+        if (availableQueryTypes.length > 0) {
+          throw new Error(
+            `${error?.message || 'run_query failed'}. Available query_type values for ${cleanArgs.id}: ${availableQueryTypes.join(', ')}.`
           )
         }
       }
@@ -1716,6 +1804,58 @@ const VFB_QUERY_SHORT_NAMES = [
   { name: 'SimilarMorphologyToUserData', description: 'Neurons with similar morphology to your upload $NAME [NBLAST mean score]' },
   { name: 'ImagesThatDevelopFrom', description: 'List images of neurons that develop from $NAME' }
 ]
+
+function escapeRegexForPattern(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+const VFB_QUERY_SHORT_NAME_MAP = new Map(
+  VFB_QUERY_SHORT_NAMES.map(entry => [entry.name.toLowerCase(), entry.name])
+)
+
+const VFB_QUERY_SHORT_NAME_REGEX = new RegExp(
+  `\\b(?:${VFB_QUERY_SHORT_NAMES.map(entry => escapeRegexForPattern(entry.name)).join('|')})\\b`,
+  'gi'
+)
+
+const VFB_CANONICAL_ID_REGEX = /\b(?:FBbt_\d{8}|VFB_\d{8}|FBgn\d{7}|FBal\d{7}|FBti\d{7}|FBco\d{7}|FBst\d{7})\b/i
+const RUN_QUERY_PREPARATION_TOOL_NAMES = new Set([
+  'vfb_search_terms',
+  'vfb_get_term_info',
+  'vfb_resolve_entity',
+  'vfb_resolve_combination'
+])
+
+function extractRequestedVfbQueryShortNames(message = '') {
+  if (!message) return []
+
+  const matches = message.match(VFB_QUERY_SHORT_NAME_REGEX) || []
+  const canonicalMatches = matches
+    .map(match => VFB_QUERY_SHORT_NAME_MAP.get(match.toLowerCase()))
+    .filter(Boolean)
+
+  return Array.from(new Set(canonicalMatches))
+}
+
+function hasCanonicalVfbOrFlybaseId(message = '') {
+  return VFB_CANONICAL_ID_REGEX.test(message)
+}
+
+function isStandaloneQueryTypeDirective(message = '', requestedQueryTypes = []) {
+  if (!message || requestedQueryTypes.length === 0) return false
+
+  let residual = message.toLowerCase()
+  for (const queryType of requestedQueryTypes) {
+    residual = residual.replace(new RegExp(`\\b${escapeRegexForPattern(queryType)}\\b`, 'gi'), ' ')
+  }
+
+  residual = residual
+    .replace(/\b(vfb_run_query|run_query|run query|use|please|can|could|you|tool|tools|query|queries|for|with|the|a|an|and|or|this|that|now|show|me)\b/gi, ' ')
+    .replace(/[^a-z0-9_]+/gi, ' ')
+    .trim()
+
+  return residual.length === 0
+}
 
 function buildVfbQueryLinkSkill() {
   const queryLines = VFB_QUERY_SHORT_NAMES
@@ -2012,7 +2152,7 @@ Use these results to continue. If more tools are needed, send another JSON tool 
 }
 
 function hasExplicitVfbRunQueryRequest(message = '') {
-  return /\bvfb_run_query\b/i.test(message)
+  return /\b(vfb_run_query|run_query|run query)\b/i.test(message)
 }
 
 function hasConnectivityIntent(message = '') {
@@ -2023,7 +2163,9 @@ function buildToolPolicyCorrectionMessage({
   userMessage = '',
   explicitRunQueryRequested = false,
   connectivityIntent = false,
-  missingRunQueryExecution = false
+  missingRunQueryExecution = false,
+  requestedQueryTypes = [],
+  hasCanonicalIdInUserMessage = false
 }) {
   const policyBullets = [
     '- Choose the smallest set of tools that best answers the user request.',
@@ -2036,6 +2178,15 @@ function buildToolPolicyCorrectionMessage({
 
   if (explicitRunQueryRequested) {
     policyBullets.push('- The user explicitly asked for vfb_run_query, so include a plan that leads to vfb_run_query.')
+  }
+
+  if (requestedQueryTypes.length > 0) {
+    const queryList = requestedQueryTypes.join(', ')
+    policyBullets.push(`- The user explicitly requested query type${requestedQueryTypes.length > 1 ? 's' : ''}: ${queryList}. Preserve these exact query_type values when calling vfb_run_query.`)
+    policyBullets.push('- Resolve target term(s), then use vfb_get_term_info + vfb_run_query. Do not substitute vfb_query_connectivity for this request unless the user asks for class-to-class dataset comparison.')
+    if (!hasCanonicalIdInUserMessage) {
+      policyBullets.push('- If the target term is ambiguous, ask one short clarifying question instead of starting broad exploratory tool loops.')
+    }
   }
 
   if (connectivityIntent) {
@@ -2435,7 +2586,9 @@ async function processResponseStream({
   const accumulatedItems = []
   const maxToolRounds = 10
   const maxToolPolicyCorrections = 3
-  const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage)
+  const requestedQueryTypes = extractRequestedVfbQueryShortNames(userMessage)
+  const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage) || requestedQueryTypes.length > 0
+  const hasCanonicalIdInUserMessage = hasCanonicalVfbOrFlybaseId(userMessage)
   const connectivityIntent = hasConnectivityIntent(userMessage)
   const collectedGraphSpecs = []
   let currentResponse = apiResponse
@@ -2506,8 +2659,13 @@ async function processResponseStream({
 
     if (requestedToolCalls.length > 0) {
       const hasVfbToolCall = requestedToolCalls.some(toolCall => toolCall.name.startsWith('vfb_'))
+      const hasVfbRunQueryToolCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_run_query')
+      const hasRunQueryPreparationCall = requestedToolCalls.some(toolCall => RUN_QUERY_PREPARATION_TOOL_NAMES.has(toolCall.name))
+      const hasConnectivityComparisonCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_query_connectivity')
       const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
-        explicitRunQueryRequested && !hasVfbToolCall
+        (explicitRunQueryRequested && !hasVfbToolCall) ||
+        (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
+        (requestedQueryTypes.length > 0 && hasConnectivityComparisonCall && !hasVfbRunQueryToolCall)
       )
 
       if (shouldCorrectToolChoice) {
@@ -2522,7 +2680,9 @@ async function processResponseStream({
           content: buildToolPolicyCorrectionMessage({
             userMessage,
             explicitRunQueryRequested,
-            connectivityIntent
+            connectivityIntent,
+            requestedQueryTypes,
+            hasCanonicalIdInUserMessage
           })
         })
 
@@ -2642,7 +2802,9 @@ async function processResponseStream({
           userMessage,
           explicitRunQueryRequested,
           connectivityIntent,
-          missingRunQueryExecution: true
+          missingRunQueryExecution: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
         })
       })
 
@@ -2842,7 +3004,7 @@ export async function POST(request) {
   const body = await request.json()
   const messages = Array.isArray(body.messages) ? body.messages : []
   const scene = body.scene || {}
-  const message = typeof messages[messages.length - 1]?.content === 'string'
+  let message = typeof messages[messages.length - 1]?.content === 'string'
     ? messages[messages.length - 1].content
     : ''
 
@@ -2913,6 +3075,38 @@ export async function POST(request) {
     })
 
     return createImmediateErrorResponse(refusalMessage, requestId, responseId)
+  }
+
+  const requestedQueryTypes = extractRequestedVfbQueryShortNames(message)
+  if (requestedQueryTypes.length > 0 && isStandaloneQueryTypeDirective(message, requestedQueryTypes)) {
+    const recentUserContext = messages
+      .slice(0, -1)
+      .reverse()
+      .find(item => item?.role === 'user' && typeof item?.content === 'string' && item.content.trim().length > 0)
+      ?.content
+      ?.trim()
+
+    if (recentUserContext) {
+      message = `${message}\n\nUse this most recent user context as the target term scope: "${recentUserContext}".`
+    } else {
+      const responseId = `local-${requestId}`
+      const clarificationMessage = `I can run ${requestedQueryTypes.join(', ')}, but I need a target term label or ID first (for example "medulla" or "FBbt_00003748").`
+
+      await finalizeGovernanceEvent({
+        requestId,
+        responseId,
+        clientIp,
+        startTime,
+        rateCheck,
+        message,
+        responseText: clarificationMessage,
+        blockedRequestedDomains,
+        refusal: false,
+        reasonCode: 'query_target_required'
+      })
+
+      return createImmediateResultResponse(clarificationMessage, requestId, responseId)
+    }
   }
 
   loadLookupCache()
