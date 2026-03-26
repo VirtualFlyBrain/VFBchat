@@ -397,9 +397,18 @@ export default function Home() {
     // Clean up leftover whitespace/punctuation from stripped artifacts
     cleaned = cleaned.replace(/ {2,}/g, ' ').replace(/\.\s*\?\s*/g, '. ').replace(/\. \./g, '.')
 
+    // Preserve existing markdown links/images exactly as-is to avoid
+    // creating nested markdown when we linkify plain IDs below.
+    const markdownPlaceholders = []
+    const MARKDOWN_PLACEHOLDER = '\x00MD'
+    let result = cleaned.replace(/!?\[[^\]]*\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g, (markdownLink) => {
+      markdownPlaceholders.push(markdownLink)
+      return `${MARKDOWN_PLACEHOLDER}${markdownPlaceholders.length - 1}\x00`
+    })
+
     const urlPlaceholders = []
     const URL_PLACEHOLDER = '\x00URL'
-    let result = cleaned.replace(/https?:\/\/[^\s)]+/g, (url) => {
+    result = result.replace(/https?:\/\/[^\s)]+/g, (url) => {
       urlPlaceholders.push(url)
       return `${URL_PLACEHOLDER}${urlPlaceholders.length - 1}\x00`
     })
@@ -411,6 +420,8 @@ export default function Home() {
 
     // Restore protected URLs
     result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => urlPlaceholders[Number(idx)])
+    // Restore pre-existing markdown links/images
+    result = result.replace(new RegExp(`${MARKDOWN_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => markdownPlaceholders[Number(idx)])
 
     return result
   }
@@ -681,21 +692,40 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   }
 
   // Custom renderers for react-markdown
+  const normalizeMarkdownHref = (rawHref) => {
+    const href = typeof rawHref === 'string' ? rawHref.trim() : ''
+    if (!href) return ''
+
+    // Repair malformed href values like:
+    // [virtualflybrain.org/reports/FBbt_...](https://virtualflybrain.org/reports/FBbt_...)
+    const nestedMarkdownHref = href.match(/^\[[^\]]+\]\((https?:\/\/[^)\s]+)\)$/i)
+    if (nestedMarkdownHref?.[1]) {
+      return nestedMarkdownHref[1]
+    }
+
+    if (!href.startsWith('http') && !href.startsWith('/') && href.includes('.')) {
+      return `https://${href}`
+    }
+
+    return href
+  }
+
   const renderLink = ({ href, children }) => {
-    let url = href
+    const normalizedHref = normalizeMarkdownHref(href)
+    let url = normalizedHref
     let title = undefined
     let isQueryLink = false
     
     // Handle chat.virtualflybrain.org query links
-    if (href && href.startsWith('https://chat.virtualflybrain.org?query=')) {
+    if (normalizedHref && normalizedHref.startsWith('https://chat.virtualflybrain.org?query=')) {
       isQueryLink = true
-      const params = new URLSearchParams(href.split('?')[1])
+      const params = new URLSearchParams(normalizedHref.split('?')[1])
       const queryText = params.get('query')
       
       if (isQueryLink) {
         return (
           <a
-            href={href}
+            href={normalizedHref}
             onClick={(e) => {
               e.preventDefault()
               if (queryText) {
@@ -716,11 +746,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       }
     }
     
-    if (href && !href.startsWith('http')) {
-      if (href.startsWith('/')) {
+    if (normalizedHref && !normalizedHref.startsWith('http')) {
+      if (normalizedHref.startsWith('/')) {
         return (
           <a
-            href={href}
+            href={normalizedHref}
             style={{ color: '#66d9ff', textDecoration: 'underline', textDecorationColor: '#66d9ff40' }}
           >
             {children}
@@ -728,13 +758,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         )
       }
 
-      if (href.startsWith('FBrf')) {
+      if (normalizedHref.startsWith('FBrf')) {
         // FlyBase references should link to FlyBase
-        url = `https://flybase.org/reports/${href}`
+        url = `https://flybase.org/reports/${normalizedHref}`
         title = 'View in FlyBase'
-      } else if (href.startsWith('VFB') || href.startsWith('FBbt')) {
+      } else if (normalizedHref.startsWith('VFB') || normalizedHref.startsWith('FBbt')) {
         // VFB and FBbt IDs should link to VFB
-        url = `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${href}`
+        url = `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${normalizedHref}`
         title = 'View in VFB'
       }
     }

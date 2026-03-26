@@ -2336,17 +2336,82 @@ TOOL RELAY:
 FOLLOW-UP QUESTIONS:
 When useful, suggest 2-3 short potential follow-up questions that are directly answerable with the available tools in this chat.`
 
-function getStatusForTool(toolName) {
+/**
+ * Build a short, human-readable suffix from tool arguments so the status
+ * line tells the user *what* is being queried, not just *which tool*.
+ */
+function describeToolArgs(toolName, args = {}) {
+  if (!args || typeof args !== 'object') return ''
+
+  switch (toolName) {
+    case 'vfb_get_term_info': {
+      const id = Array.isArray(args.id) ? args.id[0] : args.id
+      return id ? ` for ${id}` : ''
+    }
+    case 'vfb_run_query': {
+      const id = Array.isArray(args.id) ? args.id[0] : args.id
+      const qt = args.query_type || ''
+      if (id && qt) return ` — ${qt} on ${id}`
+      if (id) return ` for ${id}`
+      return ''
+    }
+    case 'vfb_search_terms': {
+      const term = args.query || args.term || args.name || ''
+      return term ? ` for "${term}"` : ''
+    }
+    case 'vfb_query_connectivity': {
+      const up = args.upstream_type || ''
+      const down = args.downstream_type || ''
+      if (up && down) return ` — ${up} → ${down}`
+      if (up) return ` from ${up}`
+      if (down) return ` to ${down}`
+      return ''
+    }
+    case 'vfb_resolve_entity': {
+      const name = args.name || ''
+      return name ? ` for "${name}"` : ''
+    }
+    case 'vfb_resolve_combination': {
+      const name = args.name || args.combination || ''
+      return name ? ` for "${name}"` : ''
+    }
+    case 'vfb_find_stocks': {
+      const id = args.id || ''
+      return id ? ` for ${id}` : ''
+    }
+    case 'vfb_find_combo_publications': {
+      const id = args.id || args.combination_id || ''
+      return id ? ` for ${id}` : ''
+    }
+    default:
+      return ''
+  }
+}
+
+function getStatusForTool(toolName, args) {
   if (toolName === 'create_basic_graph') {
     return { message: 'Preparing graph view', phase: 'llm' }
   }
 
-  if (toolName === 'vfb_query_connectivity') {
-    return { message: 'Comparing connectome datasets', phase: 'mcp' }
+  const vfbLabels = {
+    vfb_get_term_info: 'Looking up term details',
+    vfb_run_query: 'Running VFB analysis',
+    vfb_search_terms: 'Searching VFB terms',
+    vfb_query_connectivity: 'Comparing connectome datasets',
+    vfb_resolve_entity: 'Resolving entity identity',
+    vfb_resolve_combination: 'Resolving split combination',
+    vfb_find_stocks: 'Finding available stocks',
+    vfb_find_combo_publications: 'Searching combination publications',
+    vfb_list_connectome_datasets: 'Listing connectome datasets'
+  }
+
+  if (vfbLabels[toolName]) {
+    const suffix = describeToolArgs(toolName, args)
+    return { message: `${vfbLabels[toolName]}${suffix}`, phase: 'mcp' }
   }
 
   if (toolName.startsWith('vfb_')) {
-    return { message: 'Querying the fly hive mind', phase: 'mcp' }
+    return { message: 'Querying VFB', phase: 'mcp' }
   }
 
   if (toolName.startsWith('biorxiv_')) {
@@ -2534,6 +2599,97 @@ function buildRelayedToolResultsMessage(toolOutputs = []) {
 ${JSON.stringify(payload)}
 
 Use these results to continue. If more tools are needed, send another JSON tool call payload. Otherwise, provide the final answer to the user.`
+}
+
+function parseToolOutputPayload(rawOutput) {
+  if (rawOutput === null || rawOutput === undefined) return null
+  if (typeof rawOutput === 'object') return rawOutput
+  if (typeof rawOutput !== 'string') return null
+
+  try {
+    return JSON.parse(rawOutput)
+  } catch {
+    return null
+  }
+}
+
+function formatSelectionTermReference(selection = {}) {
+  const termId = extractCanonicalVfbTermId(selection.term_id || selection.normalized_input || selection.raw_input || '')
+  const termName = stripMarkdownLinkText(selection.term_name || selection.normalized_input || selection.raw_input || '').trim()
+
+  if (termId && termName && termName.toLowerCase() !== termId.toLowerCase()) {
+    return `${termName} ([${termId}](https://virtualflybrain.org/reports/${termId}))`
+  }
+
+  if (termId) {
+    return `[${termId}](https://virtualflybrain.org/reports/${termId})`
+  }
+
+  if (termName) {
+    return `\`${termName}\``
+  }
+
+  return 'the selected term'
+}
+
+function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
+  for (const item of toolOutputs) {
+    if (item?.name !== 'vfb_query_connectivity') continue
+
+    const parsed = parseToolOutputPayload(item.output)
+    if (!parsed || parsed.requires_user_selection !== true) continue
+
+    const selections = Array.isArray(parsed.selections_needed)
+      ? parsed.selections_needed.filter(entry => entry && entry.requires_selection === true)
+      : []
+
+    if (selections.length === 0) continue
+
+    const lines = []
+    lines.push('I need neuron class inputs before I can run `vfb_query_connectivity`.')
+
+    for (const selection of selections) {
+      const side = String(selection.side || '').toLowerCase()
+      const sideLabel = side === 'upstream'
+        ? 'upstream (presynaptic)'
+        : side === 'downstream'
+          ? 'downstream (postsynaptic)'
+          : 'selected'
+      const termReference = formatSelectionTermReference(selection)
+
+      lines.push('')
+      lines.push(`For the ${sideLabel} side, ${termReference} is an anatomy region rather than a neuron class.`)
+
+      const candidates = Array.isArray(selection.candidates) ? selection.candidates : []
+      if (candidates.length > 0) {
+        lines.push(`Choose one ${sideLabel} neuron class:`)
+        for (const candidate of candidates) {
+          const candidateId = extractCanonicalVfbTermId(candidate.id || '')
+          if (!candidateId) continue
+          const candidateLabel = stripMarkdownLinkText(candidate.label || '').trim()
+          const displayLabel = candidateLabel || candidateId
+          lines.push(`- ${displayLabel} ([${candidateId}](https://virtualflybrain.org/reports/${candidateId}))`)
+        }
+      }
+
+      const queryLink = typeof selection.selection_query_link === 'string'
+        ? selection.selection_query_link.trim()
+        : ''
+      if (queryLink) {
+        const queryName = typeof selection.selection_query === 'string' && selection.selection_query.trim()
+          ? selection.selection_query.trim()
+          : 'NeuronsPartHere'
+        lines.push(`You can inspect candidates via [${queryName}](${queryLink}).`)
+      }
+    }
+
+    lines.push('')
+    lines.push('Reply with one class ID for each required side, and I will run the connectivity query.')
+
+    return lines.join('\n')
+  }
+
+  return null
 }
 
 function hasExplicitVfbRunQueryRequest(message = '') {
@@ -3107,7 +3263,7 @@ async function processResponseStream({
       const announcedStatuses = new Set()
       for (const toolCall of requestedToolCalls) {
         if (!announcedStatuses.has(toolCall.name)) {
-          sendEvent('status', getStatusForTool(toolCall.name))
+          sendEvent('status', getStatusForTool(toolCall.name, toolCall.arguments))
           announcedStatuses.add(toolCall.name)
         }
       }
@@ -3133,6 +3289,18 @@ async function processResponseStream({
       const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
       if (graphSpecsFromTools.length > 0) {
         collectedGraphSpecs.push(...graphSpecsFromTools)
+      }
+
+      const connectivitySelectionResponse = buildConnectivitySelectionResponseFromToolOutputs(toolOutputs)
+      if (connectivitySelectionResponse) {
+        return buildSuccessfulTextResult({
+          responseText: connectivitySelectionResponse,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          outboundAllowList,
+          graphSpecs: collectedGraphSpecs
+        })
       }
 
       if (textAccumulator.trim()) {
