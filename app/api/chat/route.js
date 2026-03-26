@@ -679,8 +679,8 @@ function getToolConfig() {
       properties: {
         upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class label or FBbt ID' },
         downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class label or FBbt ID' },
-        weight: { type: 'number', description: 'Minimum synapse count threshold (recommended default 5)' },
-        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs' },
+        weight: { type: 'number', description: 'Minimum synapse count threshold (default 5)' },
+        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true)' },
         exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
       }
     }
@@ -1508,6 +1508,29 @@ async function executeFunctionTool(name, args) {
     const cleanArgs = {}
     for (const [key, value] of Object.entries(args || {})) {
       if (value !== undefined && value !== null) cleanArgs[key] = value
+    }
+
+    // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
+    if (name === 'vfb_query_connectivity') {
+      if (typeof cleanArgs.group_by_class === 'string') {
+        const normalized = cleanArgs.group_by_class.trim().toLowerCase()
+        if (normalized === 'true') cleanArgs.group_by_class = true
+        else if (normalized === 'false') cleanArgs.group_by_class = false
+        else cleanArgs.group_by_class = true
+      } else if (typeof cleanArgs.group_by_class !== 'boolean') {
+        cleanArgs.group_by_class = true
+      }
+
+      const parsedWeight = Number(cleanArgs.weight)
+      if (!Number.isFinite(parsedWeight)) {
+        cleanArgs.weight = 5
+      } else {
+        cleanArgs.weight = parsedWeight
+      }
+
+      if (!Array.isArray(cleanArgs.exclude_dbs)) {
+        cleanArgs.exclude_dbs = []
+      }
     }
 
     try {
