@@ -649,6 +649,389 @@ async function getPubmedArticle(pmid) {
   })
 }
 
+// --- bioRxiv direct API fallback (used when bioRxiv MCP is unavailable) ---
+
+const BIORXIV_API_BASE_URL = 'https://api.biorxiv.org'
+const BIORXIV_API_TIMEOUT_MS = 15000
+const BIORXIV_MAX_RECENT_DAYS = 3650
+const BIORXIV_TOOL_NAME_SET = new Set([
+  'biorxiv_search_preprints',
+  'biorxiv_get_preprint',
+  'biorxiv_search_published_preprints',
+  'biorxiv_get_categories'
+])
+
+function normalizeBiorxivServer(server = 'biorxiv') {
+  const normalized = String(server || 'biorxiv').trim().toLowerCase()
+  if (normalized === 'biorxiv' || normalized === 'medrxiv') return normalized
+  throw new Error(`Invalid server "${server}". Expected "biorxiv" or "medrxiv".`)
+}
+
+function normalizeInteger(value, defaultValue, min, max) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return defaultValue
+  return Math.min(Math.max(parsed, min), max)
+}
+
+function formatIsoDateUtc(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function isIsoDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && formatIsoDateUtc(parsed) === value
+}
+
+function resolveBiorxivDateRange(args = {}, defaultRecentDays = 30) {
+  const rawFrom = typeof args.date_from === 'string' ? args.date_from.trim() : ''
+  const rawTo = typeof args.date_to === 'string' ? args.date_to.trim() : ''
+  const hasRecentDays = args.recent_days !== undefined && args.recent_days !== null && String(args.recent_days).trim() !== ''
+
+  if (hasRecentDays || (!rawFrom && !rawTo)) {
+    const recentDays = normalizeInteger(
+      hasRecentDays ? args.recent_days : defaultRecentDays,
+      defaultRecentDays,
+      1,
+      BIORXIV_MAX_RECENT_DAYS
+    )
+    const endDate = new Date()
+    const startDate = new Date(endDate)
+    startDate.setUTCDate(startDate.getUTCDate() - (recentDays - 1))
+    return {
+      dateFrom: formatIsoDateUtc(startDate),
+      dateTo: formatIsoDateUtc(endDate),
+      recentDays
+    }
+  }
+
+  if (!rawFrom || !rawTo) {
+    throw new Error('Both date_from and date_to are required when recent_days is not provided.')
+  }
+
+  if (!isIsoDateString(rawFrom) || !isIsoDateString(rawTo)) {
+    throw new Error('date_from and date_to must be valid YYYY-MM-DD values.')
+  }
+
+  if (rawFrom > rawTo) {
+    throw new Error('date_from must be earlier than or equal to date_to.')
+  }
+
+  return {
+    dateFrom: rawFrom,
+    dateTo: rawTo,
+    recentDays: null
+  }
+}
+
+function normalizeCategoryLabel(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ')
+}
+
+function toCategoryQueryValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '_')
+}
+
+function normalizeDoiForPath(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+
+  if (!normalized) {
+    throw new Error('A DOI is required for biorxiv_get_preprint.')
+  }
+
+  // Keep slash separators because the endpoint expects DOI path segments.
+  return normalized
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/')
+}
+
+function normalizePublisherPrefix(value) {
+  return String(value || '').trim().toLowerCase().replace(/\/+$/, '')
+}
+
+function decodeHtmlEntity(value) {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;/g, '\'')
+    .replace(/&quot;/gi, '"')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .trim()
+}
+
+function parseCategorySummaryHtml(html = '') {
+  const categorySet = new Set()
+  const categories = []
+  const regex = /<td\s+align=left>([^<]+)<\/td>\s*<td\s+align=right>\d+<\/td>\s*<td\s+align=right>[\d.]+<\/td>/gi
+  let match
+
+  while ((match = regex.exec(html)) !== null) {
+    const label = decodeHtmlEntity(match[1])
+    if (!label) continue
+    const dedupeKey = label.toLowerCase()
+    if (!categorySet.has(dedupeKey)) {
+      categorySet.add(dedupeKey)
+      categories.push(label)
+    }
+  }
+
+  return categories.sort((a, b) => a.localeCompare(b))
+}
+
+async function fetchBioRxivApiJson(pathname, searchParams = {}) {
+  const url = new URL(pathname, BIORXIV_API_BASE_URL)
+  for (const [key, value] of Object.entries(searchParams || {})) {
+    if (value === undefined || value === null || String(value).trim() === '') continue
+    url.searchParams.set(key, String(value))
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), BIORXIV_API_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+    const responseText = (await response.text()).replace(/^\uFEFF/, '')
+
+    if (!response.ok) {
+      throw new Error(`bioRxiv API request failed: HTTP ${response.status} for ${url.pathname}`)
+    }
+
+    let payload
+    try {
+      payload = JSON.parse(responseText)
+    } catch {
+      throw new Error(`bioRxiv API returned non-JSON content for ${url.pathname}: ${responseText.slice(0, 180)}`)
+    }
+
+    const message = Array.isArray(payload?.messages) ? payload.messages[0] : null
+    const status = typeof message?.status === 'string' ? message.status.trim().toLowerCase() : ''
+    const textError = typeof payload === 'string' ? payload.trim() : ''
+    const messageError = typeof message === 'string' ? message.trim() : ''
+
+    if (textError) {
+      throw new Error(`bioRxiv API error: ${textError}`)
+    }
+
+    if (messageError && messageError.toLowerCase() !== 'ok') {
+      throw new Error(`bioRxiv API error: ${messageError}`)
+    }
+
+    if (status && status !== 'ok') {
+      const detail = message?.message || message?.status
+      throw new Error(`bioRxiv API error: ${detail}`)
+    }
+
+    return {
+      payload,
+      url: url.toString()
+    }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function fetchBioRxivReportHtml(pathname) {
+  const url = new URL(pathname, BIORXIV_API_BASE_URL)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), BIORXIV_API_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'text/html' },
+      signal: controller.signal
+    })
+    if (!response.ok) {
+      throw new Error(`bioRxiv reporting request failed: HTTP ${response.status} for ${url.pathname}`)
+    }
+    const html = await response.text()
+    return {
+      html,
+      url: url.toString()
+    }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function biorxivSearchPreprintsFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const limit = normalizeInteger(args.limit, 10, 1, 100)
+  const cursor = normalizeInteger(args.cursor, 0, 0, 1_000_000)
+  const category = normalizeCategoryLabel(args.category)
+  const { dateFrom, dateTo, recentDays } = resolveBiorxivDateRange(args, 30)
+
+  const { payload, url } = await fetchBioRxivApiJson(
+    `/details/${server}/${dateFrom}/${dateTo}/${cursor}`,
+    category ? { category: toCategoryQueryValue(category) } : {}
+  )
+
+  let results = Array.isArray(payload?.collection) ? payload.collection : []
+  if (category) {
+    results = results.filter(item => normalizeCategoryLabel(item?.category) === category)
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    query: {
+      date_from: dateFrom,
+      date_to: dateTo,
+      recent_days: recentDays,
+      category: category || null,
+      limit,
+      cursor
+    },
+    total_available: Number.parseInt(payload?.messages?.[0]?.total, 10) || results.length,
+    returned_count: Math.min(results.length, limit),
+    api_url: url,
+    results: results.slice(0, limit)
+  }
+}
+
+async function biorxivGetPreprintFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const doiPath = normalizeDoiForPath(args.doi)
+  const doi = String(args.doi || '').trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+  const { payload, url } = await fetchBioRxivApiJson(`/details/${server}/${doiPath}`)
+
+  const versions = Array.isArray(payload?.collection)
+    ? payload.collection.slice().sort((a, b) => Number.parseInt(b.version, 10) - Number.parseInt(a.version, 10))
+    : []
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    doi,
+    version_count: versions.length,
+    latest: versions[0] || null,
+    versions,
+    api_url: url
+  }
+}
+
+async function biorxivSearchPublishedFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const limit = normalizeInteger(args.limit, 10, 1, 100)
+  const cursor = normalizeInteger(args.cursor, 0, 0, 1_000_000)
+  const publisherPrefix = normalizePublisherPrefix(args.publisher)
+  const { dateFrom, dateTo, recentDays } = resolveBiorxivDateRange(args, 30)
+
+  let endpointPath = `/pubs/${server}/${dateFrom}/${dateTo}/${cursor}`
+  if (publisherPrefix && server === 'biorxiv') {
+    endpointPath = `/publisher/${publisherPrefix}/${dateFrom}/${dateTo}/${cursor}`
+  }
+
+  const { payload, url } = await fetchBioRxivApiJson(endpointPath)
+  let results = Array.isArray(payload?.collection) ? payload.collection : []
+
+  if (publisherPrefix) {
+    results = results.filter(item => normalizePublisherPrefix(item?.published_doi).startsWith(publisherPrefix))
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    query: {
+      date_from: dateFrom,
+      date_to: dateTo,
+      recent_days: recentDays,
+      publisher: publisherPrefix || null,
+      limit,
+      cursor
+    },
+    total_available: Number.parseInt(payload?.messages?.[0]?.total, 10) || results.length,
+    returned_count: Math.min(results.length, limit),
+    api_url: url,
+    results: results.slice(0, limit)
+  }
+}
+
+async function biorxivGetCategoriesFallback() {
+  const reportPaths = {
+    biorxiv: '/reporting/biorxiv/category_summary',
+    medrxiv: '/reporting/medrxiv/category_summary'
+  }
+
+  const entries = await Promise.all(
+    Object.entries(reportPaths).map(async ([server, reportPath]) => {
+      try {
+        const { html, url } = await fetchBioRxivReportHtml(reportPath)
+        return {
+          server,
+          ok: true,
+          url,
+          categories: parseCategorySummaryHtml(html)
+        }
+      } catch (error) {
+        return {
+          server,
+          ok: false,
+          errorMessage: error?.message || 'Unknown error'
+        }
+      }
+    })
+  )
+
+  const categories = {}
+  const apiUrls = {}
+  const errors = {}
+
+  for (const entry of entries) {
+    if (entry.ok) {
+      const { server, url, categories: parsedCategories } = entry
+      categories[server] = parsedCategories
+      apiUrls[server] = url
+      continue
+    }
+
+    errors[entry.server] = entry.errorMessage
+  }
+
+  if (!Array.isArray(categories.biorxiv) || categories.biorxiv.length === 0) {
+    throw new Error('Unable to load category summary from bioRxiv reporting endpoints.')
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    method: 'reporting_category_summary',
+    categories,
+    category_counts: Object.fromEntries(
+      Object.entries(categories).map(([server, values]) => [server, values.length])
+    ),
+    api_urls: apiUrls,
+    errors: Object.keys(errors).length > 0 ? errors : undefined
+  }
+}
+
+async function executeBiorxivApiFallback(name, args = {}) {
+  if (name === 'biorxiv_search_preprints') {
+    return biorxivSearchPreprintsFallback(args)
+  }
+  if (name === 'biorxiv_get_preprint') {
+    return biorxivGetPreprintFallback(args)
+  }
+  if (name === 'biorxiv_search_published_preprints') {
+    return biorxivSearchPublishedFallback(args)
+  }
+  if (name === 'biorxiv_get_categories') {
+    return biorxivGetCategoriesFallback()
+  }
+  throw new Error(`No bioRxiv API fallback available for tool: ${name}`)
+}
+
 // --- Function tool execution (routes to MCP clients or direct APIs) ---
 
 const MCP_TOOL_ROUTING = {
@@ -822,6 +1205,17 @@ async function executeFunctionTool(name, args) {
         } catch (fallbackError) {
           throw new Error(
             `VFB MCP run_query failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      const shouldUseBiorxivApiFallback = routing.server === 'biorxiv' && BIORXIV_TOOL_NAME_SET.has(name)
+      if (shouldUseBiorxivApiFallback) {
+        try {
+          return await executeBiorxivApiFallback(name, cleanArgs)
+        } catch (fallbackError) {
+          throw new Error(
+            `bioRxiv MCP ${routing.mcpName} failed (${error?.message || 'unknown error'}); bioRxiv API fallback failed (${fallbackError?.message || 'unknown error'}).`
           )
         }
       }
