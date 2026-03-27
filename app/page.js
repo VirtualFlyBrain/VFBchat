@@ -20,10 +20,24 @@ const FEEDBACK_REASON_LABELS = {
 
 const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
 const GRAPH_ROLE_STYLES = {
-  source: { label: 'Source side', color: '#4a9eff' },
-  target: { label: 'Target side', color: '#4ade80' },
-  bridge: { label: 'Intermediate', color: '#f59e0b' },
-  isolated: { label: 'Other', color: '#94a3b8' }
+  source: { label: 'Source side', color: '#4a9eff', glowColor: 'rgba(74, 158, 255, 0.4)' },
+  target: { label: 'Target side', color: '#4ade80', glowColor: 'rgba(74, 222, 128, 0.4)' },
+  bridge: { label: 'Intermediate', color: '#f59e0b', glowColor: 'rgba(245, 158, 11, 0.3)' },
+  isolated: { label: 'Other', color: '#94a3b8', glowColor: 'rgba(148, 163, 184, 0.2)' }
+}
+
+// Weight distribution colors - warm gradient for stronger connections
+const getEdgeColorByWeight = (weight, maxWeight) => {
+  const ratio = Math.min(1, weight / maxWeight)
+  if (ratio > 0.7) return '#f87171' // Strong: red
+  if (ratio > 0.4) return '#fbbf24' // Medium: amber
+  return '#60a5fa' // Weak: blue
+}
+
+// Node label is already the symbol from term info (e.g. "ExR5", "LC33", "PLP032")
+// No parsing needed — use it directly
+function getNodeLabel(node = {}) {
+  return node.label || node.id || ''
 }
 
 function hashString(value = '') {
@@ -92,11 +106,10 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     const providedGroups = Object.keys(groupCounts)
     const largestProvidedGroup = Object.values(groupCounts).reduce((max, count) => Math.max(max, count), 0)
     const hasDirectionalStructure = roleCounts.source > 0 && roleCounts.target > 0
-    const fragmentedProvidedGroups = providedGroups.length === 0
-      || providedGroups.length > 3
-      || providedGroups.length >= Math.max(3, Math.ceil(nodes.length * 0.75))
-      || largestProvidedGroup <= Math.max(1, Math.floor(nodes.length / 2))
-    const useStructuralColoring = isDirected && nodes.length >= 3 && hasDirectionalStructure && fragmentedProvidedGroups
+    // Prefer provided groups when available and meaningful (2-6 groups).
+    // Only fall back to structural source/target coloring when no groups were provided.
+    const hasUsableProvidedGroups = providedGroups.length >= 2 && providedGroups.length <= 6
+    const useStructuralColoring = !hasUsableProvidedGroups && isDirected && nodes.length >= 3 && hasDirectionalStructure
 
     if (useStructuralColoring) {
       const legend = Object.entries(GRAPH_ROLE_STYLES)
@@ -178,7 +191,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
         const w = entry.contentRect.width
-        if (w > 0) setDimensions({ width: w, height: Math.max(350, Math.min(500, w * 0.6)) })
+        if (w > 0) setDimensions({ width: w, height: Math.max(350, Math.min(800, w * 0.7)) })
       }
     })
     ro.observe(containerRef.current)
@@ -198,38 +211,83 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const maxWeight = Math.max(1, ...graphData.links.map(l => l.weight))
   const legendEntries = visualGrouping.legend
 
+  // Calculate weight distribution statistics
+  const weights = graphData.links.map(l => l.weight)
+  const weightStats = {
+    min: Math.min(...weights),
+    max: Math.max(...weights),
+    mean: weights.reduce((a, b) => a + b, 0) / weights.length,
+    median: [...weights].sort((a, b) => a - b)[Math.floor(weights.length / 2)]
+  }
+
   return (
     <div ref={containerRef} style={{
       marginTop: '10px',
-      border: '1px solid #2a2a2a',
-      borderRadius: '8px',
+      border: '1px solid #3a3a4a',
+      borderRadius: '12px',
       backgroundColor: '#0f0f12',
-      padding: '10px',
-      overflow: 'hidden'
+      padding: '12px',
+      overflow: 'hidden',
+      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
     }}>
       {graph?.title && (
         <div style={{
-          fontSize: '0.82em',
-          color: '#9ecbff',
-          marginBottom: '6px',
-          fontWeight: 600
+          fontSize: '0.95em',
+          color: '#60a5fa',
+          marginBottom: '8px',
+          fontWeight: 700,
+          letterSpacing: '0.5px'
         }}>
           {graph.title}
         </div>
       )}
       {visualGrouping.useStructuralColoring && (
-        <div style={{ fontSize: '0.72em', color: '#8f9aad', marginBottom: '6px' }}>
-          Colours show connectivity role so the source and target sides are easier to scan.
+        <div style={{ fontSize: '0.75em', color: '#9aadba', marginBottom: '8px' }}>
+          Colors indicate connectivity role (blue = source, green = target, amber = intermediate)
         </div>
       )}
       {legendEntries.length > 1 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '6px', fontSize: '0.72em' }}>
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '12px',
+          marginBottom: '8px',
+          fontSize: '0.75em',
+          backgroundColor: '#1a1a24',
+          padding: '6px 8px',
+          borderRadius: '6px'
+        }}>
           {legendEntries.map(e => (
-            <span key={e.key} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
-              <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: e.color, display: 'inline-block' }} />
-              {e.label}
+            <span key={e.key} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: '#d1d5db' }}>
+              <span style={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                backgroundColor: e.color,
+                display: 'inline-block',
+                boxShadow: `0 0 6px ${e.color}40`
+              }} />
+              <span style={{ fontWeight: 500 }}>{e.label}</span>
             </span>
           ))}
+        </div>
+      )}
+      {graphData.links.length > 0 && (
+        <div style={{
+          fontSize: '0.7em',
+          color: '#8f9aad',
+          marginBottom: '8px',
+          padding: '4px 6px',
+          backgroundColor: '#1a1a24',
+          borderRadius: '4px',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))',
+          gap: '6px'
+        }}>
+          <div><span style={{ color: '#60a5fa' }}>Synapses:</span> {graphData.links.length}</div>
+          <div><span style={{ color: '#60a5fa' }}>Min weight:</span> {weightStats.min}</div>
+          <div><span style={{ color: '#60a5fa' }}>Max weight:</span> {weightStats.max}</div>
+          <div><span style={{ color: '#60a5fa' }}>Avg weight:</span> {weightStats.mean.toFixed(1)}</div>
         </div>
       )}
       <ForceGraph2D
@@ -242,48 +300,89 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
         nodeColor={n => n.color}
         nodeLabel={n => {
+          // Full label shown on hover
           const details = []
-          if (n.originalGroup) details.push(`type: ${n.originalGroup}`)
+          if (n.originalGroup) details.push(n.originalGroup)
           if (visualGrouping.useStructuralColoring && n.group && n.group !== n.originalGroup) {
             details.push(`role: ${n.group}`)
           }
           return details.length > 0 ? `${n.label} (${details.join('; ')})` : n.label
         }}
         nodeCanvasObject={(node, ctx, globalScale) => {
-          const r = Math.max(3, 4 + (node.size || 1) * 2)
+          const r = Math.max(3, 4 + (node.size || 1) * 2.5)
+
+          // Draw glow effect
+          const glowColor = node.color ? `${node.color}33` : null
+          if (glowColor) {
+            ctx.fillStyle = glowColor
+            ctx.beginPath()
+            ctx.arc(node.x, node.y, r * 1.6, 0, 2 * Math.PI)
+            ctx.fill()
+          }
+
+          // Draw main node circle
           ctx.beginPath()
           ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
           ctx.fillStyle = node.color
           ctx.fill()
-          ctx.strokeStyle = '#1a1a2e'
-          ctx.lineWidth = 0.5
+
+          // Enhanced border with stronger contrast
+          ctx.strokeStyle = '#0f0f12'
+          ctx.lineWidth = 1.2
           ctx.stroke()
-          // Draw label when zoomed in enough
-          if (globalScale > 0.7) {
-            const label = node.label || node.id
-            const fontSize = Math.max(3, 10 / globalScale)
-            ctx.font = `${fontSize}px sans-serif`
+
+          // Draw label when zoomed in enough (node.label is already the symbol from term info)
+          if (globalScale > 0.65) {
+            const label = getNodeLabel(node)
+            const fontSize = Math.max(4, 11 / globalScale)
+            ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`
             ctx.textAlign = 'center'
-            ctx.textBaseline = 'top'
-            ctx.fillStyle = '#e5e7eb'
-            ctx.fillText(label, node.x, node.y + r + 2)
+            ctx.textBaseline = 'middle'
+            ctx.fillStyle = '#f3f4f6'
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+            ctx.shadowBlur = 3
+            ctx.shadowOffsetX = 0
+            ctx.shadowOffsetY = 0
+            ctx.fillText(label, node.x, node.y + r + 3)
+            ctx.shadowColor = 'transparent'
           }
         }}
-        linkColor={() => '#4b5563'}
-        linkWidth={link => Math.max(0.5, 1 + (link.weight / maxWeight) * 3)}
-        linkDirectionalArrowLength={isDirected ? 5 : 0}
-        linkDirectionalArrowRelPos={1}
-        linkLabel={link => link.label}
+        linkColor={link => getEdgeColorByWeight(link.weight, maxWeight)}
+        linkWidth={link => {
+          const ratio = link.weight / maxWeight
+          return Math.max(0.8, 0.5 + ratio * 4)
+        }}
+        linkDirectionalArrowLength={isDirected ? 6 : 0}
+        linkDirectionalArrowRelPos={0.95}
+        linkLabel={link => {
+          const ratio = link.weight / maxWeight
+          const intensity = ratio > 0.7 ? 'strong' : ratio > 0.4 ? 'medium' : 'weak'
+          return `${link.label || link.weight} synapses (${intensity})`
+        }}
+        linkDirectionalArrowColor={link => getEdgeColorByWeight(link.weight, maxWeight)}
+        linkDirectionalParticles={isDirected ? 2 : 0}
+        linkDirectionalParticleWidth={link => Math.max(2, 1 + (link.weight / maxWeight) * 3)}
+        linkDirectionalParticleColor={link => getEdgeColorByWeight(link.weight, maxWeight)}
+        linkDirectionalParticleSpeed={() => 0.005}
         linkCurvature={link => {
           // Curve parallel edges between same node pairs
           const key = [link.source?.id || link.source, link.target?.id || link.target].sort().join('-')
           const rev = [link.target?.id || link.target, link.source?.id || link.source].sort().join('-')
-          return key === rev ? 0 : 0.15
+          return key === rev ? 0 : 0.12
         }}
-        d3VelocityDecay={0.3}
-        cooldownTicks={80}
+        d3VelocityDecay={0.35}
+        d3AlphaDecay={0.02}
+        d3AlphaMin={0.001}
+        cooldownTicks={100}
+        warmupTicks={20}
         enableZoomInteraction={true}
         enablePanInteraction={true}
+        onEngineStop={() => {
+          // Ensure final zoom-to-fit after physics settles
+          if (fgRef.current) {
+            setTimeout(() => fgRef.current.zoomToFit(300, 40), 100)
+          }
+        }}
       />
     </div>
   )
@@ -614,17 +713,9 @@ export default function Home() {
     } else if (!initialQuery) {
       setMessages([makeMsg('assistant', `Welcome to VFB Chat! I'm here to help you explore Drosophila neuroanatomy and neuroscience using Virtual Fly Brain data.
 
-**Important AI Usage Guidelines:**
-- Always verify information from AI responses with primary sources
-- We log limited technical and usage data, including IP addresses for abuse prevention
-- Raw security logs are retained for up to 30 days
-- We do not store full chat content for routine analytics
-- If you report a problem, you can optionally attach the visible chat for investigation for up to 30 days
-- Do not share confidential or sensitive information
-- Use this tool to enhance your understanding of neuroscience concepts
-- See the [Privacy Notice](/privacy) for more information
+**Always verify critical information with primary sources.** This tool provides AI-generated responses based on VFB data. Do not share confidential information. See the [Privacy Notice](/privacy) for details on how we handle your data.
 
-Here are some example queries you can try:
+Try asking about:
 - What neurons are involved in visual processing?
 - Show me images of Kenyon cells
 - How does the olfactory system work in flies?
@@ -1330,16 +1421,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         lineHeight: '1.3',
         flexShrink: 0
       }}>
-        <strong>AI Response Notice:</strong> This tool provides AI-generated information based on Virtual Fly Brain data.
-        {' '}Always verify critical information with primary sources. We log limited technical and usage data,
-        including IP addresses for abuse prevention, and retain raw security logs for up to 30 days.
-        {' '}We do not store full chat content for routine analytics, except when you explicitly attach a conversation while reporting a problem for short-term investigation. See our{' '}
+        <strong>AI Response Notice:</strong> This tool provides AI-generated information based on Virtual Fly Brain data. Always verify critical information with primary sources. See our{' '}
         <a href="/privacy" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Privacy Notice
-        </a>{' | '}
+        </a>{' '}or{' '}
         <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Accessibility Statement
-        </a>.
+        </a>{' '}for more details.
       </footer>
 
       <style jsx global>{`

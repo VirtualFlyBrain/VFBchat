@@ -879,7 +879,7 @@ function getToolConfig() {
         upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class plain FBbt ID (e.g. FBbt_00048241) or label — do NOT use markdown links or IRIs' },
         downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class plain FBbt ID (e.g. FBbt_00047039) or label — do NOT use markdown links or IRIs' },
         weight: { type: 'number', description: 'Minimum synapse count threshold (default 5)' },
-        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true)' },
+        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true for speed). Grouped queries are faster and less likely to time out. If the grouped result has few class pairs (≤10), re-query with group_by_class=false and a higher weight threshold (≥50) for richer per-neuron detail.' },
         exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
       }
     }
@@ -888,7 +888,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'create_basic_graph',
-    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to a shared biological category (e.g. neurotransmitter type like "cholinergic", "GABAergic", "glutamatergic"; or system/region like "visual system", "central complex"; or cell class like "sensory neuron", "interneuron") so that nodes are colour-coded meaningfully. For directional connectivity graphs, prefer 2-3 reused groups aligned to the query sides (source-side, target-side, optional intermediate) rather than giving each node or subtype its own one-off group.',
+    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to the upstream_class or downstream_class name from the connectivity results (e.g. "lobula columnar neuron LC33", "adult ellipsoid body extrinsic ring neuron ExR5"). This ensures nodes are colour-coded by their actual neuron class. When many classes exist, you may group by coarser biological category (neurotransmitter type, system/region, or broad cell class). Aim for 2-6 distinct groups so the legend is readable.',
     parameters: {
       type: 'object',
       properties: {
@@ -902,7 +902,7 @@ function getToolConfig() {
             properties: {
               id: { type: 'string', description: 'Unique node identifier' },
               label: { type: 'string', description: 'Display label for the node' },
-              group: { type: 'string', description: 'REQUIRED: Shared biological category for colour-coding. Use neurotransmitter type (cholinergic, GABAergic, glutamatergic), system/region (visual system, central complex), cell class (sensory neuron, interneuron, projection neuron), or other contextually meaningful grouping. For directional connectivity graphs, reuse coarse groups across many nodes, usually source-side, target-side, and optional intermediate.' },
+              group: { type: 'string', description: 'REQUIRED: Neuron class name from connectivity results (e.g. upstream_class or downstream_class). Use the actual class name like "lobula columnar neuron LC33" or "adult ellipsoid body extrinsic ring neuron ExR5" so nodes are colour-coded by biological type. When there are many classes (>6), group by coarser category (neurotransmitter, region, or broad cell class) to keep the legend readable.' },
               size: { type: 'number', description: 'Optional relative node size (1-3 recommended)' }
             },
             required: ['id', 'group']
@@ -1545,7 +1545,7 @@ const MCP_TOOL_ROUTING = {
 
 const VFB_CACHED_TERM_INFO_URL = 'https://v3-cached.virtualflybrain.org/get_term_info'
 const VFB_CACHED_RUN_QUERY_URL = 'https://v3-cached.virtualflybrain.org/run_query'
-const VFB_CACHED_TERM_INFO_TIMEOUT_MS = 12000
+const VFB_CACHED_TERM_INFO_TIMEOUT_MS = 300000
 
 function isRetryableMcpError(error) {
   const message = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
@@ -2120,6 +2120,17 @@ function createBasicGraph(args = {}) {
   if (!normalized) {
     throw new Error('Invalid graph spec. Provide non-empty nodes and edges with valid ids, source, and target fields.')
   }
+
+  // Debug logging for graph construction
+  console.log(`[VFBchat] create_basic_graph called:`, {
+    title: normalized.title,
+    nodeCount: normalized.nodes?.length || 0,
+    edgeCount: normalized.edges?.length || 0,
+    nodes: normalized.nodes?.map(n => ({ id: n.id, label: n.label, group: n.group })) || [],
+    edges: normalized.edges?.map(e => ({ source: e.source, target: e.target, weight: e.weight })) || [],
+    directed: normalized.directed
+  })
+
   return normalized
 }
 
@@ -2238,6 +2249,50 @@ async function executeFunctionTool(name, args, context = {}) {
 
     try {
       const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
+
+      // Debug logging for connectivity queries
+      if (name === 'vfb_query_connectivity') {
+        try {
+          const parsed = result?.content?.[0]?.type === 'text'
+            ? JSON.parse(result.content[0].text)
+            : (typeof result === 'string' ? JSON.parse(result) : result)
+          const resultCount = parsed?.results?.length || 0
+          console.log(`[VFBchat] vfb_query_connectivity FULL raw results:`, {
+            upstream: cleanArgs.upstream_type,
+            downstream: cleanArgs.downstream_type,
+            weight: cleanArgs.weight,
+            group_by_class: cleanArgs.group_by_class,
+            exclude_dbs: cleanArgs.exclude_dbs,
+            totalResults: resultCount,
+            allResults: parsed?.results || []
+          })
+        } catch (e) {
+          console.log(`[VFBchat] vfb_query_connectivity result (parse error):`, result)
+        }
+      }
+
+      // Debug logging for term info requests
+      if (name === 'vfb_get_term_info') {
+        const ids = Array.isArray(cleanArgs.id) ? cleanArgs.id : [cleanArgs.id]
+        console.log(`[VFBchat] vfb_get_term_info requested for:`, ids)
+        try {
+          const parsed = result?.content?.[0]?.type === 'text'
+            ? JSON.parse(result.content[0].text)
+            : (typeof result === 'string' ? JSON.parse(result) : result)
+          if (Array.isArray(parsed)) {
+            console.log(`[VFBchat] vfb_get_term_info batch response (${parsed.length} items):`,
+              parsed.map(t => ({ id: t.id, label: t.label, symbol: t.symbol }))
+            )
+          } else if (parsed?.id) {
+            console.log(`[VFBchat] vfb_get_term_info single response:`,
+              { id: parsed.id, label: parsed.label, symbol: parsed.symbol }
+            )
+          }
+        } catch (e) {
+          console.log(`[VFBchat] vfb_get_term_info response (parse error):`, result.toString().substring(0, 200))
+        }
+      }
+
       if (result?.content) {
         const texts = result.content
           .filter(item => item.type === 'text')
@@ -2652,18 +2707,26 @@ ${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
 - Choose tools dynamically based on the user request and available evidence; the guidance below is preferred, not a rigid workflow.
-- IMPORTANT: Always prefer VFB data tools over literature search (PubMed/bioRxiv) for questions about anatomy, neurons, connectivity, gene expression, or any query that VFB tools can answer with data. Only use PubMed/bioRxiv when the user specifically asks about publications, or when VFB tool results reference a paper and the user wants more details.
+- CRITICAL: NEVER use PubMed or bioRxiv/medRxiv for questions about anatomy, neurons, connectivity, gene expression, or any query that VFB tools can answer with data. Publication search is ONLY for: (1) the user explicitly asks about papers/literature, or (2) VFB tool results reference a specific paper and the user wants more details. If a VFB tool times out, retry with parameters that reduce result size (raise weight threshold, set group_by_class=true) — do NOT fall back to literature search as a substitute for data queries.
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
 - For VFB entity questions where suitable query types are available, prefer vfb_get_term_info + vfb_run_query as a first pass because vfb_run_query is usually cached and faster.
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
 - For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
+- CRITICAL vfb_query_connectivity parameters (per MCP guidance):
+  * weight: ALWAYS use weight=1 (minimum 1+ synapse). This gives all observed connections without noise.
+  * upstream_type + downstream_type (both-ends query): if timeout occurs, increase weight to 5, then 10, then 50.
+  * upstream_type only (single-end): same escalation: start 1, then 5, 10, 50.
+  * exclude_dbs: DEFAULT to ["hb", "fafb"] (exclude unsuitable datasets). Only use [] to search ALL datasets if user explicitly requests it.
+  * group_by_class: false for per-neuron detail (shows individual connections).
+  * Note: query_connectivity runs LIVE queries (not cached) — can take up to several minutes.
+  * Truncation behavior: when >50 per-neuron rows returned, system shows top 20 sorted by weight descending + summary stats.
 - IMPORTANT: When the user gives a multi-word neuron name like "adult ellipsoid body ring neuron", pass the ENTIRE phrase as the label. Do NOT break it into sub-terms (e.g. do NOT search for "ellipsoid body" separately). Always use the longest, most specific term the user provides.
 - For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
 - Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
 - Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
-- Questions about published papers or recent literature (only when explicitly asked): use PubMed first, optionally bioRxiv/medRxiv for preprints
+- Questions about published papers or recent literature (ONLY when the user explicitly asks about papers/publications, or when VFB results cite a paper the user wants to explore): use PubMed first, optionally bioRxiv/medRxiv for preprints. NEVER use publication search as a fallback for data queries.
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
 - For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not search PubMed or reviewed-docs first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
@@ -2682,9 +2745,14 @@ ENTITY RESOLUTION RULES:
 - If the user already provided a canonical FlyBase ID (for example FBgn..., FBal..., FBti..., FBco..., FBst...), you may call downstream tools directly.
 
 TOOL ERRORS AND TIMEOUTS:
-- VFB MCP queries (especially non-cached ones like vfb_query_connectivity and live vfb_run_query) can take considerable time. Do NOT treat slow responses as failures.
-- If a tool returns a timeout error, try an alternative approach (e.g. narrower query, different tool) rather than giving up. Always present whatever partial results you have gathered so far.
-- Never tell the user a query "failed" or "timed out" without first attempting at least one alternative path.
+- vfb_query_connectivity runs LIVE queries (NOT cached) — responses can take up to several MINUTES. Do NOT treat slow responses as failures. Be patient.
+- If vfb_query_connectivity returns ZERO results, apply relaxation loop (in this order):
+  1. Lower weight to 1 (from 50)
+  2. If still zero, remove exclude_dbs filter (include all datasets)
+  3. If still zero, try group_by_class=true
+  4. Present results at whichever relaxation step succeeds.
+- If vfb_query_connectivity times out after 5+ minutes, retry with group_by_class=true (aggregates by class, faster). Always present whatever partial results you have gathered so far.
+- Never tell the user a query "failed" without attempting at least one alternative VFB path. NEVER substitute a PubMed search for a failed VFB data query.
 - CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately AND call create_basic_graph with the top connections. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
 - If supplementary tool calls fail but the primary query succeeded, present the successful results and ignore the supplementary failures. Never lead your response with error messages when you have valid data to show.
 
@@ -2708,15 +2776,22 @@ FORMATTING VFB REFERENCES (response text only — NOT for tool parameters):
 - Only use thumbnail URLs that actually appear in tool results
 
 GRAPH VISUALS:
+- ENRICHMENT FIRST — MANDATORY WORKFLOW:
+  1. When vfb_query_connectivity returns connectivity data, extract ALL unique node IDs from the results (both upstream and downstream)
+  2. MAKE ONE SINGLE BATCH REQUEST to vfb_get_term_info with the complete array of IDs (e.g., ["FBbt_20001532", "FBbt_00047035", ...])
+  3. For each term info response, extract: the top-level "Name" field (this IS the symbol, e.g., "IB029", "LC33", "ExR5")
+  4. Only THEN call create_basic_graph with node labels = Name field from term info
+  5. NEVER make individual vfb_get_term_info calls — always batch
+- Node label source: Use the top-level "Name" field from vfb_get_term_info response (e.g., "IB029", "ExR5", "PLP032"). This is the official symbol.
+- Use "Meta.Name" (full descriptive name) for the node group field for color-coding.
 - ALWAYS call create_basic_graph when vfb_query_connectivity returns connectivity data. Do not wait for the user to ask for a graph — include it automatically alongside the text summary.
-- For connectivity answers, create one concise graph (typically 4-20 nodes) highlighting the strongest relationships.
-- Keep graph specs focused and avoid very dense or exhaustive graphs — pick the top connections by weight.
-- Every node MUST have a meaningful "group" field for colour-coding. Choose the most informative biological grouping for the context:
+- For connectivity answers, include ALL connections returned from vfb_query_connectivity in the graph (no artificial limits). If results >50 rows, the MCP already truncates to top 20 sorted by weight, so show all of those.
+- Do NOT filter by "strongest" or "top N" — show complete connectivity.
+- Every node MUST have a meaningful "group" field for colour-coding. Use the upstream_class or downstream_class name from the connectivity results (e.g. "lobula columnar neuron LC33", "adult ellipsoid body extrinsic ring neuron ExR5") so nodes are coloured by their actual neuron class. This is the preferred approach. Fallback hierarchy when there are too many classes (>6 distinct groups):
   * Neurotransmitter type (cholinergic, GABAergic, glutamatergic, etc.) when NT data is available
   * Brain region/system (visual system, central complex, mushroom body, etc.) when comparing across regions
   * Cell class (sensory neuron, interneuron, projection neuron, motor neuron, etc.) as a general fallback
-  * For directional connectivity graphs, keep groups coarse and reusable: usually source-side, target-side, and optional intermediate
-  * Do NOT create a separate group for every named neuron class or subtype if that would produce one-off colours
+  * Do NOT use generic "source-side" / "target-side" as groups — these carry no biological meaning
   * The LLM should use its knowledge of Drosophila neurobiology to assign the most useful grouping
 
 TOOL RELAY:
@@ -2864,6 +2939,7 @@ function buildToolRelaySystemPrompt() {
 - "arguments" must be a JSON object matching that tool schema.
 - You may request multiple tool calls in one response.
 - After server tool execution, you will receive a user message starting with "TOOL_RESULTS_JSON:".
+- Tool outputs may be in TSV (tab-separated values) format for compactness: first line is column headers, subsequent lines are data rows. Parse TSV the same way you would JSON — each row maps headers to values.
 - If more data is needed, emit another JSON tool call payload.
 - When you are ready to answer the user, return a normal assistant response (not JSON).
 
@@ -2970,8 +3046,85 @@ function parseRelayedToolCalls(responseText = '') {
   return []
 }
 
+// Convert arrays of uniform objects to compact TSV to save context window tokens.
+// JSON keys are repeated per-row; TSV uses a header row once.  For a 20-row
+// connectivity result this typically saves 40-60 % of the character count.
+function compactJsonToTsv(parsed) {
+  // Unwrap common wrapper shapes: { connections: [...] }, { response: { docs: [...] } }, etc.
+  let rows = null
+  let meta = null
+  if (Array.isArray(parsed)) {
+    rows = parsed
+  } else if (parsed && typeof parsed === 'object') {
+    const arrayKey = ['connections', 'results', 'rows', 'data', 'items', 'docs', 'articles']
+      .find(k => Array.isArray(parsed[k]) && parsed[k].length > 0)
+    if (arrayKey) {
+      rows = parsed[arrayKey]
+      meta = Object.fromEntries(
+        Object.entries(parsed).filter(([k]) => k !== arrayKey)
+      )
+    } else {
+      // Handle nested wrappers like { response: { docs: [...] } }
+      for (const outerVal of Object.values(parsed)) {
+        if (outerVal && typeof outerVal === 'object' && !Array.isArray(outerVal)) {
+          const nestedKey = ['docs', 'rows', 'results', 'items', 'connections']
+            .find(k => Array.isArray(outerVal[k]) && outerVal[k].length > 0)
+          if (nestedKey) {
+            rows = outerVal[nestedKey]
+            meta = Object.fromEntries(
+              Object.entries(parsed).filter(([, v]) => v !== outerVal)
+            )
+            // Include sibling metadata from the nested wrapper
+            const nestedMeta = Object.fromEntries(
+              Object.entries(outerVal).filter(([k]) => k !== nestedKey)
+            )
+            if (Object.keys(nestedMeta).length > 0) {
+              meta = { ...meta, ...nestedMeta }
+            }
+            break
+          }
+        }
+      }
+    }
+  }
+  if (!rows || rows.length === 0 || typeof rows[0] !== 'object') return null
+
+  const cols = Object.keys(rows[0])
+  // Only compact when rows are uniform enough (all rows share the same keys)
+  const isUniform = rows.every(r => typeof r === 'object' && r !== null)
+  if (!isUniform) return null
+
+  const escape = (v) => {
+    if (v === null || v === undefined) return ''
+    const s = String(v)
+    return s.includes('\t') || s.includes('\n') ? s.replace(/[\t\n]/g, ' ') : s
+  }
+
+  const lines = [cols.join('\t')]
+  for (const row of rows) {
+    lines.push(cols.map(c => escape(row[c])).join('\t'))
+  }
+
+  let tsv = lines.join('\n')
+  if (meta && Object.keys(meta).length > 0) {
+    tsv = JSON.stringify(meta) + '\n' + tsv
+  }
+  return tsv
+}
+
 function truncateToolOutput(output = '', maxChars = 12000) {
   const text = typeof output === 'string' ? output : JSON.stringify(output)
+
+  // Try to compact JSON arrays into TSV for token efficiency
+  try {
+    const parsed = typeof output === 'string' ? JSON.parse(output) : output
+    const tsv = compactJsonToTsv(parsed)
+    if (tsv && tsv.length < text.length) {
+      if (tsv.length <= maxChars) return tsv
+      return `${tsv.slice(0, maxChars)}\n\n[truncated ${tsv.length - maxChars} chars]`
+    }
+  } catch { /* not JSON or compaction failed — fall through */ }
+
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`
 }
@@ -4238,7 +4391,7 @@ export async function POST(request) {
 
     let apiResponse
     try {
-      const timeoutMs = 180000
+      const timeoutMs = 300000
       const abortController = new AbortController()
       const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
 
