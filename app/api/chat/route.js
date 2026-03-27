@@ -268,19 +268,149 @@ function normalizeGraphSpec(rawSpec = {}) {
   }
 }
 
+function findBalancedJsonEnd(text = '', startIndex = 0) {
+  if (startIndex < 0 || startIndex >= text.length) return null
+  if (text[startIndex] !== '{' && text[startIndex] !== '[') return null
+
+  const stack = []
+  let inString = false
+  let escaped = false
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+
+    if (char === '{') {
+      stack.push('}')
+      continue
+    }
+
+    if (char === '[') {
+      stack.push(']')
+      continue
+    }
+
+    if (char === '}' || char === ']') {
+      if (stack.length === 0 || stack.pop() !== char) return null
+      if (stack.length === 0) return index + 1
+    }
+  }
+
+  return null
+}
+
+function extractTopLevelJsonSegmentsFromText(text = '') {
+  if (!text) return []
+
+  const segments = []
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char !== '{' && char !== '[') continue
+
+    const endIndex = findBalancedJsonEnd(text, index)
+    if (!endIndex) continue
+
+    const rawJson = text.slice(index, endIndex)
+
+    try {
+      const value = JSON.parse(rawJson)
+      segments.push({ start: index, end: endIndex, rawJson, value })
+      index = endIndex - 1
+    } catch {
+      // Keep scanning in case a valid JSON payload starts later in the text.
+    }
+  }
+
+  return segments
+}
+
+function extractRelayedToolCallsFromParsedJson(parsed) {
+  const rawCalls = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.tool_calls)
+      ? parsed.tool_calls
+      : parsed?.tool_call
+        ? [parsed.tool_call]
+        : parsed && typeof parsed === 'object' && typeof parsed.name === 'string'
+          ? [parsed]
+          : []
+
+  return rawCalls
+    .map(normalizeRelayedToolCall)
+    .filter(Boolean)
+}
+
+function extractGraphSpecsFromJsonValue(value, graphs = [], seen = new Set()) {
+  if (!value || typeof value !== 'object') return graphs
+  if (seen.has(value)) return graphs
+  seen.add(value)
+
+  const normalized = normalizeGraphSpec(value)
+  if (normalized) {
+    graphs.push(normalized)
+    return graphs
+  }
+
+  const relayedToolCalls = extractRelayedToolCallsFromParsedJson(value)
+  if (relayedToolCalls.length > 0) {
+    for (const toolCall of relayedToolCalls) {
+      if (toolCall.name !== 'create_basic_graph') continue
+      const graph = normalizeGraphSpec(toolCall.arguments)
+      if (graph) graphs.push(graph)
+    }
+    return graphs
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractGraphSpecsFromJsonValue(item, graphs, seen)
+    }
+    return graphs
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    if (nestedValue && typeof nestedValue === 'object') {
+      extractGraphSpecsFromJsonValue(nestedValue, graphs, seen)
+    }
+  }
+
+  return graphs
+}
+
 function extractGraphSpecsFromResponseText(responseText = '') {
   if (!responseText) return { textWithoutGraphs: responseText, graphs: [] }
 
   const graphs = []
 
-  // Match code blocks with explicit graph language tags
-  const graphBlockRegex = /```(?:vfb-graph|vfb_graph|graphjson|graph-json)\s*([\s\S]*?)```/gi
+  // Match explicit graph blocks first, then fall back to generic JSON code blocks
+  // and inline JSON segments that parse to graph specs.
+  const graphBlockRegex = /```(?:vfb-graph|vfb_graph|graphjson|graph-json|json)?\s*([\s\S]*?)```/gi
   let textWithoutGraphs = responseText.replace(graphBlockRegex, (match, rawJson) => {
     try {
       const parsed = JSON.parse(String(rawJson || '').trim())
-      const normalized = normalizeGraphSpec(parsed)
-      if (normalized) {
-        graphs.push(normalized)
+      const extractedGraphs = dedupeGraphSpecs(extractGraphSpecsFromJsonValue(parsed))
+      if (extractedGraphs.length > 0) {
+        graphs.push(...extractedGraphs)
         return ''
       }
     } catch {
@@ -289,44 +419,28 @@ function extractGraphSpecsFromResponseText(responseText = '') {
     return match
   })
 
-  // Also match any JSON code block or bare JSON that looks like a graph spec
-  // (has "nodes" and "edges" arrays) — the LLM sometimes dumps graph JSON
-  // without the special language tag
-  const genericJsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"nodes"\s*:\s*\[[\s\S]*?"edges"\s*:\s*\[[\s\S]*?\})\s*```/gi
-  textWithoutGraphs = textWithoutGraphs.replace(genericJsonBlockRegex, (match, rawJson) => {
-    try {
-      const parsed = JSON.parse(String(rawJson || '').trim())
-      const normalized = normalizeGraphSpec(parsed)
-      if (normalized) {
-        graphs.push(normalized)
-        return ''
-      }
-    } catch {
-      // Keep original block when parsing fails.
-    }
-    return match
-  })
+  const jsonSegments = extractTopLevelJsonSegmentsFromText(textWithoutGraphs)
+  if (jsonSegments.length > 0) {
+    let rebuiltText = ''
+    let lastIndex = 0
 
-  // Finally, try to catch bare JSON graph objects in the text (no code fences)
-  // Look for JSON objects that span multiple lines and contain both nodes and edges
-  const bareJsonGraphRegex = /(\{\s*(?:"[^"]*"\s*:\s*(?:"[^"]*"|[^,}\]]*|\[[^\]]*\])\s*,\s*)*"nodes"\s*:\s*\[[\s\S]*?"edges"\s*:\s*\[[\s\S]*?\]\s*\})/gi
-  textWithoutGraphs = textWithoutGraphs.replace(bareJsonGraphRegex, (match, rawJson) => {
-    try {
-      const parsed = JSON.parse(String(rawJson || '').trim())
-      // Only treat as graph if it actually has nodes and edges arrays
-      if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return match
-      const normalized = normalizeGraphSpec(parsed)
-      if (normalized) {
-        graphs.push(normalized)
-        return ''
-      }
-    } catch {
-      // Not valid JSON, keep as-is
-    }
-    return match
-  })
+    for (const segment of jsonSegments) {
+      const extractedGraphs = dedupeGraphSpecs(extractGraphSpecsFromJsonValue(segment.value))
+      if (extractedGraphs.length === 0) continue
 
-  return { textWithoutGraphs, graphs }
+      rebuiltText += textWithoutGraphs.slice(lastIndex, segment.start)
+      lastIndex = segment.end
+      graphs.push(...extractedGraphs)
+    }
+
+    rebuiltText += textWithoutGraphs.slice(lastIndex)
+    textWithoutGraphs = rebuiltText
+  }
+
+  return {
+    textWithoutGraphs: textWithoutGraphs.replace(/\n{3,}/g, '\n\n').trim(),
+    graphs: dedupeGraphSpecs(graphs)
+  }
 }
 
 function extractGraphSpecsFromToolOutputs(toolOutputs = []) {
@@ -379,28 +493,57 @@ function extractImagesFromResponseText(responseText = '') {
 }
 
 function stripLeakedToolCallJson(text = '') {
-  if (!text) return text
+  if (!text) return { cleanedText: text, graphs: [] }
 
-  // Remove code-fenced JSON blocks that contain "tool_calls" or "name"+"arguments" patterns
-  let cleaned = text.replace(/```(?:json)?\s*\{[\s\S]*?"(?:tool_calls|name)"[\s\S]*?\}[\s\S]*?```/g, '')
+  const graphs = []
 
-  // Remove bare JSON objects that look like tool call payloads (start with { and contain "tool_calls")
-  cleaned = cleaned.replace(/\{[\s\S]*?"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '')
+  const toolCallCodeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  let cleaned = text.replace(toolCallCodeBlockRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      const relayedToolCalls = extractRelayedToolCallsFromParsedJson(parsed)
+      if (relayedToolCalls.length > 0) {
+        graphs.push(...extractGraphSpecsFromJsonValue(parsed))
+        return ''
+      }
+    } catch {
+      // Keep original block when parsing fails.
+    }
+    return match
+  })
 
-  // Clean up excess whitespace left behind
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim()
+  const jsonSegments = extractTopLevelJsonSegmentsFromText(cleaned)
+  if (jsonSegments.length > 0) {
+    let rebuiltText = ''
+    let lastIndex = 0
 
-  return cleaned || text
+    for (const segment of jsonSegments) {
+      const relayedToolCalls = extractRelayedToolCallsFromParsedJson(segment.value)
+      if (relayedToolCalls.length === 0) continue
+
+      rebuiltText += cleaned.slice(lastIndex, segment.start)
+      lastIndex = segment.end
+      graphs.push(...extractGraphSpecsFromJsonValue(segment.value))
+    }
+
+    rebuiltText += cleaned.slice(lastIndex)
+    cleaned = rebuiltText
+  }
+
+  return {
+    cleanedText: cleaned.replace(/\n{3,}/g, '\n\n').trim(),
+    graphs: dedupeGraphSpecs(graphs)
+  }
 }
 
 function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList, graphSpecs = [] }) {
-  const strippedText = stripLeakedToolCallJson(responseText)
-  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(strippedText, outboundAllowList)
+  const { cleanedText, graphs: leakedToolCallGraphs } = stripLeakedToolCallJson(responseText)
+  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, outboundAllowList)
   const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
   const linkedResponseText = linkifyFollowUpQueryItems(textWithoutGraphs)
   const images = extractImagesFromResponseText(linkedResponseText)
-  const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...inlineGraphs])
-  console.log(`[VFBchat] Final result: ${graphs.length} graph(s) (${graphSpecs.length} from tools, ${inlineGraphs.length} inline)`)
+  const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...leakedToolCallGraphs, ...inlineGraphs])
+  console.log(`[VFBchat] Final result: ${graphs.length} graph(s) (${graphSpecs.length} from tools, ${leakedToolCallGraphs.length} from leaked tool calls, ${inlineGraphs.length} inline)`)
 
   return {
     ok: true,
@@ -745,7 +888,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'create_basic_graph',
-    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to a shared biological category (e.g. neurotransmitter type like "cholinergic", "GABAergic", "glutamatergic"; or system/region like "visual system", "central complex"; or cell class like "sensory neuron", "interneuron") so that nodes are colour-coded meaningfully. Choose the most informative grouping for the specific query context.',
+    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to a shared biological category (e.g. neurotransmitter type like "cholinergic", "GABAergic", "glutamatergic"; or system/region like "visual system", "central complex"; or cell class like "sensory neuron", "interneuron") so that nodes are colour-coded meaningfully. For directional connectivity graphs, prefer 2-3 reused groups aligned to the query sides (source-side, target-side, optional intermediate) rather than giving each node or subtype its own one-off group.',
     parameters: {
       type: 'object',
       properties: {
@@ -759,7 +902,7 @@ function getToolConfig() {
             properties: {
               id: { type: 'string', description: 'Unique node identifier' },
               label: { type: 'string', description: 'Display label for the node' },
-              group: { type: 'string', description: 'REQUIRED: Shared biological category for colour-coding. Use neurotransmitter type (cholinergic, GABAergic, glutamatergic), system/region (visual system, central complex), cell class (sensory neuron, interneuron, projection neuron), or other contextually meaningful grouping.' },
+              group: { type: 'string', description: 'REQUIRED: Shared biological category for colour-coding. Use neurotransmitter type (cholinergic, GABAergic, glutamatergic), system/region (visual system, central complex), cell class (sensory neuron, interneuron, projection neuron), or other contextually meaningful grouping. For directional connectivity graphs, reuse coarse groups across many nodes, usually source-side, target-side, and optional intermediate.' },
               size: { type: 'number', description: 'Optional relative node size (1-3 recommended)' }
             },
             required: ['id', 'group']
@@ -2572,6 +2715,8 @@ GRAPH VISUALS:
   * Neurotransmitter type (cholinergic, GABAergic, glutamatergic, etc.) when NT data is available
   * Brain region/system (visual system, central complex, mushroom body, etc.) when comparing across regions
   * Cell class (sensory neuron, interneuron, projection neuron, motor neuron, etc.) as a general fallback
+  * For directional connectivity graphs, keep groups coarse and reusable: usually source-side, target-side, and optional intermediate
+  * Do NOT create a separate group for every named neuron class or subtype if that would produce one-off colours
   * The LLM should use its knowledge of Drosophila neurobiology to assign the most useful grouping
 
 TOOL RELAY:
@@ -2800,23 +2945,20 @@ function normalizeRelayedToolCall(toolCall) {
 }
 
 function parseRelayedToolCalls(responseText = '') {
+  const structuredSegments = extractTopLevelJsonSegmentsFromText(responseText)
+  for (const segment of structuredSegments) {
+    const normalizedCalls = extractRelayedToolCallsFromParsedJson(segment.value)
+    if (normalizedCalls.length > 0) {
+      return normalizedCalls
+    }
+  }
+
   const candidates = extractJsonCandidates(responseText)
 
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate)
-      const rawCalls = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(parsed?.tool_calls)
-          ? parsed.tool_calls
-          : parsed?.tool_call
-            ? [parsed.tool_call]
-            : []
-
-      const normalizedCalls = rawCalls
-        .map(normalizeRelayedToolCall)
-        .filter(Boolean)
-
+      const normalizedCalls = extractRelayedToolCallsFromParsedJson(parsed)
       if (normalizedCalls.length > 0) {
         return normalizedCalls
       }
@@ -3013,6 +3155,7 @@ function buildToolPolicyCorrectionMessage({
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
     '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
     '- When connectivity data is returned, ALWAYS call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding.',
+    '- For directional connectivity graphs, keep graph groups coarse and reusable (usually source-side, target-side, and optional intermediate), not one unique group per node.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
     '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
   ]

@@ -19,6 +19,12 @@ const FEEDBACK_REASON_LABELS = {
 }
 
 const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
+const GRAPH_ROLE_STYLES = {
+  source: { label: 'Source side', color: '#4a9eff' },
+  target: { label: 'Target side', color: '#4ade80' },
+  bridge: { label: 'Intermediate', color: '#f59e0b' },
+  isolated: { label: 'Other', color: '#94a3b8' }
+}
 
 function hashString(value = '') {
   let hash = 0
@@ -29,33 +35,132 @@ function hashString(value = '') {
   return Math.abs(hash)
 }
 
+function normalizeGraphGroup(value = '') {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function getGraphNodeRole(stats = {}, directed = true) {
+  const indegree = Number(stats.indegree) || 0
+  const outdegree = Number(stats.outdegree) || 0
+
+  if (!directed) {
+    return indegree > 0 || outdegree > 0 ? 'bridge' : 'isolated'
+  }
+
+  if (outdegree > 0 && indegree === 0) return 'source'
+  if (indegree > 0 && outdegree === 0) return 'target'
+  if (indegree > 0 || outdegree > 0) return 'bridge'
+  return 'isolated'
+}
+
 const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const containerRef = useRef(null)
   const fgRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
 
-  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
-  const edges = Array.isArray(graph?.edges) ? graph.edges : []
+  const nodes = useMemo(() => (Array.isArray(graph?.nodes) ? graph.nodes : []), [graph?.nodes])
+  const edges = useMemo(() => (Array.isArray(graph?.edges) ? graph.edges : []), [graph?.edges])
+  const isDirected = graph?.directed !== false
 
-  // Build color map from groups
-  const groupColorMap = useMemo(() => {
-    const map = {}
-    const groups = [...new Set(nodes.map(n => n.group || '').filter(Boolean))]
-    groups.forEach((g, i) => { map[g] = GRAPH_PALETTE[i % GRAPH_PALETTE.length] })
-    return map
-  }, [nodes])
+  const visualGrouping = useMemo(() => {
+    const nodeStats = new Map(nodes.map(node => [String(node.id), { indegree: 0, outdegree: 0 }]))
 
-  // Build graph data for force-graph (must use fresh objects each render to avoid mutation issues)
+    edges.forEach(edge => {
+      const sourceId = String(edge.source)
+      const targetId = String(edge.target)
+      const sourceStats = nodeStats.get(sourceId)
+      const targetStats = nodeStats.get(targetId)
+      if (sourceStats) sourceStats.outdegree += 1
+      if (targetStats) targetStats.indegree += 1
+    })
+
+    const roleCounts = { source: 0, target: 0, bridge: 0, isolated: 0 }
+    const roleByNodeId = {}
+
+    nodes.forEach(node => {
+      const id = String(node.id)
+      const role = getGraphNodeRole(nodeStats.get(id), isDirected)
+      roleByNodeId[id] = role
+      roleCounts[role] += 1
+    })
+
+    const groupCounts = nodes.reduce((acc, node) => {
+      const group = normalizeGraphGroup(node.group)
+      if (group) acc[group] = (acc[group] || 0) + 1
+      return acc
+    }, {})
+    const providedGroups = Object.keys(groupCounts)
+    const largestProvidedGroup = Object.values(groupCounts).reduce((max, count) => Math.max(max, count), 0)
+    const hasDirectionalStructure = roleCounts.source > 0 && roleCounts.target > 0
+    const fragmentedProvidedGroups = providedGroups.length === 0
+      || providedGroups.length > 3
+      || providedGroups.length >= Math.max(3, Math.ceil(nodes.length * 0.75))
+      || largestProvidedGroup <= Math.max(1, Math.floor(nodes.length / 2))
+    const useStructuralColoring = isDirected && nodes.length >= 3 && hasDirectionalStructure && fragmentedProvidedGroups
+
+    if (useStructuralColoring) {
+      const legend = Object.entries(GRAPH_ROLE_STYLES)
+        .filter(([role]) => roleCounts[role] > 0)
+        .map(([role, style]) => ({
+          key: role,
+          label: style.label,
+          color: style.color
+        }))
+
+      return {
+        useStructuralColoring,
+        legend,
+        byNodeId: nodes.reduce((acc, node) => {
+          const id = String(node.id)
+          const role = roleByNodeId[id] || 'bridge'
+          acc[id] = {
+            key: role,
+            label: GRAPH_ROLE_STYLES[role].label,
+            color: node.color || GRAPH_ROLE_STYLES[role].color
+          }
+          return acc
+        }, {})
+      }
+    }
+
+    const legend = providedGroups.map((group, index) => ({
+      key: group,
+      label: group,
+      color: GRAPH_PALETTE[index % GRAPH_PALETTE.length]
+    }))
+    const paletteByGroup = Object.fromEntries(legend.map(entry => [entry.key, entry.color]))
+
+    return {
+      useStructuralColoring,
+      legend,
+      byNodeId: nodes.reduce((acc, node) => {
+        const id = String(node.id)
+        const group = normalizeGraphGroup(node.group)
+        acc[id] = {
+          key: group || id,
+          label: group || '',
+          color: node.color || paletteByGroup[group] || GRAPH_PALETTE[hashString(node.label || node.id) % GRAPH_PALETTE.length]
+        }
+        return acc
+      }, {})
+    }
+  }, [nodes, edges, isDirected])
+
   const graphData = useMemo(() => {
     const nodeIds = new Set(nodes.map(n => String(n.id)))
     return {
-      nodes: nodes.map(n => ({
-        id: String(n.id),
-        label: n.label || n.id,
-        group: n.group || '',
-        color: n.color || groupColorMap[n.group] || GRAPH_PALETTE[hashString(n.label || n.id) % GRAPH_PALETTE.length],
-        size: n.size || 1
-      })),
+      nodes: nodes.map(n => {
+        const id = String(n.id)
+        const visualGroup = visualGrouping.byNodeId[id] || {}
+        return {
+          id,
+          label: n.label || n.id,
+          group: visualGroup.label || normalizeGraphGroup(n.group),
+          originalGroup: normalizeGraphGroup(n.group),
+          color: visualGroup.color || n.color || GRAPH_PALETTE[hashString(n.label || n.id) % GRAPH_PALETTE.length],
+          size: n.size || 1
+        }
+      }),
       links: edges
         .filter(e => nodeIds.has(String(e.source)) && nodeIds.has(String(e.target)))
         .map(e => ({
@@ -65,7 +170,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           weight: Number(e.weight) || 1
         }))
     }
-  }, [nodes, edges, groupColorMap])
+  }, [nodes, edges, visualGrouping])
 
   // Measure container width
   useEffect(() => {
@@ -90,14 +195,8 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
 
   if (nodes.length === 0 || edges.length === 0) return null
 
-  const isDirected = graph?.directed !== false
   const maxWeight = Math.max(1, ...graphData.links.map(l => l.weight))
-
-  // Build legend entries from groups
-  const legendEntries = [...new Set(nodes.map(n => n.group).filter(Boolean))].map(g => ({
-    group: g,
-    color: groupColorMap[g] || '#888'
-  }))
+  const legendEntries = visualGrouping.legend
 
   return (
     <div ref={containerRef} style={{
@@ -118,12 +217,17 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           {graph.title}
         </div>
       )}
+      {visualGrouping.useStructuralColoring && (
+        <div style={{ fontSize: '0.72em', color: '#8f9aad', marginBottom: '6px' }}>
+          Colours show connectivity role so the source and target sides are easier to scan.
+        </div>
+      )}
       {legendEntries.length > 1 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '6px', fontSize: '0.72em' }}>
           {legendEntries.map(e => (
-            <span key={e.group} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
+            <span key={e.key} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: e.color, display: 'inline-block' }} />
-              {e.group}
+              {e.label}
             </span>
           ))}
         </div>
@@ -137,7 +241,14 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         nodeRelSize={6}
         nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
         nodeColor={n => n.color}
-        nodeLabel={n => `${n.label}${n.group ? ` (${n.group})` : ''}`}
+        nodeLabel={n => {
+          const details = []
+          if (n.originalGroup) details.push(`type: ${n.originalGroup}`)
+          if (visualGrouping.useStructuralColoring && n.group && n.group !== n.originalGroup) {
+            details.push(`role: ${n.group}`)
+          }
+          return details.length > 0 ? `${n.label} (${details.join('; ')})` : n.label
+        }}
         nodeCanvasObject={(node, ctx, globalScale) => {
           const r = Math.max(3, 4 + (node.size || 1) * 2)
           ctx.beginPath()
