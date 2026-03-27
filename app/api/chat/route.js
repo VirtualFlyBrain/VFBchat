@@ -745,13 +745,12 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'create_basic_graph',
-    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges.',
+    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to a shared biological category (e.g. neurotransmitter type like "cholinergic", "GABAergic", "glutamatergic"; or system/region like "visual system", "central complex"; or cell class like "sensory neuron", "interneuron") so that nodes are colour-coded meaningfully. Choose the most informative grouping for the specific query context.',
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Optional graph title' },
         directed: { type: 'boolean', description: 'Whether edges are directed (default true)' },
-        layout: { type: 'string', enum: ['circle', 'radial'], description: 'Simple layout hint (default circle)' },
         nodes: {
           type: 'array',
           description: 'Graph nodes',
@@ -760,11 +759,10 @@ function getToolConfig() {
             properties: {
               id: { type: 'string', description: 'Unique node identifier' },
               label: { type: 'string', description: 'Display label for the node' },
-              group: { type: 'string', description: 'Optional group/type' },
-              color: { type: 'string', description: 'Optional color in #RRGGBB format' },
+              group: { type: 'string', description: 'REQUIRED: Shared biological category for colour-coding. Use neurotransmitter type (cholinergic, GABAergic, glutamatergic), system/region (visual system, central complex), cell class (sensory neuron, interneuron, projection neuron), or other contextually meaningful grouping.' },
               size: { type: 'number', description: 'Optional relative node size (1-3 recommended)' }
             },
-            required: ['id']
+            required: ['id', 'group']
           }
         },
         edges: {
@@ -2517,7 +2515,8 @@ TOOL SELECTION:
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
-- For connectivity questions, call vfb_query_connectivity directly with the neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
+- For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
+- IMPORTANT: When the user gives a multi-word neuron name like "adult ellipsoid body ring neuron", pass the ENTIRE phrase as the label. Do NOT break it into sub-terms (e.g. do NOT search for "ellipsoid body" separately). Always use the longest, most specific term the user provides.
 - For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
 - Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
 - Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
@@ -2543,7 +2542,7 @@ TOOL ERRORS AND TIMEOUTS:
 - VFB MCP queries (especially non-cached ones like vfb_query_connectivity and live vfb_run_query) can take considerable time. Do NOT treat slow responses as failures.
 - If a tool returns a timeout error, try an alternative approach (e.g. narrower query, different tool) rather than giving up. Always present whatever partial results you have gathered so far.
 - Never tell the user a query "failed" or "timed out" without first attempting at least one alternative path.
-- CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
+- CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately AND call create_basic_graph with the top connections. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
 - If supplementary tool calls fail but the primary query succeeded, present the successful results and ignore the supplementary failures. Never lead your response with error messages when you have valid data to show.
 
 TOOL ECONOMY:
@@ -2566,10 +2565,14 @@ FORMATTING VFB REFERENCES (response text only — NOT for tool parameters):
 - Only use thumbnail URLs that actually appear in tool results
 
 GRAPH VISUALS:
-- Graph rendering is optional and should be used only when it improves clarity for this specific answer.
-- For connectivity answers, use at most one concise graph (typically 4-20 nodes) when a visual summary is clearer than text alone.
-- Keep graph specs focused on the strongest relationships and avoid very dense or exhaustive graphs.
-- Skip graph output when a short table or plain-language summary is clearer.
+- ALWAYS call create_basic_graph when vfb_query_connectivity returns connectivity data. Do not wait for the user to ask for a graph — include it automatically alongside the text summary.
+- For connectivity answers, create one concise graph (typically 4-20 nodes) highlighting the strongest relationships.
+- Keep graph specs focused and avoid very dense or exhaustive graphs — pick the top connections by weight.
+- Every node MUST have a meaningful "group" field for colour-coding. Choose the most informative biological grouping for the context:
+  * Neurotransmitter type (cholinergic, GABAergic, glutamatergic, etc.) when NT data is available
+  * Brain region/system (visual system, central complex, mushroom body, etc.) when comparing across regions
+  * Cell class (sensory neuron, interneuron, projection neuron, motor neuron, etc.) as a general fallback
+  * The LLM should use its knowledge of Drosophila neurobiology to assign the most useful grouping
 
 TOOL RELAY:
 - You can request server-side tool execution using the tool relay protocol.
@@ -3009,7 +3012,7 @@ function buildToolPolicyCorrectionMessage({
     '- Choose the smallest set of tools that best answers the user request.',
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
     '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
-    '- If the result is connectivity-heavy and a graph would help, consider create_basic_graph for a compact node/edge view.',
+    '- When connectivity data is returned, ALWAYS call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
     '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
   ]

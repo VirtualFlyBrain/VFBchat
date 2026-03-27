@@ -2,8 +2,11 @@
 
 import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
+
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
 
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
@@ -26,47 +29,84 @@ function hashString(value = '') {
   return Math.abs(hash)
 }
 
-const BasicGraphView = memo(function BasicGraphView({ graph, graphKey }) {
-  const width = 640
-  const height = 360
-  const centerX = width / 2
-  const centerY = height / 2
+const BasicGraphView = memo(function BasicGraphView({ graph }) {
+  const containerRef = useRef(null)
+  const fgRef = useRef(null)
+  const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
 
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
   const edges = Array.isArray(graph?.edges) ? graph.edges : []
+
+  // Build color map from groups
+  const groupColorMap = useMemo(() => {
+    const map = {}
+    const groups = [...new Set(nodes.map(n => n.group || '').filter(Boolean))]
+    groups.forEach((g, i) => { map[g] = GRAPH_PALETTE[i % GRAPH_PALETTE.length] })
+    return map
+  }, [nodes])
+
+  // Build graph data for force-graph (must use fresh objects each render to avoid mutation issues)
+  const graphData = useMemo(() => {
+    const nodeIds = new Set(nodes.map(n => String(n.id)))
+    return {
+      nodes: nodes.map(n => ({
+        id: String(n.id),
+        label: n.label || n.id,
+        group: n.group || '',
+        color: n.color || groupColorMap[n.group] || GRAPH_PALETTE[hashString(n.label || n.id) % GRAPH_PALETTE.length],
+        size: n.size || 1
+      })),
+      links: edges
+        .filter(e => nodeIds.has(String(e.source)) && nodeIds.has(String(e.target)))
+        .map(e => ({
+          source: String(e.source),
+          target: String(e.target),
+          label: e.label || (Number.isFinite(Number(e.weight)) ? String(e.weight) : ''),
+          weight: Number(e.weight) || 1
+        }))
+    }
+  }, [nodes, edges, groupColorMap])
+
+  // Measure container width
+  useEffect(() => {
+    if (!containerRef.current) return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width
+        if (w > 0) setDimensions({ width: w, height: Math.max(350, Math.min(500, w * 0.6)) })
+      }
+    })
+    ro.observe(containerRef.current)
+    return () => ro.disconnect()
+  }, [])
+
+  // Zoom to fit after initial layout settles
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (fgRef.current) fgRef.current.zoomToFit(300, 40)
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [graphData])
+
   if (nodes.length === 0 || edges.length === 0) return null
 
-  const radius = Math.max(90, Math.min(width, height) / 2 - 64)
-  const positionedNodes = nodes.map((node, index) => {
-    const angle = nodes.length === 1
-      ? 0
-      : ((2 * Math.PI * index) / nodes.length) - (Math.PI / 2)
+  const isDirected = graph?.directed !== false
+  const maxWeight = Math.max(1, ...graphData.links.map(l => l.weight))
 
-    return {
-      ...node,
-      x: centerX + (radius * Math.cos(angle)),
-      y: centerY + (radius * Math.sin(angle))
-    }
-  })
-
-  const nodeById = new Map(positionedNodes.map(node => [String(node.id), node]))
-  const visibleEdges = edges
-    .map(edge => ({
-      ...edge,
-      source: String(edge.source),
-      target: String(edge.target)
-    }))
-    .filter(edge => nodeById.has(edge.source) && nodeById.has(edge.target))
-
-  const markerId = `arrow-${hashString(String(graphKey || graph?.title || 'graph'))}`
+  // Build legend entries from groups
+  const legendEntries = [...new Set(nodes.map(n => n.group).filter(Boolean))].map(g => ({
+    group: g,
+    color: groupColorMap[g] || '#888'
+  }))
 
   return (
-    <div style={{
+    <div ref={containerRef} style={{
       marginTop: '10px',
       border: '1px solid #2a2a2a',
       borderRadius: '8px',
       backgroundColor: '#0f0f12',
-      padding: '10px'
+      padding: '10px',
+      overflow: 'hidden'
     }}>
       {graph?.title && (
         <div style={{
@@ -78,91 +118,62 @@ const BasicGraphView = memo(function BasicGraphView({ graph, graphKey }) {
           {graph.title}
         </div>
       )}
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={graph?.title || 'Network graph visualization'} style={{ width: '100%', height: 'auto', display: 'block' }}>
-        {graph?.directed !== false && (
-          <defs>
-            <marker
-              id={markerId}
-              viewBox="0 0 10 10"
-              refX="8"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280" />
-            </marker>
-          </defs>
-        )}
-
-        {visibleEdges.map((edge, index) => {
-          const sourceNode = nodeById.get(edge.source)
-          const targetNode = nodeById.get(edge.target)
-          const rawWeight = Number(edge.weight)
-          const strokeWidth = Number.isFinite(rawWeight)
-            ? Math.min(4, Math.max(1, 1 + (Math.log10(rawWeight + 1))))
-            : 1.4
-          const midX = (sourceNode.x + targetNode.x) / 2
-          const midY = (sourceNode.y + targetNode.y) / 2
-          const edgeText = edge.label || (Number.isFinite(rawWeight) ? `${rawWeight}` : '')
-
-          return (
-            <g key={`edge-${index}-${edge.source}-${edge.target}`}>
-              <line
-                x1={sourceNode.x}
-                y1={sourceNode.y}
-                x2={targetNode.x}
-                y2={targetNode.y}
-                stroke="#6b7280"
-                strokeWidth={strokeWidth}
-                opacity={0.9}
-                markerEnd={graph?.directed === false ? undefined : `url(#${markerId})`}
-              />
-              {edgeText && (
-                <text
-                  x={midX}
-                  y={midY - 5}
-                  fill="#cbd5e1"
-                  fontSize="11"
-                  textAnchor="middle"
-                  style={{ paintOrder: 'stroke', stroke: '#0f0f12', strokeWidth: 3 }}
-                >
-                  {edgeText}
-                </text>
-              )}
-            </g>
-          )
-        })}
-
-        {positionedNodes.map((node, index) => {
-          const groupKey = String(node.group || node.label || node.id)
-          const color = (typeof node.color === 'string' && /^#[0-9a-f]{6}$/i.test(node.color))
-            ? node.color
-            : GRAPH_PALETTE[hashString(groupKey) % GRAPH_PALETTE.length]
-          const nodeRadius = Math.min(18, Math.max(7, 8 + (Number(node.size) || 1)))
-          return (
-            <g key={`node-${node.id}-${index}`}>
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r={nodeRadius}
-                fill={color}
-                stroke="#111827"
-                strokeWidth="1.5"
-              />
-              <text
-                x={node.x}
-                y={node.y + nodeRadius + 13}
-                fill="#e5e7eb"
-                fontSize="12"
-                textAnchor="middle"
-              >
-                {node.label || node.id}
-              </text>
-            </g>
-          )
-        })}
-      </svg>
+      {legendEntries.length > 1 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '6px', fontSize: '0.72em' }}>
+          {legendEntries.map(e => (
+            <span key={e.group} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: e.color, display: 'inline-block' }} />
+              {e.group}
+            </span>
+          ))}
+        </div>
+      )}
+      <ForceGraph2D
+        ref={fgRef}
+        graphData={graphData}
+        width={dimensions.width - 20}
+        height={dimensions.height}
+        backgroundColor="#0f0f12"
+        nodeRelSize={6}
+        nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
+        nodeColor={n => n.color}
+        nodeLabel={n => `${n.label}${n.group ? ` (${n.group})` : ''}`}
+        nodeCanvasObject={(node, ctx, globalScale) => {
+          const r = Math.max(3, 4 + (node.size || 1) * 2)
+          ctx.beginPath()
+          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+          ctx.fillStyle = node.color
+          ctx.fill()
+          ctx.strokeStyle = '#1a1a2e'
+          ctx.lineWidth = 0.5
+          ctx.stroke()
+          // Draw label when zoomed in enough
+          if (globalScale > 0.7) {
+            const label = node.label || node.id
+            const fontSize = Math.max(3, 10 / globalScale)
+            ctx.font = `${fontSize}px sans-serif`
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'top'
+            ctx.fillStyle = '#e5e7eb'
+            ctx.fillText(label, node.x, node.y + r + 2)
+          }
+        }}
+        linkColor={() => '#4b5563'}
+        linkWidth={link => Math.max(0.5, 1 + (link.weight / maxWeight) * 3)}
+        linkDirectionalArrowLength={isDirected ? 5 : 0}
+        linkDirectionalArrowRelPos={1}
+        linkLabel={link => link.label}
+        linkCurvature={link => {
+          // Curve parallel edges between same node pairs
+          const key = [link.source?.id || link.source, link.target?.id || link.target].sort().join('-')
+          const rev = [link.target?.id || link.target, link.source?.id || link.source].sort().join('-')
+          return key === rev ? 0 : 0.15
+        }}
+        d3VelocityDecay={0.3}
+        cooldownTicks={80}
+        enableZoomInteraction={true}
+        enablePanInteraction={true}
+      />
     </div>
   )
 })
@@ -224,7 +235,6 @@ const ChatMessage = memo(function ChatMessage({
             <BasicGraphView
               key={`${msg.id}-graph-${graphIndex}`}
               graph={graph}
-              graphKey={`${msg.id}-${graphIndex}`}
             />
           ))}
         </div>
