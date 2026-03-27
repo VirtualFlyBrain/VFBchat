@@ -272,8 +272,10 @@ function extractGraphSpecsFromResponseText(responseText = '') {
   if (!responseText) return { textWithoutGraphs: responseText, graphs: [] }
 
   const graphs = []
+
+  // Match code blocks with explicit graph language tags
   const graphBlockRegex = /```(?:vfb-graph|vfb_graph|graphjson|graph-json)\s*([\s\S]*?)```/gi
-  const textWithoutGraphs = responseText.replace(graphBlockRegex, (match, rawJson) => {
+  let textWithoutGraphs = responseText.replace(graphBlockRegex, (match, rawJson) => {
     try {
       const parsed = JSON.parse(String(rawJson || '').trim())
       const normalized = normalizeGraphSpec(parsed)
@@ -283,6 +285,43 @@ function extractGraphSpecsFromResponseText(responseText = '') {
       }
     } catch {
       // Keep original block when parsing fails.
+    }
+    return match
+  })
+
+  // Also match any JSON code block or bare JSON that looks like a graph spec
+  // (has "nodes" and "edges" arrays) — the LLM sometimes dumps graph JSON
+  // without the special language tag
+  const genericJsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"nodes"\s*:\s*\[[\s\S]*?"edges"\s*:\s*\[[\s\S]*?\})\s*```/gi
+  textWithoutGraphs = textWithoutGraphs.replace(genericJsonBlockRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      const normalized = normalizeGraphSpec(parsed)
+      if (normalized) {
+        graphs.push(normalized)
+        return ''
+      }
+    } catch {
+      // Keep original block when parsing fails.
+    }
+    return match
+  })
+
+  // Finally, try to catch bare JSON graph objects in the text (no code fences)
+  // Look for JSON objects that span multiple lines and contain both nodes and edges
+  const bareJsonGraphRegex = /(\{\s*(?:"[^"]*"\s*:\s*(?:"[^"]*"|[^,}\]]*|\[[^\]]*\])\s*,\s*)*"nodes"\s*:\s*\[[\s\S]*?"edges"\s*:\s*\[[\s\S]*?\]\s*\})/gi
+  textWithoutGraphs = textWithoutGraphs.replace(bareJsonGraphRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      // Only treat as graph if it actually has nodes and edges arrays
+      if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return match
+      const normalized = normalizeGraphSpec(parsed)
+      if (normalized) {
+        graphs.push(normalized)
+        return ''
+      }
+    } catch {
+      // Not valid JSON, keep as-is
     }
     return match
   })
@@ -361,6 +400,7 @@ function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRo
   const linkedResponseText = linkifyFollowUpQueryItems(textWithoutGraphs)
   const images = extractImagesFromResponseText(linkedResponseText)
   const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...inlineGraphs])
+  console.log(`[VFBchat] Final result: ${graphs.length} graph(s) (${graphSpecs.length} from tools, ${inlineGraphs.length} inline)`)
 
   return {
     ok: true,
@@ -1942,7 +1982,7 @@ function createBasicGraph(args = {}) {
   return normalized
 }
 
-async function executeFunctionTool(name, args) {
+async function executeFunctionTool(name, args, context = {}) {
   if (name === 'search_pubmed') {
     return searchPubmed(args.query, args.max_results, args.sort)
   }
@@ -1990,6 +2030,14 @@ async function executeFunctionTool(name, args) {
 
     // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
     if (name === 'vfb_query_connectivity') {
+      const directionalEndpoints = extractDirectionalConnectivityEndpoints(context.userMessage || '')
+      if (directionalEndpoints) {
+        // For directional requests, trust the user's exact endpoint phrases over
+        // any FBbt ids or relabeled args invented in the tool call payload.
+        cleanArgs.upstream_type = directionalEndpoints.upstream
+        cleanArgs.downstream_type = directionalEndpoints.downstream
+      }
+
       cleanArgs.upstream_type = normalizeConnectivityEndpointValue(cleanArgs.upstream_type)
       cleanArgs.downstream_type = normalizeConnectivityEndpointValue(cleanArgs.downstream_type)
 
@@ -2469,7 +2517,7 @@ TOOL SELECTION:
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
-- vfb_query_connectivity requires neuron class inputs, meaning each endpoint term should include both Neuron and Class in SuperTypes. If the user provides anatomy regions (for example medulla or central complex), use NeuronsPartHere first for each region, then ask the user to pick one neuron class per side before running vfb_query_connectivity.
+- For connectivity questions, call vfb_query_connectivity directly with the neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
 - For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
 - Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
 - Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
@@ -2490,6 +2538,13 @@ ENTITY RESOLUTION RULES:
 - If vfb_resolve_entity or vfb_resolve_combination returns match_type SYNONYM or BROAD, confirm the resolved entity with the user before running downstream tools.
 - If resolver output includes multiple candidates, show a short disambiguation list and ask the user to choose before continuing.
 - If the user already provided a canonical FlyBase ID (for example FBgn..., FBal..., FBti..., FBco..., FBst...), you may call downstream tools directly.
+
+TOOL ERRORS AND TIMEOUTS:
+- VFB MCP queries (especially non-cached ones like vfb_query_connectivity and live vfb_run_query) can take considerable time. Do NOT treat slow responses as failures.
+- If a tool returns a timeout error, try an alternative approach (e.g. narrower query, different tool) rather than giving up. Always present whatever partial results you have gathered so far.
+- Never tell the user a query "failed" or "timed out" without first attempting at least one alternative path.
+- CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
+- If supplementary tool calls fail but the primary query succeeded, present the successful results and ignore the supplementary failures. Never lead your response with error messages when you have valid data to show.
 
 TOOL ECONOMY:
 - Prefer the fewest tool steps needed to produce a useful answer.
@@ -2900,6 +2955,47 @@ function hasDirectionalConnectivityRequest(message = '') {
   return /\bfrom\b[\s\S]{1,160}\bto\b/i.test(message) || /\bbetween\b[\s\S]{1,160}\band\b/i.test(message)
 }
 
+function cleanDirectionalConnectivityEndpointText(value = '') {
+  let text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!text) return ''
+
+  text = text
+    .replace(/^[`"'([{<\s]+/, '')
+    .replace(/[`"'\])}>.,;:!?]+$/g, '')
+    .trim()
+
+  text = text.replace(/\b(?:please|thanks|thank you)\b[\s\S]*$/i, '').trim()
+  return text
+}
+
+function extractDirectionalConnectivityEndpoints(message = '') {
+  if (!message) return null
+
+  const text = String(message || '').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+
+  const patterns = [
+    /\bfrom\b\s+(.{1,160}?)\s+\bto\b\s+(.{1,200})/i,
+    /\bbetween\b\s+(.{1,160}?)\s+\band\b\s+(.{1,200})/i
+  ]
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (!match) continue
+
+    const upstream = cleanDirectionalConnectivityEndpointText(match[1])
+    const downstream = cleanDirectionalConnectivityEndpointText(match[2])
+    if (upstream && downstream) {
+      return { upstream, downstream }
+    }
+  }
+
+  return null
+}
+
 function buildToolPolicyCorrectionMessage({
   userMessage = '',
   explicitRunQueryRequested = false,
@@ -2938,6 +3034,7 @@ function buildToolPolicyCorrectionMessage({
   if (requireConnectivityComparison) {
     policyBullets.push('- This request is directional connectivity between two entities; call vfb_query_connectivity with upstream_type = source term and downstream_type = target term.')
     policyBullets.push('- Do not conclude \"no connection\" from only NeuronsPresynapticHere/NeuronsPostsynapticHere on a single term. Use vfb_query_connectivity output as the primary evidence.')
+    policyBullets.push('- Unless the user explicitly supplied canonical IDs, pass the exact source and target phrases from the user message to vfb_query_connectivity instead of inventing FBbt IDs.')
   }
 
   if (missingRunQueryExecution) {
@@ -3410,14 +3507,16 @@ async function processResponseStream({
       const hasVfbRunQueryToolCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_run_query')
       const hasRunQueryPreparationCall = requestedToolCalls.some(toolCall => RUN_QUERY_PREPARATION_TOOL_NAMES.has(toolCall.name))
       const hasConnectivityComparisonCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_query_connectivity')
+      const connectivityAlreadyAttempted = (toolUsage.vfb_query_connectivity || 0) > 0
       const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
         (explicitRunQueryRequested && !hasVfbToolCall) ||
         (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
-        (directionalConnectivityRequested && !hasConnectivityComparisonCall) ||
+        (directionalConnectivityRequested && !hasConnectivityComparisonCall && !connectivityAlreadyAttempted) ||
         (requestedQueryTypes.length > 0 && hasConnectivityComparisonCall && !hasVfbRunQueryToolCall)
       )
 
       if (shouldCorrectToolChoice) {
+        console.log(`[VFBchat] Tool policy correction triggered (round ${toolPolicyCorrections + 1}/${maxToolPolicyCorrections}). Requested tools:`, requestedToolCalls.map(t => t.name).join(', '))
         sendEvent('status', { message: 'Refining tool choice for VFB query', phase: 'llm' })
 
         if (textAccumulator.trim()) {
@@ -3471,22 +3570,29 @@ async function processResponseStream({
 
       const announcedStatuses = new Set()
       for (const toolCall of requestedToolCalls) {
-        if (!announcedStatuses.has(toolCall.name)) {
-          sendEvent('status', getStatusForTool(toolCall.name, toolCall.arguments))
-          announcedStatuses.add(toolCall.name)
+        const status = getStatusForTool(toolCall.name, toolCall.arguments)
+        if (!announcedStatuses.has(status.message)) {
+          sendEvent('status', status)
+          announcedStatuses.add(status.message)
         }
       }
 
       const toolOutputs = await Promise.all(requestedToolCalls.map(async (toolCall) => {
         toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
+        console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
 
         try {
+          const output = await executeFunctionTool(toolCall.name, toolCall.arguments, { userMessage })
+          console.log(`[VFBchat] Tool result: ${toolCall.name}`, typeof output === 'string' ? output.slice(0, 500) : JSON.stringify(output).slice(0, 500))
           return {
             name: toolCall.name,
             arguments: toolCall.arguments,
-            output: await executeFunctionTool(toolCall.name, toolCall.arguments)
+            output
           }
         } catch (error) {
+          console.error(`[VFBchat] Tool error: ${toolCall.name}`, error.message)
+          const errorStatus = getStatusForTool(toolCall.name, toolCall.arguments)
+          sendEvent('status', { message: errorStatus.message, phase: errorStatus.phase, error: true })
           return {
             name: toolCall.name,
             arguments: toolCall.arguments,
@@ -3495,9 +3601,14 @@ async function processResponseStream({
         }
       }))
 
+      const graphToolOutputs = toolOutputs.filter(t => t.name === 'create_basic_graph')
+      if (graphToolOutputs.length > 0) {
+        console.log(`[VFBchat] Graph tool outputs: ${graphToolOutputs.length}, output type: ${typeof graphToolOutputs[0]?.output}, has nodes: ${!!graphToolOutputs[0]?.output?.nodes}`)
+      }
       const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
       if (graphSpecsFromTools.length > 0) {
         collectedGraphSpecs.push(...graphSpecsFromTools)
+        console.log(`[VFBchat] Collected ${graphSpecsFromTools.length} graph spec(s), total: ${collectedGraphSpecs.length}`)
       }
 
       const connectivitySelectionResponse = buildConnectivitySelectionResponseFromToolOutputs(toolOutputs)

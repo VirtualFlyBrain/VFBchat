@@ -654,7 +654,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                   const updated = prev.map(s => ({ ...s, done: true }))
                   const alreadyExists = updated.some(s => s.message === data.message && !s.done)
                   if (alreadyExists) return updated
-                  return [...updated, { message: data.message, done: false }]
+                  return [...updated, { message: data.message, done: false, error: !!data.error }]
                 })
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
@@ -677,9 +677,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 setIsThinking(false)
                 fetchRateInfo()
                 return
+              } else if (currentEvent) {
+                console.warn('[VFBchat] Unrecognized SSE event:', currentEvent, data)
               }
             } catch (parseError) {
-              console.error('Failed to parse streaming data:', parseError)
+              console.error('Failed to parse streaming data:', parseError, 'raw line:', line)
             }
           }
         }
@@ -1110,13 +1112,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 alignItems: 'center',
                 gap: '6px',
                 marginBottom: i < thinkingSteps.length - 1 ? '3px' : 0,
-                color: step.done ? '#6b7280' : '#999'
+                color: step.error ? '#ef4444' : step.done ? '#6b7280' : '#999'
               }}>
                 <span style={{ fontSize: '0.9em', width: '16px', textAlign: 'center' }}>
-                  {step.done ? '\u2713' : '\u25CB'}
+                  {step.error ? '\u2717' : step.done ? '\u2713' : '\u25CB'}
                 </span>
                 <span style={{ fontStyle: step.done ? 'normal' : 'italic' }}>
-                  {step.message}{!step.done ? thinkingDots : ''}
+                  {step.message}{!step.done && !step.error ? thinkingDots : ''}
                 </span>
               </div>
             ))}
