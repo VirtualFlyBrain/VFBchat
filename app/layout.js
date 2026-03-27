@@ -3,6 +3,11 @@ export const metadata = {
   description: 'Guardrailed chat for Virtual Fly Brain neuroanatomy queries',
 }
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+}
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en">

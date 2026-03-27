@@ -2,8 +2,11 @@
 
 import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
+
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
 
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
@@ -14,6 +17,277 @@ const FEEDBACK_REASON_LABELS = {
   tool_failed: 'Tool failed',
   out_of_scope_refusal: 'Out of scope/refusal'
 }
+
+const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
+const GRAPH_ROLE_STYLES = {
+  source: { label: 'Source side', color: '#4a9eff' },
+  target: { label: 'Target side', color: '#4ade80' },
+  bridge: { label: 'Intermediate', color: '#f59e0b' },
+  isolated: { label: 'Other', color: '#94a3b8' }
+}
+
+function hashString(value = '') {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+function normalizeGraphGroup(value = '') {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function getGraphNodeRole(stats = {}, directed = true) {
+  const indegree = Number(stats.indegree) || 0
+  const outdegree = Number(stats.outdegree) || 0
+
+  if (!directed) {
+    return indegree > 0 || outdegree > 0 ? 'bridge' : 'isolated'
+  }
+
+  if (outdegree > 0 && indegree === 0) return 'source'
+  if (indegree > 0 && outdegree === 0) return 'target'
+  if (indegree > 0 || outdegree > 0) return 'bridge'
+  return 'isolated'
+}
+
+const BasicGraphView = memo(function BasicGraphView({ graph }) {
+  const containerRef = useRef(null)
+  const fgRef = useRef(null)
+  const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
+
+  const nodes = useMemo(() => (Array.isArray(graph?.nodes) ? graph.nodes : []), [graph?.nodes])
+  const edges = useMemo(() => (Array.isArray(graph?.edges) ? graph.edges : []), [graph?.edges])
+  const isDirected = graph?.directed !== false
+
+  const visualGrouping = useMemo(() => {
+    const nodeStats = new Map(nodes.map(node => [String(node.id), { indegree: 0, outdegree: 0 }]))
+
+    edges.forEach(edge => {
+      const sourceId = String(edge.source)
+      const targetId = String(edge.target)
+      const sourceStats = nodeStats.get(sourceId)
+      const targetStats = nodeStats.get(targetId)
+      if (sourceStats) sourceStats.outdegree += 1
+      if (targetStats) targetStats.indegree += 1
+    })
+
+    const roleCounts = { source: 0, target: 0, bridge: 0, isolated: 0 }
+    const roleByNodeId = {}
+
+    nodes.forEach(node => {
+      const id = String(node.id)
+      const role = getGraphNodeRole(nodeStats.get(id), isDirected)
+      roleByNodeId[id] = role
+      roleCounts[role] += 1
+    })
+
+    const groupCounts = nodes.reduce((acc, node) => {
+      const group = normalizeGraphGroup(node.group)
+      if (group) acc[group] = (acc[group] || 0) + 1
+      return acc
+    }, {})
+    const providedGroups = Object.keys(groupCounts)
+    const largestProvidedGroup = Object.values(groupCounts).reduce((max, count) => Math.max(max, count), 0)
+    const hasDirectionalStructure = roleCounts.source > 0 && roleCounts.target > 0
+    const fragmentedProvidedGroups = providedGroups.length === 0
+      || providedGroups.length > 3
+      || providedGroups.length >= Math.max(3, Math.ceil(nodes.length * 0.75))
+      || largestProvidedGroup <= Math.max(1, Math.floor(nodes.length / 2))
+    const useStructuralColoring = isDirected && nodes.length >= 3 && hasDirectionalStructure && fragmentedProvidedGroups
+
+    if (useStructuralColoring) {
+      const legend = Object.entries(GRAPH_ROLE_STYLES)
+        .filter(([role]) => roleCounts[role] > 0)
+        .map(([role, style]) => ({
+          key: role,
+          label: style.label,
+          color: style.color
+        }))
+
+      return {
+        useStructuralColoring,
+        legend,
+        byNodeId: nodes.reduce((acc, node) => {
+          const id = String(node.id)
+          const role = roleByNodeId[id] || 'bridge'
+          acc[id] = {
+            key: role,
+            label: GRAPH_ROLE_STYLES[role].label,
+            color: node.color || GRAPH_ROLE_STYLES[role].color
+          }
+          return acc
+        }, {})
+      }
+    }
+
+    const legend = providedGroups.map((group, index) => ({
+      key: group,
+      label: group,
+      color: GRAPH_PALETTE[index % GRAPH_PALETTE.length]
+    }))
+    const paletteByGroup = Object.fromEntries(legend.map(entry => [entry.key, entry.color]))
+
+    return {
+      useStructuralColoring,
+      legend,
+      byNodeId: nodes.reduce((acc, node) => {
+        const id = String(node.id)
+        const group = normalizeGraphGroup(node.group)
+        acc[id] = {
+          key: group || id,
+          label: group || '',
+          color: node.color || paletteByGroup[group] || GRAPH_PALETTE[hashString(node.label || node.id) % GRAPH_PALETTE.length]
+        }
+        return acc
+      }, {})
+    }
+  }, [nodes, edges, isDirected])
+
+  const graphData = useMemo(() => {
+    const nodeIds = new Set(nodes.map(n => String(n.id)))
+    return {
+      nodes: nodes.map(n => {
+        const id = String(n.id)
+        const visualGroup = visualGrouping.byNodeId[id] || {}
+        return {
+          id,
+          label: n.label || n.id,
+          group: visualGroup.label || normalizeGraphGroup(n.group),
+          originalGroup: normalizeGraphGroup(n.group),
+          color: visualGroup.color || n.color || GRAPH_PALETTE[hashString(n.label || n.id) % GRAPH_PALETTE.length],
+          size: n.size || 1
+        }
+      }),
+      links: edges
+        .filter(e => nodeIds.has(String(e.source)) && nodeIds.has(String(e.target)))
+        .map(e => ({
+          source: String(e.source),
+          target: String(e.target),
+          label: e.label || (Number.isFinite(Number(e.weight)) ? String(e.weight) : ''),
+          weight: Number(e.weight) || 1
+        }))
+    }
+  }, [nodes, edges, visualGrouping])
+
+  // Measure container width
+  useEffect(() => {
+    if (!containerRef.current) return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width
+        if (w > 0) setDimensions({ width: w, height: Math.max(350, Math.min(500, w * 0.6)) })
+      }
+    })
+    ro.observe(containerRef.current)
+    return () => ro.disconnect()
+  }, [])
+
+  // Zoom to fit after initial layout settles
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (fgRef.current) fgRef.current.zoomToFit(300, 40)
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [graphData])
+
+  if (nodes.length === 0 || edges.length === 0) return null
+
+  const maxWeight = Math.max(1, ...graphData.links.map(l => l.weight))
+  const legendEntries = visualGrouping.legend
+
+  return (
+    <div ref={containerRef} style={{
+      marginTop: '10px',
+      border: '1px solid #2a2a2a',
+      borderRadius: '8px',
+      backgroundColor: '#0f0f12',
+      padding: '10px',
+      overflow: 'hidden'
+    }}>
+      {graph?.title && (
+        <div style={{
+          fontSize: '0.82em',
+          color: '#9ecbff',
+          marginBottom: '6px',
+          fontWeight: 600
+        }}>
+          {graph.title}
+        </div>
+      )}
+      {visualGrouping.useStructuralColoring && (
+        <div style={{ fontSize: '0.72em', color: '#8f9aad', marginBottom: '6px' }}>
+          Colours show connectivity role so the source and target sides are easier to scan.
+        </div>
+      )}
+      {legendEntries.length > 1 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '6px', fontSize: '0.72em' }}>
+          {legendEntries.map(e => (
+            <span key={e.key} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: e.color, display: 'inline-block' }} />
+              {e.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <ForceGraph2D
+        ref={fgRef}
+        graphData={graphData}
+        width={dimensions.width - 20}
+        height={dimensions.height}
+        backgroundColor="#0f0f12"
+        nodeRelSize={6}
+        nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
+        nodeColor={n => n.color}
+        nodeLabel={n => {
+          const details = []
+          if (n.originalGroup) details.push(`type: ${n.originalGroup}`)
+          if (visualGrouping.useStructuralColoring && n.group && n.group !== n.originalGroup) {
+            details.push(`role: ${n.group}`)
+          }
+          return details.length > 0 ? `${n.label} (${details.join('; ')})` : n.label
+        }}
+        nodeCanvasObject={(node, ctx, globalScale) => {
+          const r = Math.max(3, 4 + (node.size || 1) * 2)
+          ctx.beginPath()
+          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+          ctx.fillStyle = node.color
+          ctx.fill()
+          ctx.strokeStyle = '#1a1a2e'
+          ctx.lineWidth = 0.5
+          ctx.stroke()
+          // Draw label when zoomed in enough
+          if (globalScale > 0.7) {
+            const label = node.label || node.id
+            const fontSize = Math.max(3, 10 / globalScale)
+            ctx.font = `${fontSize}px sans-serif`
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'top'
+            ctx.fillStyle = '#e5e7eb'
+            ctx.fillText(label, node.x, node.y + r + 2)
+          }
+        }}
+        linkColor={() => '#4b5563'}
+        linkWidth={link => Math.max(0.5, 1 + (link.weight / maxWeight) * 3)}
+        linkDirectionalArrowLength={isDirected ? 5 : 0}
+        linkDirectionalArrowRelPos={1}
+        linkLabel={link => link.label}
+        linkCurvature={link => {
+          // Curve parallel edges between same node pairs
+          const key = [link.source?.id || link.source, link.target?.id || link.target].sort().join('-')
+          const rev = [link.target?.id || link.target, link.source?.id || link.source].sort().join('-')
+          return key === rev ? 0 : 0.15
+        }}
+        d3VelocityDecay={0.3}
+        cooldownTicks={80}
+        enableZoomInteraction={true}
+        enablePanInteraction={true}
+      />
+    </div>
+  )
+})
 
 // ── Memoized single-message bubble ──────────────────────────────────
 // Only re-renders when its own props change, NOT when sibling messages
@@ -39,14 +313,14 @@ const ChatMessage = memo(function ChatMessage({
   const isFeedbackSubmitted = feedbackState?.status === 'submitted'
 
   return (
-    <div style={{
+    <div role="article" aria-label={`${getDisplayName(msg.role)} message`} style={{
       marginBottom: '12px',
       padding: '8px 12px',
       backgroundColor: msg.role === 'user' ? '#1a1a2e' : 'transparent',
       borderRadius: '6px',
       borderLeft: msg.role === 'user' ? '3px solid #4a9eff' : '3px solid #2a6a3a'
     }}>
-      <div style={{
+      <div aria-hidden="true" style={{
         fontSize: '0.75em',
         fontWeight: 600,
         color: msg.role === 'user' ? '#4a9eff' : '#4ade80',
@@ -66,6 +340,16 @@ const ChatMessage = memo(function ChatMessage({
           {msg.content}
         </ReactMarkdown>
       </div>
+      {Array.isArray(msg.graphs) && msg.graphs.length > 0 && (
+        <div>
+          {msg.graphs.map((graph, graphIndex) => (
+            <BasicGraphView
+              key={`${msg.id}-graph-${graphIndex}`}
+              graph={graph}
+            />
+          ))}
+        </div>
+      )}
       {/* Image gallery from API images field */}
       {msg.images && msg.images.length > 0 && (
         <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -100,7 +384,7 @@ const ChatMessage = memo(function ChatMessage({
             </div>
           ) : (
             <>
-              <div style={{ fontSize: '0.75em', color: '#888', marginBottom: '6px' }}>
+              <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>
                 Was this response useful?
               </div>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -202,7 +486,8 @@ const ChatMessage = memo(function ChatMessage({
 
 export default function Home() {
   const searchParams = useSearchParams()
-  const initialQuery = searchParams.get('query') || ''
+  const rawQuery = searchParams.get('query') || ''
+  const initialQuery = (() => { try { return decodeURIComponent(rawQuery) } catch { return rawQuery } })()
   const existingI = searchParams.get('i') || ''
   const existingId = searchParams.get('id') || ''
 
@@ -212,10 +497,11 @@ export default function Home() {
   const [isThinking, setIsThinking] = useState(false)
   const [thinkingDots, setThinkingDots] = useState('.')
   const [rateInfo, setRateInfo] = useState({ used: 0, limit: 50, remaining: 50 })
-  const [thinkingMessage, setThinkingMessage] = useState('Thinking')
+  const [thinkingSteps, setThinkingSteps] = useState([{ message: 'Thinking', done: false }])
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
+  const initialSendFired = useRef(false) // prevent double-send from StrictMode
 
   // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
   // become clickable links to the corresponding Virtual Fly Brain report page.
@@ -232,9 +518,18 @@ export default function Home() {
     // Clean up leftover whitespace/punctuation from stripped artifacts
     cleaned = cleaned.replace(/ {2,}/g, ' ').replace(/\.\s*\?\s*/g, '. ').replace(/\. \./g, '.')
 
+    // Preserve existing markdown links/images exactly as-is to avoid
+    // creating nested markdown when we linkify plain IDs below.
+    const markdownPlaceholders = []
+    const MARKDOWN_PLACEHOLDER = '\x00MD'
+    let result = cleaned.replace(/!?\[[^\]]*\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g, (markdownLink) => {
+      markdownPlaceholders.push(markdownLink)
+      return `${MARKDOWN_PLACEHOLDER}${markdownPlaceholders.length - 1}\x00`
+    })
+
     const urlPlaceholders = []
     const URL_PLACEHOLDER = '\x00URL'
-    let result = cleaned.replace(/https?:\/\/[^\s)]+/g, (url) => {
+    result = result.replace(/https?:\/\/[^\s)]+/g, (url) => {
       urlPlaceholders.push(url)
       return `${URL_PLACEHOLDER}${urlPlaceholders.length - 1}\x00`
     })
@@ -246,6 +541,8 @@ export default function Home() {
 
     // Restore protected URLs
     result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => urlPlaceholders[Number(idx)])
+    // Restore pre-existing markdown links/images
+    result = result.replace(new RegExp(`${MARKDOWN_PLACEHOLDER}(\\d+)\\x00`, 'g'), (_, idx) => markdownPlaceholders[Number(idx)])
 
     return result
   }
@@ -311,9 +608,10 @@ export default function Home() {
   useEffect(() => {
     fetchRateInfo()
 
-    if (initialQuery) {
+    if (initialQuery && !initialSendFired.current) {
+      initialSendFired.current = true
       handleSend()
-    } else {
+    } else if (!initialQuery) {
       setMessages([makeMsg('assistant', `Welcome to VFB Chat! I'm here to help you explore Drosophila neuroanatomy and neuroscience using Virtual Fly Brain data.
 
 **Important AI Usage Guidelines:**
@@ -441,7 +739,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     setMessages(prev => [...prev, userMessage])
     if (!messageText) setInput('')
     setIsThinking(true)
-    setThinkingMessage('Thinking')
+    setThinkingSteps([{ message: 'Thinking', done: false }])
 
     try {
       const response = await fetch('/api/chat', {
@@ -473,12 +771,18 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
               const data = JSON.parse(line.slice(6))
 
               if (currentEvent === 'status') {
-                setThinkingMessage(data.message)
+                setThinkingSteps(prev => {
+                  const updated = prev.map(s => ({ ...s, done: true }))
+                  const alreadyExists = updated.some(s => s.message === data.message && !s.done)
+                  if (alreadyExists) return updated
+                  return [...updated, { message: data.message, done: false, error: !!data.error }]
+                })
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
               } else if (currentEvent === 'result') {
                 setMessages(prev => [...prev, makeMsg('assistant', data.response, {
                   images: data.images,
+                  graphs: data.graphs,
                   requestId: data.requestId,
                   responseId: data.responseId
                 })])
@@ -494,9 +798,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 setIsThinking(false)
                 fetchRateInfo()
                 return
+              } else if (currentEvent) {
+                console.warn('[VFBchat] Unrecognized SSE event:', currentEvent, data)
               }
             } catch (parseError) {
-              console.error('Failed to parse streaming data:', parseError)
+              console.error('Failed to parse streaming data:', parseError, 'raw line:', line)
             }
           }
         }
@@ -509,21 +815,40 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   }
 
   // Custom renderers for react-markdown
+  const normalizeMarkdownHref = (rawHref) => {
+    const href = typeof rawHref === 'string' ? rawHref.trim() : ''
+    if (!href) return ''
+
+    // Repair malformed href values like:
+    // [virtualflybrain.org/reports/FBbt_...](https://virtualflybrain.org/reports/FBbt_...)
+    const nestedMarkdownHref = href.match(/^\[[^\]]+\]\((https?:\/\/[^)\s]+)\)$/i)
+    if (nestedMarkdownHref?.[1]) {
+      return nestedMarkdownHref[1]
+    }
+
+    if (!href.startsWith('http') && !href.startsWith('/') && href.includes('.')) {
+      return `https://${href}`
+    }
+
+    return href
+  }
+
   const renderLink = ({ href, children }) => {
-    let url = href
+    const normalizedHref = normalizeMarkdownHref(href)
+    let url = normalizedHref
     let title = undefined
     let isQueryLink = false
     
     // Handle chat.virtualflybrain.org query links
-    if (href && href.startsWith('https://chat.virtualflybrain.org?query=')) {
+    if (normalizedHref && normalizedHref.startsWith('https://chat.virtualflybrain.org?query=')) {
       isQueryLink = true
-      const params = new URLSearchParams(href.split('?')[1])
+      const params = new URLSearchParams(normalizedHref.split('?')[1])
       const queryText = params.get('query')
       
       if (isQueryLink) {
         return (
           <a
-            href={href}
+            href={normalizedHref}
             onClick={(e) => {
               e.preventDefault()
               if (queryText) {
@@ -544,11 +869,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       }
     }
     
-    if (href && !href.startsWith('http')) {
-      if (href.startsWith('/')) {
+    if (normalizedHref && !normalizedHref.startsWith('http')) {
+      if (normalizedHref.startsWith('/')) {
         return (
           <a
-            href={href}
+            href={normalizedHref}
             style={{ color: '#66d9ff', textDecoration: 'underline', textDecorationColor: '#66d9ff40' }}
           >
             {children}
@@ -556,13 +881,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         )
       }
 
-      if (href.startsWith('FBrf')) {
+      if (normalizedHref.startsWith('FBrf')) {
         // FlyBase references should link to FlyBase
-        url = `https://flybase.org/reports/${href}`
+        url = `https://flybase.org/reports/${normalizedHref}`
         title = 'View in FlyBase'
-      } else if (href.startsWith('VFB') || href.startsWith('FBbt')) {
+      } else if (normalizedHref.startsWith('VFB') || normalizedHref.startsWith('FBbt')) {
         // VFB and FBbt IDs should link to VFB
-        url = `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${href}`
+        url = `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${normalizedHref}`
         title = 'View in VFB'
       }
     }
@@ -575,7 +900,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         style={{ color: '#66d9ff', textDecoration: 'underline', textDecorationColor: '#66d9ff40' }}
         title={title}
       >
-        {children}
+        {children}<span className="sr-only"> (opens in new tab)</span>
       </a>
     )
   }
@@ -784,7 +1109,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     if (Array.isArray(children)) {
       return children.map((child, idx) => {
         if (typeof child === 'string') {
-          return <>{convertUrlsToLinks(child)}</>
+          const converted = convertUrlsToLinks(child)
+          return <span key={`url-child-${idx}`}>{converted}</span>
         }
         return child
       })
@@ -829,26 +1155,53 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       boxSizing: 'border-box',
       overflow: 'hidden'
     }}>
-      <h1 style={{
-        color: '#fff',
-        margin: '0 0 8px 0',
-        fontSize: '1.3em',
-        fontWeight: 600,
-        flexShrink: 0
-      }}>
-        Virtual Fly Brain
-      </h1>
+      {/* Skip to main content link for keyboard/screen reader users */}
+      <a
+        href="#chat-input"
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: '0',
+          zIndex: 100,
+          padding: '8px 16px',
+          backgroundColor: '#4a9eff',
+          color: '#fff',
+          textDecoration: 'none',
+          fontWeight: 600
+        }}
+        onFocus={e => { e.target.style.left = '16px' }}
+        onBlur={e => { e.target.style.left = '-9999px' }}
+      >
+        Skip to chat input
+      </a>
+
+      <header>
+        <h1 style={{
+          color: '#fff',
+          margin: '0 0 8px 0',
+          fontSize: '1.3em',
+          fontWeight: 600,
+          flexShrink: 0
+        }}>
+          Virtual Fly Brain
+        </h1>
+      </header>
 
       {/* Chat messages area - fills available space */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '12px',
-        backgroundColor: '#0a0a0a',
-        border: '1px solid #222',
-        borderRadius: '8px',
-        minHeight: 0
-      }}>
+      <main
+        role="log"
+        aria-label="Chat conversation"
+        aria-live="polite"
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '12px',
+          backgroundColor: '#0a0a0a',
+          border: '1px solid #222',
+          borderRadius: '8px',
+          minHeight: 0
+        }}
+      >
         {messages.map((msg) => (
           <ChatMessage
             key={msg.id}
@@ -862,20 +1215,38 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
           />
         ))}
         {isThinking && (
-          <div style={{
-            marginBottom: '12px',
-            padding: '8px 12px',
-            fontSize: '0.9em',
-            fontStyle: 'italic',
-            color: '#666',
-            borderLeft: '3px solid #333',
-            borderRadius: '6px'
-          }}>
-            {thinkingMessage}{thinkingDots}
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              marginBottom: '12px',
+              padding: '8px 12px',
+              fontSize: '0.85em',
+              color: '#999',
+              borderLeft: '3px solid #333',
+              borderRadius: '6px'
+            }}
+          >
+            {thinkingSteps.map((step, i) => (
+              <div key={i} style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: i < thinkingSteps.length - 1 ? '3px' : 0,
+                color: step.error ? '#ef4444' : step.done ? '#6b7280' : '#999'
+              }}>
+                <span style={{ fontSize: '0.9em', width: '16px', textAlign: 'center' }}>
+                  {step.error ? '\u2717' : step.done ? '\u2713' : '\u25CB'}
+                </span>
+                <span style={{ fontStyle: step.done ? 'normal' : 'italic' }}>
+                  {step.message}{!step.done && !step.error ? thinkingDots : ''}
+                </span>
+              </div>
+            ))}
           </div>
         )}
         <div ref={chatEndRef} />
-      </div>
+      </main>
 
       {/* Input area */}
       <div style={{
@@ -885,10 +1256,12 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         alignItems: 'center',
         flexShrink: 0
       }}>
+        <label htmlFor="chat-input" className="sr-only">Ask about Drosophila neuroanatomy</label>
         <input
+          id="chat-input"
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyPress={e => e.key === 'Enter' && handleSend()}
+          onKeyDown={e => e.key === 'Enter' && handleSend()}
           placeholder="Ask about Drosophila neuroanatomy..."
           style={{
             flex: 1,
@@ -897,22 +1270,25 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             color: '#fff',
             border: '1px solid #333',
             borderRadius: '6px',
-            fontSize: '14px',
-            outline: 'none'
+            fontSize: '14px'
           }}
         />
-        <div style={{
-          fontSize: '10px',
-          color: 'rgb(255, 255, 255)',
-          opacity: 0.4,
-          fontFamily: 'monospace',
-          whiteSpace: 'nowrap'
-        }}>
+        <div
+          aria-label={`${rateInfo.used} of ${rateInfo.limit} daily queries used`}
+          style={{
+            fontSize: '10px',
+            color: 'rgb(255, 255, 255)',
+            opacity: 0.4,
+            fontFamily: 'monospace',
+            whiteSpace: 'nowrap'
+          }}
+        >
           {`${rateInfo.used}/${rateInfo.limit}`}
         </div>
         <button
           onClick={handleSend}
           disabled={isThinking}
+          aria-label={isThinking ? 'Sending message, please wait' : 'Send message'}
           style={{
             padding: '10px 20px',
             backgroundColor: isThinking ? '#333' : '#4a9eff',
@@ -937,20 +1313,20 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             rel="noopener noreferrer"
             style={{ color: '#66d9ff', textDecoration: 'none', fontSize: '0.85em' }}
           >
-            Open in VFB 3D Browser &rarr;
+            Open in VFB 3D Browser (opens in new tab) &rarr;
           </a>
         </div>
       )}
 
       {/* Footer disclaimer */}
-      <div style={{
+      <footer style={{
         marginTop: '12px',
         padding: '8px 12px',
         backgroundColor: '#1a1a1a',
         border: '1px solid #333',
         borderRadius: '4px',
         fontSize: '0.75em',
-        color: '#888',
+        color: '#aaa',
         lineHeight: '1.3',
         flexShrink: 0
       }}>
@@ -960,15 +1336,33 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         {' '}We do not store full chat content for routine analytics, except when you explicitly attach a conversation while reporting a problem for short-term investigation. See our{' '}
         <a href="/privacy" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Privacy Notice
+        </a>{' | '}
+        <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
+          Accessibility Statement
         </a>.
-      </div>
+      </footer>
 
       <style jsx global>{`
+        .sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
         .vfb-thumb-wrap:hover .vfb-thumb-expanded {
           display: block !important;
         }
         .vfb-thumb-wrap:hover .vfb-thumb {
           opacity: 0.7;
+        }
+        *:focus-visible {
+          outline: 2px solid #4a9eff;
+          outline-offset: 2px;
         }
       `}</style>
     </div>

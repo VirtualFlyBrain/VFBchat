@@ -22,6 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import {
   getConfiguredApiBaseUrl,
+  getConfiguredApiKey,
   getConfiguredModel,
   getOutboundAllowList,
   getSearchAllowList,
@@ -89,6 +90,19 @@ function createImmediateErrorResponse(message, requestId, responseId) {
   })
 }
 
+function createImmediateResultResponse(message, requestId, responseId) {
+  return buildSseResponse(async (sendEvent) => {
+    sendEvent('result', {
+      response: message,
+      images: [],
+      graphs: [],
+      newScene: {},
+      requestId,
+      responseId
+    })
+  })
+}
+
 function getClientIp(request) {
   const xForwardedFor = request.headers.get('x-forwarded-for') || ''
   return (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
@@ -146,6 +160,321 @@ function buildClarifyingQuestions(message = '') {
   return Array.from(new Set(questions)).slice(0, 4)
 }
 
+function linkifyFollowUpQueryItems(text = '') {
+  if (!text) return text
+
+  const lines = text.split('\n')
+  const linkedLines = lines.map((line) => {
+    const listMatch = line.match(/^(\s*(?:[-*]|\d+\.)\s+)(.+)$/)
+    if (!listMatch) return line
+
+    const prefix = listMatch[1]
+    const rawItem = listMatch[2].trim()
+
+    // Skip lines that are already markdown links or contain explicit URLs.
+    if (!rawItem || rawItem.includes('](') || /https?:\/\//i.test(rawItem)) {
+      return line
+    }
+
+    const questionMatch = rawItem.match(/^(.+?\?)\s*$/)
+    if (!questionMatch) return line
+
+    const question = questionMatch[1].trim()
+    if (question.length < 6 || question.length > 220) return line
+
+    const queryUrl = `https://chat.virtualflybrain.org?query=${encodeURIComponent(question)}`
+    return `${prefix}[${question}](${queryUrl})`
+  })
+
+  return linkedLines.join('\n')
+}
+
+function normalizeGraphSpec(rawSpec = {}) {
+  if (!rawSpec || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) return null
+
+  const rawNodes = Array.isArray(rawSpec.nodes) ? rawSpec.nodes : []
+  const rawEdges = Array.isArray(rawSpec.edges) ? rawSpec.edges : []
+  if (rawNodes.length === 0 || rawEdges.length === 0) return null
+
+  const nodes = []
+  const nodeIdSet = new Set()
+  for (const rawNode of rawNodes.slice(0, 80)) {
+    if (!rawNode || typeof rawNode !== 'object') continue
+    const id = String(rawNode.id || '').trim()
+    if (!id || nodeIdSet.has(id)) continue
+    nodeIdSet.add(id)
+
+    const label = String(rawNode.label || id).trim() || id
+    const group = rawNode.group === undefined || rawNode.group === null
+      ? null
+      : String(rawNode.group).trim() || null
+    const color = typeof rawNode.color === 'string' && /^#[0-9a-f]{6}$/i.test(rawNode.color.trim())
+      ? rawNode.color.trim()
+      : null
+    const parsedSize = Number(rawNode.size)
+    const size = Number.isFinite(parsedSize)
+      ? Math.min(Math.max(parsedSize, 0.5), 4)
+      : 1
+
+    nodes.push({ id, label, group, color, size })
+  }
+
+  if (nodes.length === 0) return null
+
+  const knownNodeIds = new Set(nodes.map(node => node.id))
+  const edges = []
+  for (const rawEdge of rawEdges.slice(0, 200)) {
+    if (!rawEdge || typeof rawEdge !== 'object') continue
+    const source = String(rawEdge.source || '').trim()
+    const target = String(rawEdge.target || '').trim()
+    if (!source || !target) continue
+
+    if (!knownNodeIds.has(source)) {
+      knownNodeIds.add(source)
+      nodes.push({ id: source, label: source, group: null, color: null, size: 1 })
+    }
+    if (!knownNodeIds.has(target)) {
+      knownNodeIds.add(target)
+      nodes.push({ id: target, label: target, group: null, color: null, size: 1 })
+    }
+
+    const label = rawEdge.label === undefined || rawEdge.label === null
+      ? null
+      : String(rawEdge.label).trim() || null
+    const parsedWeight = Number(rawEdge.weight)
+    const weight = Number.isFinite(parsedWeight)
+      ? Math.min(Math.max(parsedWeight, 0), 1_000_000)
+      : null
+
+    edges.push({ source, target, label, weight })
+  }
+
+  if (edges.length === 0) return null
+
+  const layout = rawSpec.layout === 'radial' ? 'radial' : 'circle'
+  const directed = rawSpec.directed !== false
+  const title = rawSpec.title === undefined || rawSpec.title === null
+    ? null
+    : String(rawSpec.title).trim() || null
+
+  return {
+    type: 'basic_graph',
+    version: 1,
+    title,
+    directed,
+    layout,
+    nodes,
+    edges
+  }
+}
+
+function findBalancedJsonEnd(text = '', startIndex = 0) {
+  if (startIndex < 0 || startIndex >= text.length) return null
+  if (text[startIndex] !== '{' && text[startIndex] !== '[') return null
+
+  const stack = []
+  let inString = false
+  let escaped = false
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+
+    if (char === '{') {
+      stack.push('}')
+      continue
+    }
+
+    if (char === '[') {
+      stack.push(']')
+      continue
+    }
+
+    if (char === '}' || char === ']') {
+      if (stack.length === 0 || stack.pop() !== char) return null
+      if (stack.length === 0) return index + 1
+    }
+  }
+
+  return null
+}
+
+function extractTopLevelJsonSegmentsFromText(text = '') {
+  if (!text) return []
+
+  const segments = []
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char !== '{' && char !== '[') continue
+
+    const endIndex = findBalancedJsonEnd(text, index)
+    if (!endIndex) continue
+
+    const rawJson = text.slice(index, endIndex)
+
+    try {
+      const value = JSON.parse(rawJson)
+      segments.push({ start: index, end: endIndex, rawJson, value })
+      index = endIndex - 1
+    } catch {
+      // Keep scanning in case a valid JSON payload starts later in the text.
+    }
+  }
+
+  return segments
+}
+
+function extractRelayedToolCallsFromParsedJson(parsed) {
+  const rawCalls = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.tool_calls)
+      ? parsed.tool_calls
+      : parsed?.tool_call
+        ? [parsed.tool_call]
+        : parsed && typeof parsed === 'object' && typeof parsed.name === 'string'
+          ? [parsed]
+          : []
+
+  return rawCalls
+    .map(normalizeRelayedToolCall)
+    .filter(Boolean)
+}
+
+function extractGraphSpecsFromJsonValue(value, graphs = [], seen = new Set()) {
+  if (!value || typeof value !== 'object') return graphs
+  if (seen.has(value)) return graphs
+  seen.add(value)
+
+  const normalized = normalizeGraphSpec(value)
+  if (normalized) {
+    graphs.push(normalized)
+    return graphs
+  }
+
+  const relayedToolCalls = extractRelayedToolCallsFromParsedJson(value)
+  if (relayedToolCalls.length > 0) {
+    for (const toolCall of relayedToolCalls) {
+      if (toolCall.name !== 'create_basic_graph') continue
+      const graph = normalizeGraphSpec(toolCall.arguments)
+      if (graph) graphs.push(graph)
+    }
+    return graphs
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractGraphSpecsFromJsonValue(item, graphs, seen)
+    }
+    return graphs
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    if (nestedValue && typeof nestedValue === 'object') {
+      extractGraphSpecsFromJsonValue(nestedValue, graphs, seen)
+    }
+  }
+
+  return graphs
+}
+
+function extractGraphSpecsFromResponseText(responseText = '') {
+  if (!responseText) return { textWithoutGraphs: responseText, graphs: [] }
+
+  const graphs = []
+
+  // Match explicit graph blocks first, then fall back to generic JSON code blocks
+  // and inline JSON segments that parse to graph specs.
+  const graphBlockRegex = /```(?:vfb-graph|vfb_graph|graphjson|graph-json|json)?\s*([\s\S]*?)```/gi
+  let textWithoutGraphs = responseText.replace(graphBlockRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      const extractedGraphs = dedupeGraphSpecs(extractGraphSpecsFromJsonValue(parsed))
+      if (extractedGraphs.length > 0) {
+        graphs.push(...extractedGraphs)
+        return ''
+      }
+    } catch {
+      // Keep original block when parsing fails.
+    }
+    return match
+  })
+
+  const jsonSegments = extractTopLevelJsonSegmentsFromText(textWithoutGraphs)
+  if (jsonSegments.length > 0) {
+    let rebuiltText = ''
+    let lastIndex = 0
+
+    for (const segment of jsonSegments) {
+      const extractedGraphs = dedupeGraphSpecs(extractGraphSpecsFromJsonValue(segment.value))
+      if (extractedGraphs.length === 0) continue
+
+      rebuiltText += textWithoutGraphs.slice(lastIndex, segment.start)
+      lastIndex = segment.end
+      graphs.push(...extractedGraphs)
+    }
+
+    rebuiltText += textWithoutGraphs.slice(lastIndex)
+    textWithoutGraphs = rebuiltText
+  }
+
+  return {
+    textWithoutGraphs: textWithoutGraphs.replace(/\n{3,}/g, '\n\n').trim(),
+    graphs: dedupeGraphSpecs(graphs)
+  }
+}
+
+function extractGraphSpecsFromToolOutputs(toolOutputs = []) {
+  const graphs = []
+  for (const output of toolOutputs) {
+    if (output?.name !== 'create_basic_graph') continue
+    const normalized = normalizeGraphSpec(output.output)
+    if (normalized) graphs.push(normalized)
+  }
+  return graphs
+}
+
+function dedupeGraphSpecs(graphs = []) {
+  const deduped = []
+  const seen = new Set()
+
+  for (const graph of graphs) {
+    const normalized = normalizeGraphSpec(graph)
+    if (!normalized) continue
+    const key = JSON.stringify({
+      title: normalized.title,
+      directed: normalized.directed,
+      layout: normalized.layout,
+      nodes: normalized.nodes.map(node => node.id).sort(),
+      edges: normalized.edges.map(edge => `${edge.source}->${edge.target}:${edge.label || ''}:${edge.weight || ''}`).sort()
+    })
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(normalized)
+  }
+
+  return deduped.slice(0, 3)
+}
+
 function extractImagesFromResponseText(responseText = '') {
   const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
   const images = []
@@ -163,17 +492,67 @@ function extractImagesFromResponseText(responseText = '') {
   return images
 }
 
-function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList }) {
-  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(responseText, outboundAllowList)
-  const images = extractImagesFromResponseText(sanitizedText)
+function stripLeakedToolCallJson(text = '') {
+  if (!text) return { cleanedText: text, graphs: [] }
+
+  const graphs = []
+
+  const toolCallCodeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  let cleaned = text.replace(toolCallCodeBlockRegex, (match, rawJson) => {
+    try {
+      const parsed = JSON.parse(String(rawJson || '').trim())
+      const relayedToolCalls = extractRelayedToolCallsFromParsedJson(parsed)
+      if (relayedToolCalls.length > 0) {
+        graphs.push(...extractGraphSpecsFromJsonValue(parsed))
+        return ''
+      }
+    } catch {
+      // Keep original block when parsing fails.
+    }
+    return match
+  })
+
+  const jsonSegments = extractTopLevelJsonSegmentsFromText(cleaned)
+  if (jsonSegments.length > 0) {
+    let rebuiltText = ''
+    let lastIndex = 0
+
+    for (const segment of jsonSegments) {
+      const relayedToolCalls = extractRelayedToolCallsFromParsedJson(segment.value)
+      if (relayedToolCalls.length === 0) continue
+
+      rebuiltText += cleaned.slice(lastIndex, segment.start)
+      lastIndex = segment.end
+      graphs.push(...extractGraphSpecsFromJsonValue(segment.value))
+    }
+
+    rebuiltText += cleaned.slice(lastIndex)
+    cleaned = rebuiltText
+  }
+
+  return {
+    cleanedText: cleaned.replace(/\n{3,}/g, '\n\n').trim(),
+    graphs: dedupeGraphSpecs(graphs)
+  }
+}
+
+function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList, graphSpecs = [] }) {
+  const { cleanedText, graphs: leakedToolCallGraphs } = stripLeakedToolCallJson(responseText)
+  const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, outboundAllowList)
+  const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
+  const linkedResponseText = linkifyFollowUpQueryItems(textWithoutGraphs)
+  const images = extractImagesFromResponseText(linkedResponseText)
+  const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...leakedToolCallGraphs, ...inlineGraphs])
+  console.log(`[VFBchat] Final result: ${graphs.length} graph(s) (${graphSpecs.length} from tools, ${leakedToolCallGraphs.length} from leaked tool calls, ${inlineGraphs.length} inline)`)
 
   return {
     ok: true,
     responseId,
     toolUsage,
     toolRounds,
-    responseText: sanitizedText,
+    responseText: linkedResponseText,
     images,
+    graphs,
     blockedResponseDomains: blockedDomains
   }
 }
@@ -312,7 +691,8 @@ async function finalizeGovernanceEvent({
 let vfbMcpClient = null
 let biorxivMcpClient = null
 
-const VFB_MCP_URL = 'https://vfb3-mcp.virtualflybrain.org/'
+const DEFAULT_VFB_MCP_URL = 'https://vfb3-mcp-preview.virtualflybrain.org/'
+const VFB_MCP_URL = (process.env.VFB_MCP_URL || '').trim() || DEFAULT_VFB_MCP_URL
 const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 
 async function getVfbMcpClient() {
@@ -379,11 +759,17 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_get_term_info',
-    description: 'Get detailed information about a VFB term by ID, including definitions, relationships, images, queries, and references.',
+    description: 'Get detailed information from VFB by ID. Supports batch requests using an array of IDs.',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The VFB term ID such as VFB_00102107 or FBbt_00003748' }
+        id: {
+          oneOf: [
+            { type: 'string', description: 'A single plain VFB ID such as VFB_00102107 or FBbt_00003748 — do NOT use markdown links, IRIs, or labels' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of plain VFB IDs (e.g. ["VFB_00102107", "FBbt_00003748"])' }
+          ],
+          description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
+        }
       },
       required: ['id']
     }
@@ -392,14 +778,152 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_run_query',
-    description: 'Run analyses such as PaintedDomains, NBLAST, or connectivity on a VFB entity. Only use query types returned by vfb_get_term_info.',
+    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only query types returned by vfb_get_term_info.',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The VFB term ID to query' },
-        query_type: { type: 'string', description: 'A query type returned for the term by vfb_get_term_info' }
+        id: {
+          oneOf: [
+            { type: 'string', description: 'A single plain VFB ID (e.g. FBbt_00003748) — do NOT use markdown links, IRIs, or labels' },
+            { type: 'array', items: { type: 'string' }, description: 'Array of plain VFB IDs' }
+          ],
+          description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
+        },
+        query_type: { type: 'string', description: 'A query type returned by vfb_get_term_info for that term' },
+        queries: {
+          type: 'array',
+          description: 'Optional mixed batch input: each item has {id, query_type}. If provided, id/query_type are ignored.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Plain VFB ID (e.g. FBbt_00003748) — not a markdown link or IRI' },
+              query_type: { type: 'string', description: 'Query type for this VFB ID' }
+            },
+            required: ['id', 'query_type']
+          }
+        }
+      }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_resolve_entity',
+    description: 'Resolve an unresolved FlyBase name/synonym to an ID and metadata (EXACT/SYNONYM/BROAD match).',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Raw unresolved FlyBase-related query, e.g. dpp, MB002B, SS04495, Hb9-GAL4' }
       },
-      required: ['id', 'query_type']
+      required: ['name']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_stocks',
+    description: 'Find fly stocks for a FlyBase feature ID (gene, allele, insertion, combination, or stock).',
+    parameters: {
+      type: 'object',
+      properties: {
+        feature_id: { type: 'string', description: 'FlyBase ID such as FBgn..., FBal..., FBti..., FBco..., or FBst...' },
+        collection_filter: { type: 'string', description: 'Optional stock centre filter, e.g. Bloomington, Kyoto, VDRC' }
+      },
+      required: ['feature_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_resolve_combination',
+    description: 'Resolve an unresolved split-GAL4 combination name/synonym to FBco ID and components.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Raw unresolved split-GAL4 combination text, e.g. MB002B or SS04495' }
+      },
+      required: ['name']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_combo_publications',
+    description: 'Find publications linked to a split-GAL4 combination by FBco ID, with DOI/PMID/PMCID when available.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fbco_id: { type: 'string', description: 'FlyBase combination ID such as FBco0000052' }
+      },
+      required: ['fbco_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_list_connectome_datasets',
+    description: 'List available connectome dataset symbols/labels for comparative connectivity queries.',
+    parameters: {
+      type: 'object',
+      properties: {}
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_query_connectivity',
+    description: 'Live comparative connectomics query between neuron classes across datasets. Can be slow.',
+    parameters: {
+      type: 'object',
+      properties: {
+        upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class plain FBbt ID (e.g. FBbt_00048241) or label — do NOT use markdown links or IRIs' },
+        downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class plain FBbt ID (e.g. FBbt_00047039) or label — do NOT use markdown links or IRIs' },
+        weight: { type: 'number', description: 'Minimum synapse count threshold (default 5)' },
+        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true)' },
+        exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
+      }
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'create_basic_graph',
+    description: 'Create a lightweight graph specification for UI rendering. Use this to visualise connectivity as nodes and edges. IMPORTANT: Always set the "group" field on every node to a shared biological category (e.g. neurotransmitter type like "cholinergic", "GABAergic", "glutamatergic"; or system/region like "visual system", "central complex"; or cell class like "sensory neuron", "interneuron") so that nodes are colour-coded meaningfully. For directional connectivity graphs, prefer 2-3 reused groups aligned to the query sides (source-side, target-side, optional intermediate) rather than giving each node or subtype its own one-off group.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Optional graph title' },
+        directed: { type: 'boolean', description: 'Whether edges are directed (default true)' },
+        nodes: {
+          type: 'array',
+          description: 'Graph nodes',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Unique node identifier' },
+              label: { type: 'string', description: 'Display label for the node' },
+              group: { type: 'string', description: 'REQUIRED: Shared biological category for colour-coding. Use neurotransmitter type (cholinergic, GABAergic, glutamatergic), system/region (visual system, central complex), cell class (sensory neuron, interneuron, projection neuron), or other contextually meaningful grouping. For directional connectivity graphs, reuse coarse groups across many nodes, usually source-side, target-side, and optional intermediate.' },
+              size: { type: 'number', description: 'Optional relative node size (1-3 recommended)' }
+            },
+            required: ['id', 'group']
+          }
+        },
+        edges: {
+          type: 'array',
+          description: 'Graph edges',
+          items: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', description: 'Source node id' },
+              target: { type: 'string', description: 'Target node id' },
+              label: { type: 'string', description: 'Optional edge label' },
+              weight: { type: 'number', description: 'Optional edge weight for styling/labels' }
+            },
+            required: ['source', 'target']
+          }
+        }
+      },
+      required: ['nodes', 'edges']
     }
   })
 
@@ -466,7 +990,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'search_reviewed_docs',
-    description: 'Search approved Virtual Fly Brain, NeuroFly, and reviewed FlyBase pages using a server-side site index. Use this for documentation, news or blog posts, conference or event questions, and other approved website questions.',
+    description: 'Search approved Virtual Fly Brain, NeuroFly, VFB Connect documentation, and reviewed FlyBase pages using a server-side site index. Use this for documentation, news or blog posts, conference or event questions, and approved Python usage guidance pages.',
     parameters: {
       type: 'object',
       properties: {
@@ -480,7 +1004,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'get_reviewed_page',
-    description: 'Fetch and extract content from an approved Virtual Fly Brain, NeuroFly, or reviewed FlyBase page URL returned by search_reviewed_docs.',
+    description: 'Fetch and extract content from an approved Virtual Fly Brain, NeuroFly, VFB Connect documentation, or reviewed FlyBase page URL returned by search_reviewed_docs.',
     parameters: {
       type: 'object',
       properties: {
@@ -618,19 +1142,988 @@ async function getPubmedArticle(pmid) {
   })
 }
 
+// --- bioRxiv direct API fallback (used when bioRxiv MCP is unavailable) ---
+
+const BIORXIV_API_BASE_URL = 'https://api.biorxiv.org'
+const BIORXIV_API_TIMEOUT_MS = 15000
+const BIORXIV_MAX_RECENT_DAYS = 3650
+const BIORXIV_TOOL_NAME_SET = new Set([
+  'biorxiv_search_preprints',
+  'biorxiv_get_preprint',
+  'biorxiv_search_published_preprints',
+  'biorxiv_get_categories'
+])
+
+function normalizeBiorxivServer(server = 'biorxiv') {
+  const normalized = String(server || 'biorxiv').trim().toLowerCase()
+  if (normalized === 'biorxiv' || normalized === 'medrxiv') return normalized
+  throw new Error(`Invalid server "${server}". Expected "biorxiv" or "medrxiv".`)
+}
+
+function normalizeInteger(value, defaultValue, min, max) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return defaultValue
+  return Math.min(Math.max(parsed, min), max)
+}
+
+function formatIsoDateUtc(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function isIsoDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && formatIsoDateUtc(parsed) === value
+}
+
+function resolveBiorxivDateRange(args = {}, defaultRecentDays = 30) {
+  const rawFrom = typeof args.date_from === 'string' ? args.date_from.trim() : ''
+  const rawTo = typeof args.date_to === 'string' ? args.date_to.trim() : ''
+  const hasRecentDays = args.recent_days !== undefined && args.recent_days !== null && String(args.recent_days).trim() !== ''
+
+  if (hasRecentDays || (!rawFrom && !rawTo)) {
+    const recentDays = normalizeInteger(
+      hasRecentDays ? args.recent_days : defaultRecentDays,
+      defaultRecentDays,
+      1,
+      BIORXIV_MAX_RECENT_DAYS
+    )
+    const endDate = new Date()
+    const startDate = new Date(endDate)
+    startDate.setUTCDate(startDate.getUTCDate() - (recentDays - 1))
+    return {
+      dateFrom: formatIsoDateUtc(startDate),
+      dateTo: formatIsoDateUtc(endDate),
+      recentDays
+    }
+  }
+
+  if (!rawFrom || !rawTo) {
+    throw new Error('Both date_from and date_to are required when recent_days is not provided.')
+  }
+
+  if (!isIsoDateString(rawFrom) || !isIsoDateString(rawTo)) {
+    throw new Error('date_from and date_to must be valid YYYY-MM-DD values.')
+  }
+
+  if (rawFrom > rawTo) {
+    throw new Error('date_from must be earlier than or equal to date_to.')
+  }
+
+  return {
+    dateFrom: rawFrom,
+    dateTo: rawTo,
+    recentDays: null
+  }
+}
+
+function normalizeCategoryLabel(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ')
+}
+
+function toCategoryQueryValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '_')
+}
+
+function normalizeDoiForPath(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+
+  if (!normalized) {
+    throw new Error('A DOI is required for biorxiv_get_preprint.')
+  }
+
+  // Keep slash separators because the endpoint expects DOI path segments.
+  return normalized
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/')
+}
+
+function normalizePublisherPrefix(value) {
+  return String(value || '').trim().toLowerCase().replace(/\/+$/, '')
+}
+
+function decodeHtmlEntity(value) {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;/g, '\'')
+    .replace(/&quot;/gi, '"')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .trim()
+}
+
+function parseCategorySummaryHtml(html = '') {
+  const categorySet = new Set()
+  const categories = []
+  const regex = /<td\s+align=left>([^<]+)<\/td>\s*<td\s+align=right>\d+<\/td>\s*<td\s+align=right>[\d.]+<\/td>/gi
+  let match
+
+  while ((match = regex.exec(html)) !== null) {
+    const label = decodeHtmlEntity(match[1])
+    if (!label) continue
+    const dedupeKey = label.toLowerCase()
+    if (!categorySet.has(dedupeKey)) {
+      categorySet.add(dedupeKey)
+      categories.push(label)
+    }
+  }
+
+  return categories.sort((a, b) => a.localeCompare(b))
+}
+
+async function fetchBioRxivApiJson(pathname, searchParams = {}) {
+  const url = new URL(pathname, BIORXIV_API_BASE_URL)
+  for (const [key, value] of Object.entries(searchParams || {})) {
+    if (value === undefined || value === null || String(value).trim() === '') continue
+    url.searchParams.set(key, String(value))
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), BIORXIV_API_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+    const responseText = (await response.text()).replace(/^\uFEFF/, '')
+
+    if (!response.ok) {
+      throw new Error(`bioRxiv API request failed: HTTP ${response.status} for ${url.pathname}`)
+    }
+
+    let payload
+    try {
+      payload = JSON.parse(responseText)
+    } catch {
+      throw new Error(`bioRxiv API returned non-JSON content for ${url.pathname}: ${responseText.slice(0, 180)}`)
+    }
+
+    const message = Array.isArray(payload?.messages) ? payload.messages[0] : null
+    const status = typeof message?.status === 'string' ? message.status.trim().toLowerCase() : ''
+    const textError = typeof payload === 'string' ? payload.trim() : ''
+    const messageError = typeof message === 'string' ? message.trim() : ''
+
+    if (textError) {
+      throw new Error(`bioRxiv API error: ${textError}`)
+    }
+
+    if (messageError && messageError.toLowerCase() !== 'ok') {
+      throw new Error(`bioRxiv API error: ${messageError}`)
+    }
+
+    if (status && status !== 'ok') {
+      const detail = message?.message || message?.status
+      throw new Error(`bioRxiv API error: ${detail}`)
+    }
+
+    return {
+      payload,
+      url: url.toString()
+    }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function fetchBioRxivReportHtml(pathname) {
+  const url = new URL(pathname, BIORXIV_API_BASE_URL)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), BIORXIV_API_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'text/html' },
+      signal: controller.signal
+    })
+    if (!response.ok) {
+      throw new Error(`bioRxiv reporting request failed: HTTP ${response.status} for ${url.pathname}`)
+    }
+    const html = await response.text()
+    return {
+      html,
+      url: url.toString()
+    }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function biorxivSearchPreprintsFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const limit = normalizeInteger(args.limit, 10, 1, 100)
+  const cursor = normalizeInteger(args.cursor, 0, 0, 1_000_000)
+  const category = normalizeCategoryLabel(args.category)
+  const { dateFrom, dateTo, recentDays } = resolveBiorxivDateRange(args, 30)
+
+  const { payload, url } = await fetchBioRxivApiJson(
+    `/details/${server}/${dateFrom}/${dateTo}/${cursor}`,
+    category ? { category: toCategoryQueryValue(category) } : {}
+  )
+
+  let results = Array.isArray(payload?.collection) ? payload.collection : []
+  if (category) {
+    results = results.filter(item => normalizeCategoryLabel(item?.category) === category)
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    query: {
+      date_from: dateFrom,
+      date_to: dateTo,
+      recent_days: recentDays,
+      category: category || null,
+      limit,
+      cursor
+    },
+    total_available: Number.parseInt(payload?.messages?.[0]?.total, 10) || results.length,
+    returned_count: Math.min(results.length, limit),
+    api_url: url,
+    results: results.slice(0, limit)
+  }
+}
+
+async function biorxivGetPreprintFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const doiPath = normalizeDoiForPath(args.doi)
+  const doi = String(args.doi || '').trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+  const { payload, url } = await fetchBioRxivApiJson(`/details/${server}/${doiPath}`)
+
+  const versions = Array.isArray(payload?.collection)
+    ? payload.collection.slice().sort((a, b) => Number.parseInt(b.version, 10) - Number.parseInt(a.version, 10))
+    : []
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    doi,
+    version_count: versions.length,
+    latest: versions[0] || null,
+    versions,
+    api_url: url
+  }
+}
+
+async function biorxivSearchPublishedFallback(args = {}) {
+  const server = normalizeBiorxivServer(args.server)
+  const limit = normalizeInteger(args.limit, 10, 1, 100)
+  const cursor = normalizeInteger(args.cursor, 0, 0, 1_000_000)
+  const publisherPrefix = normalizePublisherPrefix(args.publisher)
+  const { dateFrom, dateTo, recentDays } = resolveBiorxivDateRange(args, 30)
+
+  let endpointPath = `/pubs/${server}/${dateFrom}/${dateTo}/${cursor}`
+  if (publisherPrefix && server === 'biorxiv') {
+    endpointPath = `/publisher/${publisherPrefix}/${dateFrom}/${dateTo}/${cursor}`
+  }
+
+  const { payload, url } = await fetchBioRxivApiJson(endpointPath)
+  let results = Array.isArray(payload?.collection) ? payload.collection : []
+
+  if (publisherPrefix) {
+    results = results.filter(item => normalizePublisherPrefix(item?.published_doi).startsWith(publisherPrefix))
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    server,
+    query: {
+      date_from: dateFrom,
+      date_to: dateTo,
+      recent_days: recentDays,
+      publisher: publisherPrefix || null,
+      limit,
+      cursor
+    },
+    total_available: Number.parseInt(payload?.messages?.[0]?.total, 10) || results.length,
+    returned_count: Math.min(results.length, limit),
+    api_url: url,
+    results: results.slice(0, limit)
+  }
+}
+
+async function biorxivGetCategoriesFallback() {
+  const reportPaths = {
+    biorxiv: '/reporting/biorxiv/category_summary',
+    medrxiv: '/reporting/medrxiv/category_summary'
+  }
+
+  const entries = await Promise.all(
+    Object.entries(reportPaths).map(async ([server, reportPath]) => {
+      try {
+        const { html, url } = await fetchBioRxivReportHtml(reportPath)
+        return {
+          server,
+          ok: true,
+          url,
+          categories: parseCategorySummaryHtml(html)
+        }
+      } catch (error) {
+        return {
+          server,
+          ok: false,
+          errorMessage: error?.message || 'Unknown error'
+        }
+      }
+    })
+  )
+
+  const categories = {}
+  const apiUrls = {}
+  const errors = {}
+
+  for (const entry of entries) {
+    if (entry.ok) {
+      const { server, url, categories: parsedCategories } = entry
+      categories[server] = parsedCategories
+      apiUrls[server] = url
+      continue
+    }
+
+    errors[entry.server] = entry.errorMessage
+  }
+
+  if (!Array.isArray(categories.biorxiv) || categories.biorxiv.length === 0) {
+    throw new Error('Unable to load category summary from bioRxiv reporting endpoints.')
+  }
+
+  return {
+    source: 'biorxiv_api_fallback',
+    method: 'reporting_category_summary',
+    categories,
+    category_counts: Object.fromEntries(
+      Object.entries(categories).map(([server, values]) => [server, values.length])
+    ),
+    api_urls: apiUrls,
+    errors: Object.keys(errors).length > 0 ? errors : undefined
+  }
+}
+
+async function executeBiorxivApiFallback(name, args = {}) {
+  if (name === 'biorxiv_search_preprints') {
+    return biorxivSearchPreprintsFallback(args)
+  }
+  if (name === 'biorxiv_get_preprint') {
+    return biorxivGetPreprintFallback(args)
+  }
+  if (name === 'biorxiv_search_published_preprints') {
+    return biorxivSearchPublishedFallback(args)
+  }
+  if (name === 'biorxiv_get_categories') {
+    return biorxivGetCategoriesFallback()
+  }
+  throw new Error(`No bioRxiv API fallback available for tool: ${name}`)
+}
+
 // --- Function tool execution (routes to MCP clients or direct APIs) ---
 
 const MCP_TOOL_ROUTING = {
   vfb_search_terms: { server: 'vfb', mcpName: 'search_terms' },
   vfb_get_term_info: { server: 'vfb', mcpName: 'get_term_info' },
   vfb_run_query: { server: 'vfb', mcpName: 'run_query' },
+  vfb_resolve_entity: { server: 'vfb', mcpName: 'resolve_entity' },
+  vfb_find_stocks: { server: 'vfb', mcpName: 'find_stocks' },
+  vfb_resolve_combination: { server: 'vfb', mcpName: 'resolve_combination' },
+  vfb_find_combo_publications: { server: 'vfb', mcpName: 'find_combo_publications' },
+  vfb_list_connectome_datasets: { server: 'vfb', mcpName: 'list_connectome_datasets' },
+  vfb_query_connectivity: { server: 'vfb', mcpName: 'query_connectivity' },
   biorxiv_search_preprints: { server: 'biorxiv', mcpName: 'search_preprints' },
   biorxiv_get_preprint: { server: 'biorxiv', mcpName: 'get_preprint' },
   biorxiv_search_published_preprints: { server: 'biorxiv', mcpName: 'search_published_preprints' },
   biorxiv_get_categories: { server: 'biorxiv', mcpName: 'get_categories' }
 }
 
-async function executeFunctionTool(name, args) {
+const VFB_CACHED_TERM_INFO_URL = 'https://v3-cached.virtualflybrain.org/get_term_info'
+const VFB_CACHED_RUN_QUERY_URL = 'https://v3-cached.virtualflybrain.org/run_query'
+const VFB_CACHED_TERM_INFO_TIMEOUT_MS = 12000
+
+function isRetryableMcpError(error) {
+  const message = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('abort') ||
+    message.includes('network') ||
+    message.includes('fetch failed') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('enotfound') ||
+    message.includes('etimedout') ||
+    message.includes('eai_again') ||
+    message.includes('connectivity')
+  )
+}
+
+async function fetchCachedVfbTermInfo(id) {
+  const safeId = String(id || '').trim()
+  if (!safeId) throw new Error('Missing id for cached VFB get_term_info fallback.')
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
+
+  try {
+    const cacheUrl = `${VFB_CACHED_TERM_INFO_URL}?id=${encodeURIComponent(safeId)}`
+    const response = await fetch(cacheUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      throw new Error(`Cached VFB get_term_info failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
+    }
+
+    const responseText = await response.text()
+    try {
+      JSON.parse(responseText)
+    } catch {
+      throw new Error('Cached VFB get_term_info returned non-JSON payload.')
+    }
+
+    return responseText
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function fetchCachedVfbRunQuery(id, queryType) {
+  const safeId = String(id || '').trim()
+  const safeQueryType = String(queryType || '').trim()
+  if (!safeId || !safeQueryType) {
+    throw new Error('Missing id or query_type for cached VFB run_query fallback.')
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
+
+  try {
+    const cacheUrl = `${VFB_CACHED_RUN_QUERY_URL}?id=${encodeURIComponent(safeId)}&query_type=${encodeURIComponent(safeQueryType)}`
+    const response = await fetch(cacheUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      throw new Error(`Cached VFB run_query failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
+    }
+
+    const responseText = await response.text()
+    try {
+      JSON.parse(responseText)
+    } catch {
+      throw new Error('Cached VFB run_query returned non-JSON payload.')
+    }
+
+    return responseText
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+function extractQueryNamesFromTermInfoPayload(rawPayload) {
+  let parsed = rawPayload
+  if (typeof rawPayload === 'string') {
+    try {
+      parsed = JSON.parse(rawPayload)
+    } catch {
+      return []
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') return []
+
+  const candidateRecords = []
+  if (Array.isArray(parsed.Queries)) {
+    candidateRecords.push(parsed)
+  }
+
+  for (const value of Object.values(parsed)) {
+    if (value && typeof value === 'object' && Array.isArray(value.Queries)) {
+      candidateRecords.push(value)
+    }
+  }
+
+  const queryNames = []
+  for (const record of candidateRecords) {
+    for (const entry of record.Queries || []) {
+      const queryName = typeof entry?.query === 'string' ? entry.query.trim() : ''
+      if (queryName) queryNames.push(queryName)
+    }
+  }
+
+  return Array.from(new Set(queryNames))
+}
+
+const VFB_TERM_ID_TOKEN_REGEX = /\b(?:FBbt_\d{8}|VFB_\d{8})\b/i
+const VFB_NEURON_CLASS_ID_REGEX = /^FBbt_\d{8}$/i
+
+/**
+ * Sanitize a single VFB ID value that may arrive as a plain ID, markdown link,
+ * full IRI, or a mixture (e.g. "[FBbt_00048241](https://virtualflybrain.org/reports/FBbt_00048241)").
+ * Returns the canonical short-form ID (e.g. "FBbt_00048241") when one can be
+ * extracted, or the original trimmed string when no ID pattern is found
+ * (allowing labels/names to pass through for tools that accept them).
+ */
+function sanitizeVfbId(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  // Try to pull a canonical VFB/FBbt ID from anywhere in the string
+  const canonicalId = extractCanonicalVfbTermId(text)
+  if (canonicalId) return canonicalId
+
+  // Fall back: strip markdown link wrapper so at least the link text is used
+  return stripMarkdownLinkText(text)
+}
+
+/**
+ * Sanitize an `id` argument that may be a single value or an array.
+ */
+function sanitizeVfbIdParam(value) {
+  if (Array.isArray(value)) {
+    return value.map(v => sanitizeVfbId(v)).filter(Boolean)
+  }
+  return sanitizeVfbId(value)
+}
+
+function parseJsonPayload(rawPayload) {
+  if (rawPayload === null || rawPayload === undefined) return null
+  if (typeof rawPayload === 'object') return rawPayload
+  if (typeof rawPayload !== 'string') return null
+
+  try {
+    return JSON.parse(rawPayload)
+  } catch {
+    return null
+  }
+}
+
+function stripMarkdownLinkText(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const markdownLinkMatch = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+  if (!markdownLinkMatch) return text
+
+  return markdownLinkMatch[1]?.trim() || text
+}
+
+function extractCanonicalVfbTermId(value = '') {
+  const text = String(value || '')
+  const tokenMatch = text.match(VFB_TERM_ID_TOKEN_REGEX)
+  return tokenMatch ? tokenMatch[0] : null
+}
+
+function normalizeConnectivityEndpointValue(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const strippedText = stripMarkdownLinkText(text).trim()
+  const canonicalId = extractCanonicalVfbTermId(text)
+  if (canonicalId) {
+    const descriptiveText = strippedText
+      .replace(/\b(?:FBbt_\d{8}|VFB_\d{8})\b/ig, ' ')
+      .replace(/[\[\](){}<>.,;:]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    // When input mixes label text with an ID (for example a markdown link),
+    // prefer resolving from the label to avoid trusting a potentially wrong ID.
+    if (descriptiveText) return descriptiveText
+
+    return canonicalId
+  }
+
+  return strippedText
+}
+
+function extractTermInfoRecordFromPayload(rawPayload, requestedId = '') {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return null
+
+  if (parsed.Id || Array.isArray(parsed.SuperTypes) || Array.isArray(parsed.Queries)) {
+    return parsed
+  }
+
+  if (requestedId && parsed[requestedId] && typeof parsed[requestedId] === 'object') {
+    return parsed[requestedId]
+  }
+
+  for (const value of Object.values(parsed)) {
+    if (!value || typeof value !== 'object') continue
+    if (value.Id || Array.isArray(value.SuperTypes) || Array.isArray(value.Queries)) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function extractRowsFromRunQueryPayload(rawPayload) {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return []
+
+  if (Array.isArray(parsed.rows)) return parsed.rows
+
+  const rows = []
+  for (const value of Object.values(parsed)) {
+    if (value && typeof value === 'object' && Array.isArray(value.rows)) {
+      rows.push(...value.rows)
+    }
+  }
+
+  return rows
+}
+
+function normalizeEndpointSearchText(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function singularizeEndpointSearchText(value = '') {
+  const text = normalizeEndpointSearchText(value)
+  if (!text) return text
+  if (text.endsWith('ies')) return `${text.slice(0, -3)}y`
+  if (text.endsWith(' neurons')) return text.slice(0, -1)
+  if (text.endsWith(' classes')) return text.slice(0, -2)
+  if (text.endsWith('s') && !text.endsWith('ss')) return text.slice(0, -1)
+  return text
+}
+
+function extractDocsFromSearchTermsPayload(rawPayload) {
+  const parsed = parseJsonPayload(rawPayload)
+  if (!parsed || typeof parsed !== 'object') return []
+
+  if (Array.isArray(parsed?.response?.docs)) {
+    return parsed.response.docs
+  }
+
+  if (Array.isArray(parsed.docs)) {
+    return parsed.docs
+  }
+
+  const docs = []
+  for (const value of Object.values(parsed)) {
+    if (!value || typeof value !== 'object') continue
+    if (Array.isArray(value?.response?.docs)) {
+      docs.push(...value.response.docs)
+    } else if (Array.isArray(value.docs)) {
+      docs.push(...value.docs)
+    }
+  }
+
+  return docs
+}
+
+function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
+  const shortForm = String(doc.short_form || doc.shortForm || '').trim()
+  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const queryNorm = normalizeEndpointSearchText(queryText)
+  const querySingular = singularizeEndpointSearchText(queryNorm)
+  const labelSingular = singularizeEndpointSearchText(labelNorm)
+  const synonyms = Array.isArray(doc.synonym)
+    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
+    : []
+  const facets = Array.isArray(doc.facets_annotation)
+    ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
+    : []
+
+  if (!shortForm || !queryNorm) return Number.NEGATIVE_INFINITY
+
+  let score = 0
+  if (/^FBbt_\d{8}$/i.test(shortForm)) score += 30
+
+  if (labelNorm === queryNorm || labelNorm === querySingular || labelSingular === queryNorm) {
+    score += 220
+  } else if (synonyms.includes(queryNorm) || synonyms.includes(querySingular)) {
+    score += 180
+  }
+
+  if (labelNorm && (labelNorm.includes(queryNorm) || queryNorm.includes(labelNorm))) {
+    score += 70
+  }
+
+  if (synonyms.some(syn => syn && (syn.includes(queryNorm) || queryNorm.includes(syn)))) {
+    score += 55
+  }
+
+  const queryTokens = queryNorm.split(' ').filter(Boolean)
+  const labelTokens = new Set(labelNorm.split(' ').filter(Boolean))
+  const overlap = queryTokens.filter(token => labelTokens.has(token)).length
+  score += overlap * 5
+  if (queryTokens.length > 0 && overlap === queryTokens.length) {
+    score += 35
+  }
+
+  if (facets.includes('neuron')) score += 10
+  if (facets.includes('class')) score += 5
+
+  return score
+}
+
+function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
+  if (!Array.isArray(docs) || docs.length === 0) return null
+
+  const fbbtDocs = docs.filter(doc => /^FBbt_\d{8}$/i.test(String(doc?.short_form || doc?.shortForm || '').trim()))
+  const candidateDocs = fbbtDocs.length > 0 ? fbbtDocs : docs
+  const neuronDocs = candidateDocs.filter(doc => {
+    const facets = Array.isArray(doc?.facets_annotation)
+      ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
+      : []
+    return facets.includes('neuron')
+  })
+  const scoredDocs = neuronDocs.length > 0 ? neuronDocs : candidateDocs
+
+  let bestDoc = null
+  let bestScore = Number.NEGATIVE_INFINITY
+  for (const doc of scoredDocs) {
+    const score = scoreSearchDocForConnectivityEndpoint(doc, queryText)
+    if (score > bestScore) {
+      bestScore = score
+      bestDoc = doc
+    }
+  }
+
+  return bestDoc
+}
+
+function extractNeuronClassCandidatesFromRows(rows = [], limit = 10) {
+  if (!Array.isArray(rows) || rows.length === 0) return []
+
+  const candidates = []
+  const seenIds = new Set()
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+
+    const idCandidate = extractCanonicalVfbTermId(row.id || row.short_form || row.label || '')
+    if (!idCandidate || !VFB_NEURON_CLASS_ID_REGEX.test(idCandidate) || seenIds.has(idCandidate)) continue
+
+    seenIds.add(idCandidate)
+    const label = stripMarkdownLinkText(row.label || idCandidate) || idCandidate
+    candidates.push({ id: idCandidate, label })
+
+    if (candidates.length >= limit) break
+  }
+
+  return candidates
+}
+
+function buildNeuronsPartHereLink(termId = '') {
+  if (!VFB_NEURON_CLASS_ID_REGEX.test(termId)) return null
+  return `${VFB_QUERY_LINK_BASE}${encodeURIComponent(termId)},${encodeURIComponent('NeuronsPartHere')}`
+}
+
+function getSuperTypeSet(termRecord) {
+  const superTypes = Array.isArray(termRecord?.SuperTypes) ? termRecord.SuperTypes : []
+  return new Set(
+    superTypes
+      .map(type => String(type || '').trim().toLowerCase())
+      .filter(Boolean)
+  )
+}
+
+function isNeuronClassTerm(termRecord) {
+  const superTypeSet = getSuperTypeSet(termRecord)
+  return superTypeSet.has('neuron') && superTypeSet.has('class')
+}
+
+function getReadableTermName(termRecord, fallback = '') {
+  if (typeof termRecord?.Name === 'string' && termRecord.Name.trim()) {
+    return termRecord.Name.trim()
+  }
+
+  if (typeof termRecord?.Meta?.Name === 'string' && termRecord.Meta.Name.trim()) {
+    return stripMarkdownLinkText(termRecord.Meta.Name)
+  }
+
+  return fallback
+}
+
+async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
+  try {
+    const result = await client.callTool({ name: toolName, arguments: toolArguments })
+    if (result?.content) {
+      const texts = result.content
+        .filter(item => item.type === 'text')
+        .map(item => item.text)
+      return texts.join('\n') || JSON.stringify(result.content)
+    }
+
+    return JSON.stringify(result)
+  } catch (error) {
+    const shouldFallbackTermInfo =
+      toolName === 'get_term_info' &&
+      typeof toolArguments?.id === 'string' &&
+      toolArguments.id.trim().length > 0 &&
+      isRetryableMcpError(error)
+
+    if (shouldFallbackTermInfo) {
+      return fetchCachedVfbTermInfo(toolArguments.id)
+    }
+
+    const shouldFallbackRunQuery =
+      toolName === 'run_query' &&
+      typeof toolArguments?.id === 'string' &&
+      toolArguments.id.trim().length > 0 &&
+      typeof toolArguments?.query_type === 'string' &&
+      toolArguments.query_type.trim().length > 0 &&
+      isRetryableMcpError(error)
+
+    if (shouldFallbackRunQuery) {
+      return fetchCachedVfbRunQuery(toolArguments.id, toolArguments.query_type)
+    }
+
+    throw error
+  }
+}
+
+async function resolveConnectivityEndpointValue(client, rawValue = '') {
+  const normalizedValue = normalizeConnectivityEndpointValue(rawValue)
+  const canonicalId = extractCanonicalVfbTermId(normalizedValue)
+  if (canonicalId && VFB_NEURON_CLASS_ID_REGEX.test(canonicalId)) return canonicalId
+  if (canonicalId) return normalizedValue
+
+  const queryText = stripMarkdownLinkText(normalizedValue).trim()
+  if (!queryText) return normalizedValue
+
+  try {
+    const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
+      query: queryText,
+      rows: 25,
+      minimize_results: true
+    })
+    const docs = extractDocsFromSearchTermsPayload(searchText)
+    const bestDoc = pickBestConnectivityEndpointDoc(docs, queryText)
+    if (!bestDoc) return normalizedValue
+
+    const bestId = extractCanonicalVfbTermId(bestDoc.short_form || bestDoc.shortForm || bestDoc.id || '')
+    return bestId || normalizedValue
+  } catch {
+    return normalizedValue
+  }
+}
+
+async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue }) {
+  const normalizedValue = normalizeConnectivityEndpointValue(rawValue)
+  const resolvedValue = await resolveConnectivityEndpointValue(client, normalizedValue)
+  const termId = extractCanonicalVfbTermId(resolvedValue)
+
+  if (!termId || !VFB_NEURON_CLASS_ID_REGEX.test(termId)) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      resolved_input: resolvedValue,
+      requires_selection: false
+    }
+  }
+
+  let termInfoText = null
+  try {
+    termInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: termId })
+  } catch {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      resolved_input: termId,
+      term_id: termId,
+      requires_selection: false
+    }
+  }
+
+  const termRecord = extractTermInfoRecordFromPayload(termInfoText, termId)
+  const termName = getReadableTermName(termRecord, termId)
+  if (!termRecord) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      resolved_input: termId,
+      term_id: termId,
+      term_name: termName,
+      requires_selection: false
+    }
+  }
+
+  if (isNeuronClassTerm(termRecord)) {
+    return {
+      side,
+      raw_input: String(rawValue || ''),
+      normalized_input: normalizedValue,
+      resolved_input: termId,
+      term_id: termId,
+      term_name: termName,
+      requires_selection: false
+    }
+  }
+
+  const superTypeSet = getSuperTypeSet(termRecord)
+  const missingRequiredSuperTypes = []
+  if (!superTypeSet.has('neuron')) missingRequiredSuperTypes.push('Neuron')
+  if (!superTypeSet.has('class')) missingRequiredSuperTypes.push('Class')
+
+  const queryNames = extractQueryNamesFromTermInfoPayload(termInfoText)
+  const hasNeuronsPartHere = queryNames.includes('NeuronsPartHere')
+  const suggestionLink = buildNeuronsPartHereLink(termId)
+  let candidates = []
+
+  if (hasNeuronsPartHere) {
+    try {
+      const runQueryText = await callVfbToolTextWithFallback(client, 'run_query', {
+        id: termId,
+        query_type: 'NeuronsPartHere'
+      })
+      const rows = extractRowsFromRunQueryPayload(runQueryText)
+      candidates = extractNeuronClassCandidatesFromRows(rows, 10)
+    } catch {
+      // If candidate extraction fails, still return the selection guidance payload.
+    }
+  }
+
+  return {
+    side,
+    raw_input: String(rawValue || ''),
+    normalized_input: normalizedValue,
+    resolved_input: termId,
+    term_id: termId,
+    term_name: termName,
+    super_types: Array.isArray(termRecord.SuperTypes) ? termRecord.SuperTypes : [],
+    missing_required_supertypes: missingRequiredSuperTypes,
+    requires_selection: true,
+    selection_query: hasNeuronsPartHere ? 'NeuronsPartHere' : null,
+    selection_query_link: suggestionLink,
+    candidates
+  }
+}
+
+function createBasicGraph(args = {}) {
+  const normalized = normalizeGraphSpec(args)
+  if (!normalized) {
+    throw new Error('Invalid graph spec. Provide non-empty nodes and edges with valid ids, source, and target fields.')
+  }
+  return normalized
+}
+
+async function executeFunctionTool(name, args, context = {}) {
   if (name === 'search_pubmed') {
     return searchPubmed(args.query, args.max_results, args.sort)
   }
@@ -647,6 +2140,10 @@ async function executeFunctionTool(name, args) {
     return getReviewedPage(args.url)
   }
 
+  if (name === 'create_basic_graph') {
+    return createBasicGraph(args)
+  }
+
   const routing = MCP_TOOL_ROUTING[name]
   if (routing) {
     const client = routing.server === 'vfb'
@@ -658,15 +2155,188 @@ async function executeFunctionTool(name, args) {
       if (value !== undefined && value !== null) cleanArgs[key] = value
     }
 
-    const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
-    if (result?.content) {
-      const texts = result.content
-        .filter(item => item.type === 'text')
-        .map(item => item.text)
-      return texts.join('\n') || JSON.stringify(result.content)
+    // Sanitize VFB ID parameters across all VFB tools — the LLM sometimes
+    // passes markdown links, full IRIs, or a mixture instead of plain IDs.
+    if (routing.server === 'vfb') {
+      if (cleanArgs.id !== undefined) {
+        cleanArgs.id = sanitizeVfbIdParam(cleanArgs.id)
+      }
+      if (Array.isArray(cleanArgs.queries)) {
+        cleanArgs.queries = cleanArgs.queries.map(q => ({
+          ...q,
+          ...(q.id !== undefined ? { id: sanitizeVfbId(q.id) } : {})
+        }))
+      }
     }
 
-    return JSON.stringify(result)
+    // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
+    if (name === 'vfb_query_connectivity') {
+      const directionalEndpoints = extractDirectionalConnectivityEndpoints(context.userMessage || '')
+      if (directionalEndpoints) {
+        // For directional requests, trust the user's exact endpoint phrases over
+        // any FBbt ids or relabeled args invented in the tool call payload.
+        cleanArgs.upstream_type = directionalEndpoints.upstream
+        cleanArgs.downstream_type = directionalEndpoints.downstream
+      }
+
+      cleanArgs.upstream_type = normalizeConnectivityEndpointValue(cleanArgs.upstream_type)
+      cleanArgs.downstream_type = normalizeConnectivityEndpointValue(cleanArgs.downstream_type)
+
+      if (typeof cleanArgs.group_by_class === 'string') {
+        const normalized = cleanArgs.group_by_class.trim().toLowerCase()
+        if (normalized === 'true') cleanArgs.group_by_class = true
+        else if (normalized === 'false') cleanArgs.group_by_class = false
+        else cleanArgs.group_by_class = true
+      } else if (typeof cleanArgs.group_by_class !== 'boolean') {
+        cleanArgs.group_by_class = true
+      }
+
+      const parsedWeight = Number(cleanArgs.weight)
+      if (!Number.isFinite(parsedWeight)) {
+        cleanArgs.weight = 5
+      } else {
+        cleanArgs.weight = parsedWeight
+      }
+
+      if (!Array.isArray(cleanArgs.exclude_dbs)) {
+        cleanArgs.exclude_dbs = []
+      }
+
+      const endpointChecks = await Promise.all([
+        assessConnectivityEndpointForNeuronClass({
+          client,
+          side: 'upstream',
+          rawValue: cleanArgs.upstream_type
+        }),
+        assessConnectivityEndpointForNeuronClass({
+          client,
+          side: 'downstream',
+          rawValue: cleanArgs.downstream_type
+        })
+      ])
+
+      const upstreamCheck = endpointChecks.find(check => check.side === 'upstream')
+      const downstreamCheck = endpointChecks.find(check => check.side === 'downstream')
+      if (upstreamCheck?.resolved_input) {
+        cleanArgs.upstream_type = upstreamCheck.resolved_input
+      }
+      if (downstreamCheck?.resolved_input) {
+        cleanArgs.downstream_type = downstreamCheck.resolved_input
+      }
+
+      const selectionsNeeded = endpointChecks.filter(check => check.requires_selection)
+      if (selectionsNeeded.length > 0) {
+        return JSON.stringify({
+          requires_user_selection: true,
+          tool: 'vfb_query_connectivity',
+          message: 'vfb_query_connectivity requires neuron class inputs. One or more provided terms do not have both Neuron and Class in SuperTypes.',
+          instruction: 'Ask the user to choose one neuron class from each side before running connectivity.',
+          selections_needed: selectionsNeeded
+        })
+      }
+    }
+
+    try {
+      const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
+      if (result?.content) {
+        const texts = result.content
+          .filter(item => item.type === 'text')
+          .map(item => item.text)
+        return texts.join('\n') || JSON.stringify(result.content)
+      }
+
+      return JSON.stringify(result)
+    } catch (error) {
+      const shouldUseCachedTermInfoFallback =
+        name === 'vfb_get_term_info' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        isRetryableMcpError(error)
+
+      if (shouldUseCachedTermInfoFallback) {
+        try {
+          return await fetchCachedVfbTermInfo(cleanArgs.id)
+        } catch (fallbackError) {
+          throw new Error(
+            `VFB MCP get_term_info failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      const shouldUseCachedRunQueryFallback =
+        name === 'vfb_run_query' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        typeof cleanArgs.query_type === 'string' &&
+        cleanArgs.query_type.trim().length > 0 &&
+        isRetryableMcpError(error)
+
+      if (shouldUseCachedRunQueryFallback) {
+        try {
+          return await fetchCachedVfbRunQuery(cleanArgs.id, cleanArgs.query_type)
+        } catch (fallbackError) {
+          throw new Error(
+            `VFB MCP run_query failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      const shouldEnrichRunQueryError =
+        name === 'vfb_run_query' &&
+        routing.server === 'vfb' &&
+        typeof cleanArgs.id === 'string' &&
+        cleanArgs.id.trim().length > 0 &&
+        typeof cleanArgs.query_type === 'string' &&
+        cleanArgs.query_type.trim().length > 0 &&
+        /\b(query[_\s-]?type|invalid query|not available for this id|not a valid query|available queries|http\s*400|status code 400|bad request)\b/i.test(error?.message || '')
+
+      if (shouldEnrichRunQueryError) {
+        let termInfoPayload = null
+
+        try {
+          const termInfoResult = await client.callTool({
+            name: 'get_term_info',
+            arguments: { id: cleanArgs.id }
+          })
+          const termInfoText = termInfoResult?.content
+            ?.filter(item => item.type === 'text')
+            ?.map(item => item.text)
+            ?.join('\n')
+
+          if (termInfoText) termInfoPayload = termInfoText
+        } catch (termInfoError) {
+          if (isRetryableMcpError(termInfoError)) {
+            try {
+              termInfoPayload = await fetchCachedVfbTermInfo(cleanArgs.id)
+            } catch {
+              // Keep the original run_query error when enrichment lookup fails.
+            }
+          }
+        }
+
+        const availableQueryTypes = extractQueryNamesFromTermInfoPayload(termInfoPayload)
+        if (availableQueryTypes.length > 0) {
+          throw new Error(
+            `${error?.message || 'run_query failed'}. Available query_type values for ${cleanArgs.id}: ${availableQueryTypes.join(', ')}.`
+          )
+        }
+      }
+
+      const shouldUseBiorxivApiFallback = routing.server === 'biorxiv' && BIORXIV_TOOL_NAME_SET.has(name)
+      if (shouldUseBiorxivApiFallback) {
+        try {
+          return await executeBiorxivApiFallback(name, cleanArgs)
+        } catch (fallbackError) {
+          throw new Error(
+            `bioRxiv MCP ${routing.mcpName} failed (${error?.message || 'unknown error'}); bioRxiv API fallback failed (${fallbackError?.message || 'unknown error'}).`
+          )
+        }
+      }
+
+      throw error
+    }
   }
 
   throw new Error(`Unknown function tool: ${name}`)
@@ -820,6 +2490,123 @@ function replaceTermsWithLinks(text) {
   return result
 }
 
+const VFB_QUERY_LINK_BASE = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
+
+const VFB_QUERY_SHORT_NAMES = [
+  { name: 'ListAllAvailableImages', description: 'List all available images of $NAME' },
+  { name: 'TransgeneExpressionHere', description: 'Reports of transgene expression in $NAME' },
+  { name: 'ExpressionOverlapsHere', description: 'Anatomy $NAME is expressed in' },
+  { name: 'NeuronClassesFasciculatingHere', description: 'Neurons fasciculating in $NAME' },
+  { name: 'ImagesNeurons', description: 'Images of neurons with some part in $NAME' },
+  { name: 'NeuronsPartHere', description: 'Neurons with some part in $NAME' },
+  { name: 'epFrag', description: 'Images of fragments of $NAME' },
+  { name: 'NeuronsSynaptic', description: 'Neurons with synaptic terminals in $NAME' },
+  { name: 'NeuronsPresynapticHere', description: 'Neurons with presynaptic terminals in $NAME' },
+  { name: 'NeuronsPostsynapticHere', description: 'Neurons with postsynaptic terminals in $NAME' },
+  { name: 'PaintedDomains', description: 'List all painted anatomy available for $NAME' },
+  { name: 'DatasetImages', description: 'List all images included in $NAME' },
+  { name: 'TractsNervesInnervatingHere', description: 'Tracts/nerves innervating $NAME' },
+  { name: 'ComponentsOf', description: 'Components of $NAME' },
+  { name: 'LineageClonesIn', description: 'Lineage clones found in $NAME' },
+  { name: 'AllAlignedImages', description: 'List all images aligned to $NAME' },
+  { name: 'PartsOf', description: 'Parts of $NAME' },
+  { name: 'SubclassesOf', description: 'Subclasses of $NAME' },
+  { name: 'AlignedDatasets', description: 'List all datasets aligned to $NAME' },
+  { name: 'AllDatasets', description: 'List all datasets' },
+  { name: 'ref_neuron_region_connectivity_query', description: 'Show connectivity per region for $NAME' },
+  { name: 'ref_neuron_neuron_connectivity_query', description: 'Show neurons connected to $NAME' },
+  { name: 'ref_downstream_class_connectivity_query', description: 'Show downstream connectivity by class for $NAME' },
+  { name: 'ref_upstream_class_connectivity_query', description: 'Show upstream connectivity by class for $NAME' },
+  { name: 'SimilarMorphologyTo', description: 'Neurons with similar morphology to $NAME [NBLAST mean score]' },
+  { name: 'SimilarMorphologyToPartOf', description: 'Expression patterns with some similar morphology to $NAME [NBLAST mean score]' },
+  { name: 'TermsForPub', description: 'List all terms that reference $NAME' },
+  { name: 'SimilarMorphologyToPartOfexp', description: 'Neurons with similar morphology to part of $NAME [NBLAST mean score]' },
+  { name: 'SimilarMorphologyToNB', description: 'Neurons that overlap with $NAME [NeuronBridge]' },
+  { name: 'SimilarMorphologyToNBexp', description: 'Expression patterns that overlap with $NAME [NeuronBridge]' },
+  { name: 'anatScRNAseqQuery', description: 'Single cell transcriptomics data for $NAME' },
+  { name: 'clusterExpression', description: 'Genes expressed in $NAME' },
+  { name: 'scRNAdatasetData', description: 'List all Clusters for $NAME' },
+  { name: 'expressionCluster', description: 'scRNAseq clusters expressing $NAME' },
+  { name: 'SimilarMorphologyToUserData', description: 'Neurons with similar morphology to your upload $NAME [NBLAST mean score]' },
+  { name: 'ImagesThatDevelopFrom', description: 'List images of neurons that develop from $NAME' }
+]
+
+function escapeRegexForPattern(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+const VFB_QUERY_SHORT_NAME_MAP = new Map(
+  VFB_QUERY_SHORT_NAMES.map(entry => [entry.name.toLowerCase(), entry.name])
+)
+
+const VFB_QUERY_SHORT_NAME_REGEX = new RegExp(
+  `\\b(?:${VFB_QUERY_SHORT_NAMES.map(entry => escapeRegexForPattern(entry.name)).join('|')})\\b`,
+  'gi'
+)
+
+const VFB_CANONICAL_ID_REGEX = /\b(?:FBbt_\d{8}|VFB_\d{8}|FBgn\d{7}|FBal\d{7}|FBti\d{7}|FBco\d{7}|FBst\d{7})\b/i
+const RUN_QUERY_PREPARATION_TOOL_NAMES = new Set([
+  'vfb_search_terms',
+  'vfb_get_term_info',
+  'vfb_resolve_entity',
+  'vfb_resolve_combination'
+])
+
+function extractRequestedVfbQueryShortNames(message = '') {
+  if (!message) return []
+
+  const matches = message.match(VFB_QUERY_SHORT_NAME_REGEX) || []
+  const canonicalMatches = matches
+    .map(match => VFB_QUERY_SHORT_NAME_MAP.get(match.toLowerCase()))
+    .filter(Boolean)
+
+  return Array.from(new Set(canonicalMatches))
+}
+
+function hasCanonicalVfbOrFlybaseId(message = '') {
+  return VFB_CANONICAL_ID_REGEX.test(message)
+}
+
+function isStandaloneQueryTypeDirective(message = '', requestedQueryTypes = []) {
+  if (!message || requestedQueryTypes.length === 0) return false
+
+  let residual = message.toLowerCase()
+  for (const queryType of requestedQueryTypes) {
+    residual = residual.replace(new RegExp(`\\b${escapeRegexForPattern(queryType)}\\b`, 'gi'), ' ')
+  }
+
+  residual = residual
+    .replace(/\b(vfb_run_query|run_query|run query|use|please|can|could|you|tool|tools|query|queries|for|with|the|a|an|and|or|this|that|now|show|me)\b/gi, ' ')
+    .replace(/[^a-z0-9_]+/gi, ' ')
+    .trim()
+
+  return residual.length === 0
+}
+
+function buildVfbQueryLinkSkill() {
+  const queryLines = VFB_QUERY_SHORT_NAMES
+    .map(({ name, description }) => `- ${name}: ${description}`)
+    .join('\n')
+
+  return `VFB QUERY LINK SKILL:
+- Build direct VFB query-result links so users can open the full results list.
+- Link format: ${VFB_QUERY_LINK_BASE}<TERM_ID>,<QUERY_SHORT_NAME>
+- Construct links from the exact pair: term_id + query_name.
+- URL-encode TERM_ID and QUERY_SHORT_NAME independently before concatenating.
+- Only use query names returned by vfb_get_term_info for that specific term.
+- In term-info JSON, read short names from Queries[].query and user-facing descriptions from Queries[].label.
+- Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
+- When you answer with query findings, include matching query-result links when useful.
+- Example templates:
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,ListAllAvailableImages
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,SubclassesOf
+  - ${VFB_QUERY_LINK_BASE}<TERM_ID>,ref_upstream_class_connectivity_query
+- Query short names and descriptions (from geppetto-vfb/model):
+${queryLines}`
+}
+
+const VFB_QUERY_LINK_SKILL = buildVfbQueryLinkSkill()
+
 const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant specialising in Drosophila melanogaster neuroanatomy, neuroscience, and related research.
 
 SCOPE:
@@ -835,6 +2622,7 @@ APPROVED OUTPUT LINKS ONLY:
 You may only output links or images from these approved domains:
 - virtualflybrain.org and subdomains
 - neurofly.org and subdomains
+- vfb-connect.readthedocs.io
 - flybase.org
 - doi.org
 - pubmed.ncbi.nlm.nih.gov
@@ -851,19 +2639,58 @@ TOOLS:
 - vfb_search_terms: search VFB terms with filters
 - vfb_get_term_info: fetch detailed VFB term information
 - vfb_run_query: run VFB analyses returned by vfb_get_term_info
-- search_reviewed_docs: search approved VFB, NeuroFly, and reviewed FlyBase pages using a server-side site index
+- vfb_resolve_entity / vfb_find_stocks: resolve FlyBase entity names and find relevant stocks
+- vfb_resolve_combination / vfb_find_combo_publications: resolve split-GAL4 combinations and fetch linked publications
+- vfb_list_connectome_datasets / vfb_query_connectivity: comparative class-level or neuron-level connectivity across datasets
+- create_basic_graph: package node/edge graph specs for UI graph rendering
+- search_reviewed_docs: search approved VFB, NeuroFly, VFB Connect docs, and reviewed FlyBase pages using a server-side site index
 - get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
 - search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
 - biorxiv_search_preprints / biorxiv_get_preprint / biorxiv_search_published_preprints / biorxiv_get_categories: preprint discovery
 
+${VFB_QUERY_LINK_SKILL}
+
 TOOL SELECTION:
+- Choose tools dynamically based on the user request and available evidence; the guidance below is preferred, not a rigid workflow.
+- IMPORTANT: Always prefer VFB data tools over literature search (PubMed/bioRxiv) for questions about anatomy, neurons, connectivity, gene expression, or any query that VFB tools can answer with data. Only use PubMed/bioRxiv when the user specifically asks about publications, or when VFB tool results reference a paper and the user wants more details.
 - Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
-- Questions about published papers or recent literature: use PubMed first, optionally bioRxiv/medRxiv for preprints
-- Questions about VFB, NeuroFly, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
+- For VFB entity questions where suitable query types are available, prefer vfb_get_term_info + vfb_run_query as a first pass because vfb_run_query is usually cached and faster.
+- Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
+- Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
+- Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
+- For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
+- IMPORTANT: When the user gives a multi-word neuron name like "adult ellipsoid body ring neuron", pass the ENTIRE phrase as the label. Do NOT break it into sub-terms (e.g. do NOT search for "ellipsoid body" separately). Always use the longest, most specific term the user provides.
+- For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
+- Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
+- Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
+- Questions about published papers or recent literature (only when explicitly asked): use PubMed first, optionally bioRxiv/medRxiv for preprints
+- Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
+- For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
+- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not search PubMed or reviewed-docs first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
+- If vfb_query_connectivity returns requires_user_selection: true, do not claim connectivity results. Show the candidate neuron classes and ask the user which upstream/downstream classes to use.
+- When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
+
+TOOL PARAMETER IDs:
+- When passing IDs to tool parameters, ALWAYS use plain short-form IDs (e.g. FBbt_00048241, VFB_00102107).
+- NEVER pass markdown links, full IRIs/URLs, labels, or symbols as ID parameters.
+- Markdown link formatting is for your response text only, not for tool arguments.
+
+ENTITY RESOLUTION RULES:
+- If vfb_resolve_entity or vfb_resolve_combination returns match_type SYNONYM or BROAD, confirm the resolved entity with the user before running downstream tools.
+- If resolver output includes multiple candidates, show a short disambiguation list and ask the user to choose before continuing.
+- If the user already provided a canonical FlyBase ID (for example FBgn..., FBal..., FBti..., FBco..., FBst...), you may call downstream tools directly.
+
+TOOL ERRORS AND TIMEOUTS:
+- VFB MCP queries (especially non-cached ones like vfb_query_connectivity and live vfb_run_query) can take considerable time. Do NOT treat slow responses as failures.
+- If a tool returns a timeout error, try an alternative approach (e.g. narrower query, different tool) rather than giving up. Always present whatever partial results you have gathered so far.
+- Never tell the user a query "failed" or "timed out" without first attempting at least one alternative path.
+- CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately AND call create_basic_graph with the top connections. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
+- If supplementary tool calls fail but the primary query succeeded, present the successful results and ignore the supplementary failures. Never lead your response with error messages when you have valid data to show.
 
 TOOL ECONOMY:
 - Prefer the fewest tool steps needed to produce a useful answer.
+- Start with cached vfb_run_query pathways when they can answer the question, then use other tools for deeper refinement only when needed.
 - Do not keep calling tools just to exhaustively enumerate large result sets.
 - If the question is broad or combinatorial, stop once you have enough evidence to give a partial answer.
 - For broad gene-expression or transgene-pattern requests, prefer a short representative list (about 3-5 items) and ask how the user wants to narrow further instead of trying to enumerate everything in one turn.
@@ -875,17 +2702,107 @@ CITATIONS:
 - Use markdown links with human-readable titles, not bare URLs or raw IDs when a title is available
 - For FlyBase references, prefer author/year or paper title as the link text
 
-FORMATTING VFB REFERENCES:
-- Use markdown links with descriptive names, not bare VFB or FBbt IDs
+FORMATTING VFB REFERENCES (response text only — NOT for tool parameters):
+- Use markdown links with descriptive names, not bare VFB or FBbt IDs in your response text
 - When thumbnail URLs are present in tool output, include them using markdown image syntax
 - Only use thumbnail URLs that actually appear in tool results
 
-FOLLOW-UP QUESTIONS:
-When useful, suggest 2-3 short follow-up questions relevant to Drosophila neuroscience and actionable with the available tools.`
+GRAPH VISUALS:
+- ALWAYS call create_basic_graph when vfb_query_connectivity returns connectivity data. Do not wait for the user to ask for a graph — include it automatically alongside the text summary.
+- For connectivity answers, create one concise graph (typically 4-20 nodes) highlighting the strongest relationships.
+- Keep graph specs focused and avoid very dense or exhaustive graphs — pick the top connections by weight.
+- Every node MUST have a meaningful "group" field for colour-coding. Choose the most informative biological grouping for the context:
+  * Neurotransmitter type (cholinergic, GABAergic, glutamatergic, etc.) when NT data is available
+  * Brain region/system (visual system, central complex, mushroom body, etc.) when comparing across regions
+  * Cell class (sensory neuron, interneuron, projection neuron, motor neuron, etc.) as a general fallback
+  * For directional connectivity graphs, keep groups coarse and reusable: usually source-side, target-side, and optional intermediate
+  * Do NOT create a separate group for every named neuron class or subtype if that would produce one-off colours
+  * The LLM should use its knowledge of Drosophila neurobiology to assign the most useful grouping
 
-function getStatusForTool(toolName) {
+TOOL RELAY:
+- You can request server-side tool execution using the tool relay protocol.
+- If tool results are available, use them directly and do not invent missing values.
+- If a question needs data and no results are available yet, request tools first, then answer after results arrive.
+
+FOLLOW-UP QUESTIONS:
+When useful, suggest 2-3 short potential follow-up questions that are directly answerable with the available tools in this chat.`
+
+/**
+ * Build a short, human-readable suffix from tool arguments so the status
+ * line tells the user *what* is being queried, not just *which tool*.
+ */
+function describeToolArgs(toolName, args = {}) {
+  if (!args || typeof args !== 'object') return ''
+
+  switch (toolName) {
+    case 'vfb_get_term_info': {
+      const id = Array.isArray(args.id) ? args.id[0] : args.id
+      return id ? ` for ${id}` : ''
+    }
+    case 'vfb_run_query': {
+      const id = Array.isArray(args.id) ? args.id[0] : args.id
+      const qt = args.query_type || ''
+      if (id && qt) return ` — ${qt} on ${id}`
+      if (id) return ` for ${id}`
+      return ''
+    }
+    case 'vfb_search_terms': {
+      const term = args.query || args.term || args.name || ''
+      return term ? ` for "${term}"` : ''
+    }
+    case 'vfb_query_connectivity': {
+      const up = args.upstream_type || ''
+      const down = args.downstream_type || ''
+      if (up && down) return ` — ${up} → ${down}`
+      if (up) return ` from ${up}`
+      if (down) return ` to ${down}`
+      return ''
+    }
+    case 'vfb_resolve_entity': {
+      const name = args.name || ''
+      return name ? ` for "${name}"` : ''
+    }
+    case 'vfb_resolve_combination': {
+      const name = args.name || args.combination || ''
+      return name ? ` for "${name}"` : ''
+    }
+    case 'vfb_find_stocks': {
+      const id = args.id || ''
+      return id ? ` for ${id}` : ''
+    }
+    case 'vfb_find_combo_publications': {
+      const id = args.id || args.combination_id || ''
+      return id ? ` for ${id}` : ''
+    }
+    default:
+      return ''
+  }
+}
+
+function getStatusForTool(toolName, args) {
+  if (toolName === 'create_basic_graph') {
+    return { message: 'Preparing graph view', phase: 'llm' }
+  }
+
+  const vfbLabels = {
+    vfb_get_term_info: 'Looking up term details',
+    vfb_run_query: 'Running VFB analysis',
+    vfb_search_terms: 'Searching VFB terms',
+    vfb_query_connectivity: 'Comparing connectome datasets',
+    vfb_resolve_entity: 'Resolving entity identity',
+    vfb_resolve_combination: 'Resolving split combination',
+    vfb_find_stocks: 'Finding available stocks',
+    vfb_find_combo_publications: 'Searching combination publications',
+    vfb_list_connectome_datasets: 'Listing connectome datasets'
+  }
+
+  if (vfbLabels[toolName]) {
+    const suffix = describeToolArgs(toolName, args)
+    return { message: `${vfbLabels[toolName]}${suffix}`, phase: 'mcp' }
+  }
+
   if (toolName.startsWith('vfb_')) {
-    return { message: 'Querying the fly hive mind', phase: 'mcp' }
+    return { message: 'Querying VFB', phase: 'mcp' }
   }
 
   if (toolName.startsWith('biorxiv_')) {
@@ -907,7 +2824,422 @@ function getStatusForTool(toolName) {
   return { message: 'Processing results', phase: 'llm' }
 }
 
+const CHAT_COMPLETIONS_ENDPOINT = '/chat/completions'
+const CHAT_COMPLETION_ALLOWED_ROLES = new Set(['system', 'user', 'assistant'])
+const TOOL_DEFINITIONS = getToolConfig()
+const TOOL_NAME_SET = new Set(TOOL_DEFINITIONS.map(tool => tool.name))
+
+function normalizeChatRole(role) {
+  if (role === 'reasoning') return 'assistant'
+  if (typeof role !== 'string') return 'assistant'
+  return CHAT_COMPLETION_ALLOWED_ROLES.has(role) ? role : 'assistant'
+}
+
+function normalizeChatMessage(message) {
+  if (!message || typeof message.content !== 'string') return null
+  return {
+    role: normalizeChatRole(message.role),
+    content: message.content
+  }
+}
+
+function buildToolRelaySystemPrompt() {
+  const toolSchemas = TOOL_DEFINITIONS.map(tool => ({
+    name: tool.name,
+    required: tool.parameters?.required || [],
+    parameters: Object.entries(tool.parameters?.properties || {}).reduce((acc, [key, value]) => {
+      acc[key] = {
+        type: value?.type || 'any',
+        enum: Array.isArray(value?.enum) ? value.enum : undefined
+      }
+      return acc
+    }, {})
+  }))
+
+  return `TOOL RELAY PROTOCOL:
+- When you need tools, respond with JSON only, with no markdown and no extra text.
+- Valid JSON format:
+{"tool_calls":[{"name":"tool_name","arguments":{}}]}
+- "name" must be one of the available tool names.
+- "arguments" must be a JSON object matching that tool schema.
+- You may request multiple tool calls in one response.
+- After server tool execution, you will receive a user message starting with "TOOL_RESULTS_JSON:".
+- If more data is needed, emit another JSON tool call payload.
+- When you are ready to answer the user, return a normal assistant response (not JSON).
+
+AVAILABLE TOOL SCHEMAS (JSON):
+${JSON.stringify(toolSchemas)}`
+}
+
+const TOOL_RELAY_SYSTEM_PROMPT = buildToolRelaySystemPrompt()
+
+function extractJsonCandidates(text = '') {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+
+  const candidates = [trimmed]
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  let match
+
+  while ((match = fenceRegex.exec(trimmed)) !== null) {
+    const candidate = match[1]?.trim()
+    if (candidate) candidates.push(candidate)
+  }
+
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1).trim())
+  }
+
+  return Array.from(new Set(candidates))
+}
+
+function normalizeToolArgValue(value) {
+  if (typeof value !== 'string') return value
+
+  const trimmed = value.trim()
+  if (!trimmed) return value
+
+  // If the value is a markdown link like [FBbt_00003624](https://...),
+  // extract just the VFB term ID from it
+  const canonicalId = extractCanonicalVfbTermId(trimmed)
+  if (canonicalId) return canonicalId
+
+  // Also strip markdown link wrapping even for non-VFB IDs
+  return stripMarkdownLinkText(trimmed)
+}
+
+function normalizeToolArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+
+  const normalized = {}
+  for (const [key, value] of Object.entries(args)) {
+    normalized[key] = normalizeToolArgValue(value)
+  }
+  return normalized
+}
+
+function normalizeRelayedToolCall(toolCall) {
+  if (!toolCall || typeof toolCall !== 'object') return null
+
+  const name = typeof toolCall.name === 'string' ? toolCall.name.trim() : ''
+  if (!name || !TOOL_NAME_SET.has(name)) return null
+
+  let args = toolCall.arguments
+  if (args === undefined || args === null) args = {}
+
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args)
+    } catch {
+      return { name, arguments: {} }
+    }
+  }
+
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    args = {}
+  }
+
+  return { name, arguments: normalizeToolArgs(args) }
+}
+
+function parseRelayedToolCalls(responseText = '') {
+  const structuredSegments = extractTopLevelJsonSegmentsFromText(responseText)
+  for (const segment of structuredSegments) {
+    const normalizedCalls = extractRelayedToolCallsFromParsedJson(segment.value)
+    if (normalizedCalls.length > 0) {
+      return normalizedCalls
+    }
+  }
+
+  const candidates = extractJsonCandidates(responseText)
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      const normalizedCalls = extractRelayedToolCallsFromParsedJson(parsed)
+      if (normalizedCalls.length > 0) {
+        return normalizedCalls
+      }
+    } catch {
+      // Keep checking other JSON candidates.
+    }
+  }
+
+  return []
+}
+
+function truncateToolOutput(output = '', maxChars = 12000) {
+  const text = typeof output === 'string' ? output : JSON.stringify(output)
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`
+}
+
+function buildRelayedToolResultsMessage(toolOutputs = []) {
+  const payload = toolOutputs.map(item => ({
+    name: item.name,
+    arguments: item.arguments,
+    output: truncateToolOutput(item.output)
+  }))
+
+  return `TOOL_RESULTS_JSON:
+${JSON.stringify(payload)}
+
+Use these results to continue. If more tools are needed, send another JSON tool call payload. Otherwise, provide the final answer to the user.`
+}
+
+function parseToolOutputPayload(rawOutput) {
+  if (rawOutput === null || rawOutput === undefined) return null
+  if (typeof rawOutput === 'object') return rawOutput
+  if (typeof rawOutput !== 'string') return null
+
+  try {
+    return JSON.parse(rawOutput)
+  } catch {
+    return null
+  }
+}
+
+function formatSelectionTermReference(selection = {}) {
+  const termId = extractCanonicalVfbTermId(selection.term_id || selection.normalized_input || selection.raw_input || '')
+  const termName = stripMarkdownLinkText(selection.term_name || selection.normalized_input || selection.raw_input || '').trim()
+
+  if (termId && termName && termName.toLowerCase() !== termId.toLowerCase()) {
+    return `${termName} ([${termId}](https://virtualflybrain.org/reports/${termId}))`
+  }
+
+  if (termId) {
+    return `[${termId}](https://virtualflybrain.org/reports/${termId})`
+  }
+
+  if (termName) {
+    return `\`${termName}\``
+  }
+
+  return 'the selected term'
+}
+
+function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
+  for (const item of toolOutputs) {
+    if (item?.name !== 'vfb_query_connectivity') continue
+
+    const parsed = parseToolOutputPayload(item.output)
+    if (!parsed || parsed.requires_user_selection !== true) continue
+
+    const selections = Array.isArray(parsed.selections_needed)
+      ? parsed.selections_needed.filter(entry => entry && entry.requires_selection === true)
+      : []
+
+    if (selections.length === 0) continue
+
+    const lines = []
+    lines.push('I need neuron class inputs before I can run `vfb_query_connectivity`.')
+
+    for (const selection of selections) {
+      const side = String(selection.side || '').toLowerCase()
+      const sideLabel = side === 'upstream'
+        ? 'upstream (presynaptic)'
+        : side === 'downstream'
+          ? 'downstream (postsynaptic)'
+          : 'selected'
+      const termReference = formatSelectionTermReference(selection)
+
+      lines.push('')
+      const missingSuperTypes = Array.isArray(selection.missing_required_supertypes)
+        ? selection.missing_required_supertypes.filter(Boolean)
+        : []
+      if (missingSuperTypes.length > 0) {
+        lines.push(`For the ${sideLabel} side, ${termReference} is not a neuron class (missing SuperTypes: ${missingSuperTypes.join(', ')}).`)
+      } else {
+        lines.push(`For the ${sideLabel} side, ${termReference} is not a neuron class (required SuperTypes: Neuron, Class).`)
+      }
+
+      const candidates = Array.isArray(selection.candidates) ? selection.candidates : []
+      if (candidates.length > 0) {
+        lines.push(`Choose one ${sideLabel} neuron class:`)
+        for (const candidate of candidates) {
+          const candidateId = extractCanonicalVfbTermId(candidate.id || '')
+          if (!candidateId) continue
+          const candidateLabel = stripMarkdownLinkText(candidate.label || '').trim()
+          const displayLabel = candidateLabel || candidateId
+          lines.push(`- ${displayLabel} ([${candidateId}](https://virtualflybrain.org/reports/${candidateId}))`)
+        }
+      }
+
+      const queryLink = typeof selection.selection_query_link === 'string'
+        ? selection.selection_query_link.trim()
+        : ''
+      if (queryLink) {
+        const queryName = typeof selection.selection_query === 'string' && selection.selection_query.trim()
+          ? selection.selection_query.trim()
+          : 'NeuronsPartHere'
+        lines.push(`You can inspect candidates via [${queryName}](${queryLink}).`)
+      }
+    }
+
+    lines.push('')
+    lines.push('Reply with one class ID for each required side, and I will run the connectivity query.')
+
+    return lines.join('\n')
+  }
+
+  return null
+}
+
+function hasExplicitVfbRunQueryRequest(message = '') {
+  return /\b(vfb_run_query|run_query|run query)\b/i.test(message)
+}
+
+function hasConnectivityIntent(message = '') {
+  return /\b(connectome|connectivity|connection|connections|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast)\b/i.test(message)
+}
+
+function hasDirectionalConnectivityRequest(message = '') {
+  if (!hasConnectivityIntent(message)) return false
+  return /\bfrom\b[\s\S]{1,160}\bto\b/i.test(message) || /\bbetween\b[\s\S]{1,160}\band\b/i.test(message)
+}
+
+function cleanDirectionalConnectivityEndpointText(value = '') {
+  let text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!text) return ''
+
+  text = text
+    .replace(/^[`"'([{<\s]+/, '')
+    .replace(/[`"'\])}>.,;:!?]+$/g, '')
+    .trim()
+
+  text = text.replace(/\b(?:please|thanks|thank you)\b[\s\S]*$/i, '').trim()
+  return text
+}
+
+function extractDirectionalConnectivityEndpoints(message = '') {
+  if (!message) return null
+
+  const text = String(message || '').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+
+  const patterns = [
+    /\bfrom\b\s+(.{1,160}?)\s+\bto\b\s+(.{1,200})/i,
+    /\bbetween\b\s+(.{1,160}?)\s+\band\b\s+(.{1,200})/i
+  ]
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (!match) continue
+
+    const upstream = cleanDirectionalConnectivityEndpointText(match[1])
+    const downstream = cleanDirectionalConnectivityEndpointText(match[2])
+    if (upstream && downstream) {
+      return { upstream, downstream }
+    }
+  }
+
+  return null
+}
+
+function buildToolPolicyCorrectionMessage({
+  userMessage = '',
+  explicitRunQueryRequested = false,
+  connectivityIntent = false,
+  requireConnectivityComparison = false,
+  missingRunQueryExecution = false,
+  requestedQueryTypes = [],
+  hasCanonicalIdInUserMessage = false
+}) {
+  const policyBullets = [
+    '- Choose the smallest set of tools that best answers the user request.',
+    '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
+    '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
+    '- When connectivity data is returned, ALWAYS call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding.',
+    '- For directional connectivity graphs, keep graph groups coarse and reusable (usually source-side, target-side, and optional intermediate), not one unique group per node.',
+    '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
+    '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
+  ]
+
+  if (explicitRunQueryRequested) {
+    policyBullets.push('- The user explicitly asked for vfb_run_query, so include a plan that leads to vfb_run_query.')
+  }
+
+  if (requestedQueryTypes.length > 0) {
+    const queryList = requestedQueryTypes.join(', ')
+    policyBullets.push(`- The user explicitly requested query type${requestedQueryTypes.length > 1 ? 's' : ''}: ${queryList}. Preserve these exact query_type values when calling vfb_run_query.`)
+    policyBullets.push('- Resolve target term(s), then use vfb_get_term_info + vfb_run_query. Do not substitute vfb_query_connectivity for this request unless the user asks for class-to-class dataset comparison.')
+    if (!hasCanonicalIdInUserMessage) {
+      policyBullets.push('- If the target term is ambiguous, ask one short clarifying question instead of starting broad exploratory tool loops.')
+    }
+  }
+
+  if (connectivityIntent) {
+    policyBullets.push('- This is a connectivity-style request; favor VFB connectivity/query tools over docs-only search.')
+  }
+
+  if (requireConnectivityComparison) {
+    policyBullets.push('- This request is directional connectivity between two entities; call vfb_query_connectivity with upstream_type = source term and downstream_type = target term.')
+    policyBullets.push('- Do not conclude \"no connection\" from only NeuronsPresynapticHere/NeuronsPostsynapticHere on a single term. Use vfb_query_connectivity output as the primary evidence.')
+    policyBullets.push('- Unless the user explicitly supplied canonical IDs, pass the exact source and target phrases from the user message to vfb_query_connectivity instead of inventing FBbt IDs.')
+  }
+
+  if (missingRunQueryExecution) {
+    policyBullets.push('- You have not executed vfb_run_query yet in this turn; correct that now if feasible.')
+  }
+
+  return `TOOL_POLICY_CORRECTION:
+The original user request was:
+"${userMessage}"
+
+${policyBullets.join('\n')}
+
+Return JSON only using the tool relay format:
+{"tool_calls":[{"name":"tool_name","arguments":{}}}
+
+Do not provide a final prose answer until tool calls are executed.`
+}
+
+function buildChatCompletionMessages(conversationInput = [], extraMessages = [], allowToolRelay = false) {
+  const normalizedConversation = conversationInput
+    .map(normalizeChatMessage)
+    .filter(Boolean)
+
+  const normalizedExtras = extraMessages
+    .map(normalizeChatMessage)
+    .filter(Boolean)
+
+  return [
+    { role: 'system', content: systemPrompt },
+    ...(allowToolRelay ? [{ role: 'system', content: TOOL_RELAY_SYSTEM_PROMPT }] : []),
+    ...normalizedConversation,
+    ...normalizedExtras
+  ]
+}
+
+function createChatCompletionsRequestBody({
+  apiModel,
+  conversationInput,
+  extraMessages = [],
+  allowToolRelay = false
+}) {
+  return {
+    model: apiModel,
+    messages: buildChatCompletionMessages(conversationInput, extraMessages, allowToolRelay),
+    stream: true
+  }
+}
+
 async function readResponseStream(apiResponse, sendEvent) {
+  if (!apiResponse?.body) {
+    return {
+      textAccumulator: '',
+      functionCalls: [],
+      responseId: null,
+      failed: true,
+      errorMessage: 'The AI service returned an empty stream response.'
+    }
+  }
+
   const reader = apiResponse.body.getReader()
   const decoder = new TextDecoder()
   const functionCalls = []
@@ -932,10 +3264,36 @@ async function readResponseStream(apiResponse, sendEvent) {
         if (!line.startsWith('data: ')) continue
 
         const dataStr = line.slice(6).trim()
+        if (!dataStr) continue
         if (dataStr === '[DONE]') continue
 
         try {
           const event = JSON.parse(dataStr)
+
+          if (event?.error?.message) {
+            failed = true
+            errorMessage = event.error.message
+            return { textAccumulator, functionCalls, responseId, failed, errorMessage }
+          }
+
+          // OpenAI-compatible /chat/completions streaming chunks:
+          // { id, choices: [{ delta: { content } }] }
+          if (Array.isArray(event?.choices)) {
+            responseId = event.id || responseId
+
+            const firstChoice = event.choices[0]
+            const deltaContent = firstChoice?.delta?.content
+            const messageContent = firstChoice?.message?.content
+
+            if (typeof deltaContent === 'string' && deltaContent.length > 0) {
+              textAccumulator += deltaContent
+            } else if (typeof messageContent === 'string' && messageContent.length > 0) {
+              textAccumulator += messageContent
+            }
+
+            continue
+          }
+
           const eventType = event.type
 
           switch (eventType) {
@@ -1013,6 +3371,7 @@ async function requestNoToolFallbackResponse({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   statusMessage,
   instruction
 }) {
@@ -1027,21 +3386,20 @@ async function requestNoToolFallbackResponse({
     fallbackInput.push({ role: 'assistant', content: partialAssistantText.trim() })
   }
 
-  fallbackInput.push({ role: 'user', content: instruction })
+  const fallbackExtraMessages = [{ role: 'user', content: instruction }]
 
-  const fallbackResponse = await fetch(`${apiBaseUrl}/responses`, {
+  const fallbackResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
     },
-    body: JSON.stringify({
-      model: apiModel,
-      instructions: systemPrompt,
-      input: fallbackInput,
-      tools: [],
-      stream: true
-    })
+    body: JSON.stringify(createChatCompletionsRequestBody({
+      apiModel,
+      conversationInput: fallbackInput,
+      extraMessages: fallbackExtraMessages,
+      allowToolRelay: false
+    }))
   })
 
   if (!fallbackResponse.ok) {
@@ -1058,7 +3416,8 @@ async function requestNoToolFallbackResponse({
     responseId,
     toolUsage,
     toolRounds,
-    outboundAllowList
+    outboundAllowList,
+    graphSpecs
   })
 }
 
@@ -1072,6 +3431,7 @@ async function requestToolLimitSummary({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   maxToolRounds,
   userMessage
 }) {
@@ -1087,6 +3447,7 @@ Using only the gathered tool outputs already provided in this conversation:
 - clearly say that the answer is partial because the request branched into too many tool steps
 - summarize the strongest findings you already have
 - end with 2-4 direct clarification questions the user can answer so you can continue in a narrower, lower-tool way
+- make those questions concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -1100,6 +3461,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Summarizing partial results',
     instruction: summaryInstruction
   })
@@ -1116,6 +3478,7 @@ async function requestClarifyingFollowUp({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   userMessage,
   reason
 }) {
@@ -1129,6 +3492,7 @@ Using only the existing conversation and any tool outputs already provided:
 - give a brief summary of what direction is available so far
 - do not invent missing facts
 - ask 2-4 short clarifying questions the user can answer so the next turn can be narrower and easier to resolve
+- keep clarifying questions concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -1143,6 +3507,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Clarifying next step',
     instruction: clarificationInstruction
   })
@@ -1159,6 +3524,7 @@ async function requestStreamFailureRecovery({
   outboundAllowList,
   toolUsage,
   toolRounds,
+  graphSpecs = [],
   userMessage,
   reason
 }) {
@@ -1175,6 +3541,7 @@ Using only the existing conversation, any tool outputs already provided, and any
 - if the evidence is still too incomplete, say that briefly and ask 2-4 short clarifying questions
 - prefer a short concrete answer over more questions if the available evidence already supports one
 - do not invent missing facts
+- if you ask questions, make them concrete and answerable with the tools available in this chat
 
 Do not call tools. Do not ask to browse the web.`
 
@@ -1189,6 +3556,7 @@ Do not call tools. Do not ask to browse the web.`
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs,
     statusMessage: 'Recovering partial answer',
     instruction: recoveryInstruction
   })
@@ -1206,10 +3574,18 @@ async function processResponseStream({
   const outboundAllowList = getOutboundAllowList()
   const toolUsage = {}
   const accumulatedItems = []
-  const maxToolRounds = 10
+  const maxToolRounds = 50
+  const maxToolPolicyCorrections = 3
+  const requestedQueryTypes = extractRequestedVfbQueryShortNames(userMessage)
+  const explicitRunQueryRequested = hasExplicitVfbRunQueryRequest(userMessage) || requestedQueryTypes.length > 0
+  const hasCanonicalIdInUserMessage = hasCanonicalVfbOrFlybaseId(userMessage)
+  const connectivityIntent = hasConnectivityIntent(userMessage)
+  const directionalConnectivityRequested = hasDirectionalConnectivityRequest(userMessage)
+  const collectedGraphSpecs = []
   let currentResponse = apiResponse
   let latestResponseId = null
   let toolRounds = 0
+  let toolPolicyCorrections = 0
 
   for (let round = 0; round < maxToolRounds; round++) {
     const { textAccumulator, functionCalls, responseId, failed, errorMessage } = await readResponseStream(currentResponse, sendEvent)
@@ -1227,6 +3603,7 @@ async function processResponseStream({
         outboundAllowList,
         toolUsage,
         toolRounds,
+        graphSpecs: collectedGraphSpecs,
         userMessage,
         reason: errorMessage || 'The AI service returned an unexpected stream error.'
       })
@@ -1245,74 +3622,183 @@ async function processResponseStream({
       }
     }
 
-    if (functionCalls.length > 0) {
+    const relayedToolCalls = parseRelayedToolCalls(textAccumulator)
+    const legacyFunctionCalls = functionCalls
+      .map(functionCall => {
+        let args = {}
+
+        if (typeof functionCall?.arguments === 'string') {
+          try {
+            args = JSON.parse(functionCall.arguments)
+          } catch {
+            args = {}
+          }
+        } else if (functionCall?.arguments && typeof functionCall.arguments === 'object' && !Array.isArray(functionCall.arguments)) {
+          args = functionCall.arguments
+        }
+
+        return normalizeRelayedToolCall({
+          name: functionCall?.name,
+          arguments: args
+        })
+      })
+      .filter(Boolean)
+
+    const requestedToolCalls = relayedToolCalls.length > 0
+      ? relayedToolCalls
+      : legacyFunctionCalls
+
+    if (requestedToolCalls.length > 0) {
+      const hasVfbToolCall = requestedToolCalls.some(toolCall => toolCall.name.startsWith('vfb_'))
+      const hasVfbRunQueryToolCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_run_query')
+      const hasRunQueryPreparationCall = requestedToolCalls.some(toolCall => RUN_QUERY_PREPARATION_TOOL_NAMES.has(toolCall.name))
+      const hasConnectivityComparisonCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_query_connectivity')
+      const connectivityAlreadyAttempted = (toolUsage.vfb_query_connectivity || 0) > 0
+      const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
+        (explicitRunQueryRequested && !hasVfbToolCall) ||
+        (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
+        (directionalConnectivityRequested && !hasConnectivityComparisonCall && !connectivityAlreadyAttempted) ||
+        (requestedQueryTypes.length > 0 && hasConnectivityComparisonCall && !hasVfbRunQueryToolCall)
+      )
+
+      if (shouldCorrectToolChoice) {
+        console.log(`[VFBchat] Tool policy correction triggered (round ${toolPolicyCorrections + 1}/${maxToolPolicyCorrections}). Requested tools:`, requestedToolCalls.map(t => t.name).join(', '))
+        sendEvent('status', { message: 'Refining tool choice for VFB query', phase: 'llm' })
+
+        if (textAccumulator.trim()) {
+          accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+        }
+
+        accumulatedItems.push({
+          role: 'user',
+          content: buildToolPolicyCorrectionMessage({
+            userMessage,
+            explicitRunQueryRequested,
+            connectivityIntent,
+            requireConnectivityComparison: directionalConnectivityRequested,
+            requestedQueryTypes,
+            hasCanonicalIdInUserMessage
+          })
+        })
+
+        const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+          },
+          body: JSON.stringify(createChatCompletionsRequestBody({
+            apiModel,
+            conversationInput: [...conversationInput, ...accumulatedItems],
+            allowToolRelay: true
+          }))
+        })
+
+        if (!correctionResponse.ok) {
+          const correctionErrorText = await correctionResponse.text()
+          return {
+            ok: false,
+            responseId: latestResponseId,
+            toolUsage,
+            toolRounds,
+            errorMessage: `Failed to apply tool policy correction. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+            errorCategory: 'tool_policy_correction_failed',
+            errorStatus: correctionResponse.status
+          }
+        }
+
+        toolPolicyCorrections += 1
+        currentResponse = correctionResponse
+        continue
+      }
+
       toolRounds += 1
 
-      const toolOutputs = await Promise.all(functionCalls.map(async (functionCall) => {
+      const announcedStatuses = new Set()
+      for (const toolCall of requestedToolCalls) {
+        const status = getStatusForTool(toolCall.name, toolCall.arguments)
+        if (!announcedStatuses.has(status.message)) {
+          sendEvent('status', status)
+          announcedStatuses.add(status.message)
+        }
+      }
+
+      const toolOutputs = await Promise.all(requestedToolCalls.map(async (toolCall) => {
+        toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
+        console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
+
         try {
-          const args = typeof functionCall.arguments === 'string'
-            ? JSON.parse(functionCall.arguments)
-            : functionCall.arguments
-
-          toolUsage[functionCall.name] = (toolUsage[functionCall.name] || 0) + 1
-
+          const output = await executeFunctionTool(toolCall.name, toolCall.arguments, { userMessage })
+          console.log(`[VFBchat] Tool result: ${toolCall.name}`, typeof output === 'string' ? output.slice(0, 500) : JSON.stringify(output).slice(0, 500))
           return {
-            call_id: functionCall.call_id,
-            name: functionCall.name,
-            arguments: functionCall.arguments,
-            output: await executeFunctionTool(functionCall.name, args)
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            output
           }
         } catch (error) {
-          toolUsage[functionCall.name] = (toolUsage[functionCall.name] || 0) + 1
-
+          console.error(`[VFBchat] Tool error: ${toolCall.name}`, error.message)
+          const errorStatus = getStatusForTool(toolCall.name, toolCall.arguments)
+          sendEvent('status', { message: errorStatus.message, phase: errorStatus.phase, error: true })
           return {
-            call_id: functionCall.call_id,
-            name: functionCall.name,
-            arguments: functionCall.arguments,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
             output: JSON.stringify({ error: error.message })
           }
         }
       }))
 
-      for (const toolOutput of toolOutputs) {
-        accumulatedItems.push({
-          type: 'function_call',
-          call_id: toolOutput.call_id,
-          name: toolOutput.name,
-          arguments: typeof toolOutput.arguments === 'string'
-            ? toolOutput.arguments
-            : JSON.stringify(toolOutput.arguments)
-        })
-        accumulatedItems.push({
-          type: 'function_call_output',
-          call_id: toolOutput.call_id,
-          output: toolOutput.output
+      const graphToolOutputs = toolOutputs.filter(t => t.name === 'create_basic_graph')
+      if (graphToolOutputs.length > 0) {
+        console.log(`[VFBchat] Graph tool outputs: ${graphToolOutputs.length}, output type: ${typeof graphToolOutputs[0]?.output}, has nodes: ${!!graphToolOutputs[0]?.output?.nodes}`)
+      }
+      const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
+      if (graphSpecsFromTools.length > 0) {
+        collectedGraphSpecs.push(...graphSpecsFromTools)
+        console.log(`[VFBchat] Collected ${graphSpecsFromTools.length} graph spec(s), total: ${collectedGraphSpecs.length}`)
+      }
+
+      const connectivitySelectionResponse = buildConnectivitySelectionResponseFromToolOutputs(toolOutputs)
+      if (connectivitySelectionResponse) {
+        return buildSuccessfulTextResult({
+          responseText: connectivitySelectionResponse,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          outboundAllowList,
+          graphSpecs: collectedGraphSpecs
         })
       }
 
-      const submitResponse = await fetch(`${apiBaseUrl}/responses`, {
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildRelayedToolResultsMessage(toolOutputs)
+      })
+
+      const submitResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify({
-          model: apiModel,
-          instructions: systemPrompt,
-          input: [...conversationInput, ...accumulatedItems],
-          tools: getToolConfig(),
-          stream: true
-        })
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
       })
 
       if (!submitResponse.ok) {
-        const errorText = await submitResponse.text()
+        const submitErrorText = await submitResponse.text()
         return {
           ok: false,
           responseId: latestResponseId,
           toolUsage,
           toolRounds,
-          errorMessage: `Failed to process tool results. ${sanitizeApiError(submitResponse.status, errorText)}`,
+          errorMessage: `Failed to process tool results. ${sanitizeApiError(submitResponse.status, submitErrorText)}`,
           errorCategory: 'tool_submission_failed',
           errorStatus: submitResponse.status
         }
@@ -1322,7 +3808,108 @@ async function processResponseStream({
       continue
     }
 
-    if (!textAccumulator) {
+    if (explicitRunQueryRequested && (toolUsage.vfb_run_query || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring requested vfb_run_query workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireConnectivityComparison: directionalConnectivityRequested,
+          missingRunQueryExecution: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor requested vfb_run_query flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'vfb_run_query_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (directionalConnectivityRequested && (toolUsage.vfb_query_connectivity || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring directional connectivity workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireConnectivityComparison: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor directional connectivity flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'directional_connectivity_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (!textAccumulator.trim()) {
       const clarification = await requestClarifyingFollowUp({
         sendEvent,
         conversationInput,
@@ -1334,6 +3921,7 @@ async function processResponseStream({
         outboundAllowList,
         toolUsage,
         toolRounds,
+        graphSpecs: collectedGraphSpecs,
         userMessage,
         reason: 'empty_response'
       })
@@ -1352,12 +3940,84 @@ async function processResponseStream({
       }
     }
 
+    const trimmedResponseText = textAccumulator.trim()
+    const looksLikeToolPayload = trimmedResponseText.startsWith('{') || trimmedResponseText.startsWith('```')
+
+    // Detect when the model describes tool usage in prose instead of actually calling them.
+    // Common patterns: "I will use vfb_get_term_info", "let me call vfb_run_query", etc.
+    const describesToolUsageWithoutCalling = toolRounds === 0
+      && relayedToolCalls.length === 0
+      && /\b(I (?:will|can|'ll|need to) (?:use|call|run|query|start)|let me (?:use|call|run|start|find)|Please wait for the results)\b/i.test(trimmedResponseText)
+      && /\bvfb_\w+\b/.test(trimmedResponseText)
+
+    if (describesToolUsageWithoutCalling) {
+      // The model described what tools it would use but didn't actually produce
+      // tool call JSON. Re-prompt with the tool relay format instruction.
+      sendEvent('status', { message: 'Retrying tool execution', phase: 'llm' })
+
+      accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      accumulatedItems.push({
+        role: 'user',
+        content: `You described which tools to use but did not actually call them. Do not describe your plan — execute it now by returning valid JSON in this exact format:\n{"tool_calls":[{"name":"tool_name","arguments":{}}]}\n\nCall the tools you just described.`
+      })
+
+      const retryResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (retryResponse.ok) {
+        currentResponse = retryResponse
+        continue
+      }
+    }
+
+    if (looksLikeToolPayload && /"tool_calls"\s*:/.test(trimmedResponseText) && relayedToolCalls.length === 0) {
+      const clarification = await requestClarifyingFollowUp({
+        sendEvent,
+        conversationInput,
+        accumulatedItems,
+        partialAssistantText: textAccumulator,
+        apiBaseUrl,
+        apiKey,
+        apiModel,
+        outboundAllowList,
+        toolUsage,
+        toolRounds,
+        graphSpecs: collectedGraphSpecs,
+        userMessage,
+        reason: 'invalid_tool_call_payload'
+      })
+
+      if (clarification) {
+        return clarification
+      }
+
+      return {
+        ok: false,
+        responseId: latestResponseId,
+        toolUsage,
+        toolRounds,
+        errorMessage: 'The AI returned an invalid tool-call payload. Please try again.',
+        errorCategory: 'invalid_tool_call_payload'
+      }
+    }
+
     return buildSuccessfulTextResult({
       responseText: textAccumulator,
       responseId: latestResponseId,
       toolUsage,
       toolRounds,
-      outboundAllowList
+      outboundAllowList,
+      graphSpecs: collectedGraphSpecs
     })
   }
 
@@ -1371,6 +4031,7 @@ async function processResponseStream({
     outboundAllowList,
     toolUsage,
     toolRounds,
+    graphSpecs: collectedGraphSpecs,
     maxToolRounds,
     userMessage
   })
@@ -1450,7 +4111,7 @@ export async function POST(request) {
   const body = await request.json()
   const messages = Array.isArray(body.messages) ? body.messages : []
   const scene = body.scene || {}
-  const message = typeof messages[messages.length - 1]?.content === 'string'
+  let message = typeof messages[messages.length - 1]?.content === 'string'
     ? messages[messages.length - 1].content
     : ''
 
@@ -1505,7 +4166,7 @@ export async function POST(request) {
     })
 
     const responseId = `local-${requestId}`
-    const refusalMessage = `I can only search reviewed Virtual Fly Brain and FlyBase pages. The requested domain${blockedRequestedDomains.length === 1 ? '' : 's'} ${blockedRequestedDomains.join(', ')} ${blockedRequestedDomains.length === 1 ? 'is' : 'are'} not approved for search in this service.`
+    const refusalMessage = `I can only search reviewed Virtual Fly Brain, NeuroFly, VFB Connect docs, and FlyBase pages. The requested domain${blockedRequestedDomains.length === 1 ? '' : 's'} ${blockedRequestedDomains.join(', ')} ${blockedRequestedDomains.length === 1 ? 'is' : 'are'} not approved for search in this service.`
 
     await finalizeGovernanceEvent({
       requestId,
@@ -1523,17 +4184,54 @@ export async function POST(request) {
     return createImmediateErrorResponse(refusalMessage, requestId, responseId)
   }
 
+  const requestedQueryTypes = extractRequestedVfbQueryShortNames(message)
+  if (requestedQueryTypes.length > 0 && isStandaloneQueryTypeDirective(message, requestedQueryTypes)) {
+    const recentUserContext = messages
+      .slice(0, -1)
+      .reverse()
+      .find(item => item?.role === 'user' && typeof item?.content === 'string' && item.content.trim().length > 0)
+      ?.content
+      ?.trim()
+
+    if (recentUserContext) {
+      message = `${message}\n\nUse this most recent user context as the target term scope: "${recentUserContext}".`
+    } else {
+      const responseId = `local-${requestId}`
+      const clarificationMessage = `I can run ${requestedQueryTypes.join(', ')}, but I need a target term label or ID first (for example "medulla" or "FBbt_00003748").`
+
+      await finalizeGovernanceEvent({
+        requestId,
+        responseId,
+        clientIp,
+        startTime,
+        rateCheck,
+        message,
+        responseText: clarificationMessage,
+        blockedRequestedDomains,
+        refusal: false,
+        reasonCode: 'query_target_required'
+      })
+
+      return createImmediateResultResponse(clarificationMessage, requestId, responseId)
+    }
+  }
+
   loadLookupCache()
 
   return buildSseResponse(async (sendEvent) => {
     const resolvedUserMessage = replaceTermsWithLinks(message)
+    const priorMessages = messages
+      .slice(0, -1)
+      .map(normalizeChatMessage)
+      .filter(Boolean)
+
     const conversationInput = [
-      ...messages.slice(0, -1).map(item => ({ role: item.role, content: item.content })),
+      ...priorMessages,
       { role: 'user', content: resolvedUserMessage }
     ]
 
     const apiBaseUrl = getConfiguredApiBaseUrl()
-    const apiKey = process.env.OPENAI_API_KEY?.trim() || ''
+    const apiKey = getConfiguredApiKey()
     const apiModel = getConfiguredModel()
 
     sendEvent('status', { message: 'Thinking...', phase: 'llm' })
@@ -1544,19 +4242,17 @@ export async function POST(request) {
       const abortController = new AbortController()
       const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
 
-      apiResponse = await fetch(`${apiBaseUrl}/responses`, {
+      apiResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify({
-          model: apiModel,
-          instructions: systemPrompt,
-          input: conversationInput,
-          tools: getToolConfig(),
-          stream: true
-        }),
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput,
+          allowToolRelay: true
+        })),
         signal: abortController.signal
       })
 
@@ -1576,19 +4272,17 @@ export async function POST(request) {
             const retryTimeoutId = setTimeout(() => retryAbort.abort(), timeoutMs)
 
             try {
-              const retryResponse = await fetch(`${apiBaseUrl}/responses`, {
+              const retryResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
                 },
-                body: JSON.stringify({
-                  model: apiModel,
-                  instructions: systemPrompt,
-                  input: conversationInput,
-                  tools: getToolConfig(),
-                  stream: true
-                }),
+                body: JSON.stringify(createChatCompletionsRequestBody({
+                  apiModel,
+                  conversationInput,
+                  allowToolRelay: true
+                })),
                 signal: retryAbort.signal
               })
 
@@ -1683,6 +4377,7 @@ export async function POST(request) {
       sendEvent('result', {
         response: result.responseText,
         images: result.images,
+        graphs: result.graphs,
         newScene: scene,
         requestId,
         responseId
