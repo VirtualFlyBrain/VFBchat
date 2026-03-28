@@ -18,7 +18,7 @@ const FEEDBACK_REASON_LABELS = {
   out_of_scope_refusal: 'Out of scope/refusal'
 }
 
-const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
+const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399', '#e879f9', '#fb923c', '#67e8f9', '#fde047']
 const GRAPH_ROLE_STYLES = {
   source: { label: 'Source side', color: '#4a9eff', glowColor: 'rgba(74, 158, 255, 0.4)' },
   target: { label: 'Target side', color: '#4ade80', glowColor: 'rgba(74, 222, 128, 0.4)' },
@@ -106,9 +106,9 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     const providedGroups = Object.keys(groupCounts)
     const largestProvidedGroup = Object.values(groupCounts).reduce((max, count) => Math.max(max, count), 0)
     const hasDirectionalStructure = roleCounts.source > 0 && roleCounts.target > 0
-    // Prefer provided groups when available and meaningful (2-6 groups).
+    // Prefer provided groups when available and meaningful (2-12 groups).
     // Only fall back to structural source/target coloring when no groups were provided.
-    const hasUsableProvidedGroups = providedGroups.length >= 2 && providedGroups.length <= 6
+    const hasUsableProvidedGroups = providedGroups.length >= 2 && providedGroups.length <= 12
     const useStructuralColoring = !hasUsableProvidedGroups && isDirected && nodes.length >= 3 && hasDirectionalStructure
 
     if (useStructuralColoring) {
@@ -198,11 +198,16 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     return () => ro.disconnect()
   }, [])
 
-  // Zoom to fit after initial layout settles
+  // Zoom to fit after layout settles (ref may or may not work with dynamic())
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (fgRef.current) fgRef.current.zoomToFit(300, 40)
-    }, 800)
+      if (fgRef.current) {
+        fgRef.current.d3Force?.('link')?.distance(120)
+        fgRef.current.d3Force?.('charge')?.strength(-300).distanceMax(500)
+        fgRef.current.d3ReheatSimulation?.()
+        setTimeout(() => fgRef.current?.zoomToFit(300, 40), 1500)
+      }
+    }, 500)
     return () => clearTimeout(timer)
   }, [graphData])
 
@@ -296,8 +301,8 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         width={dimensions.width - 20}
         height={dimensions.height}
         backgroundColor="#0f0f12"
-        nodeRelSize={6}
-        nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
+        nodeRelSize={8}
+        nodeVal={n => Math.max(1.5, (n.size || 1) * 2)}
         nodeColor={n => n.color}
         nodeLabel={n => {
           // Full label shown on hover
@@ -309,7 +314,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           return details.length > 0 ? `${n.label} (${details.join('; ')})` : n.label
         }}
         nodeCanvasObject={(node, ctx, globalScale) => {
-          const r = Math.max(3, 4 + (node.size || 1) * 2.5)
+          const r = Math.max(4, 5 + (node.size || 1) * 3)
 
           // Draw glow effect
           const glowColor = node.color ? `${node.color}33` : null
@@ -370,6 +375,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           const rev = [link.target?.id || link.target, link.source?.id || link.source].sort().join('-')
           return key === rev ? 0 : 0.12
         }}
+        minZoom={0.3}
         d3VelocityDecay={0.35}
         d3AlphaDecay={0.02}
         d3AlphaMin={0.001}
@@ -378,7 +384,6 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         enableZoomInteraction={true}
         enablePanInteraction={true}
         onEngineStop={() => {
-          // Ensure final zoom-to-fit after physics settles
           if (fgRef.current) {
             setTimeout(() => fgRef.current.zoomToFit(300, 40), 100)
           }

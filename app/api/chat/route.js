@@ -200,7 +200,7 @@ function normalizeGraphSpec(rawSpec = {}) {
   const nodeIdSet = new Set()
   for (const rawNode of rawNodes.slice(0, 80)) {
     if (!rawNode || typeof rawNode !== 'object') continue
-    const id = String(rawNode.id || '').trim()
+    const id = String(rawNode.id || rawNode.label || '').trim()
     if (!id || nodeIdSet.has(id)) continue
     nodeIdSet.add(id)
 
@@ -225,8 +225,8 @@ function normalizeGraphSpec(rawSpec = {}) {
   const edges = []
   for (const rawEdge of rawEdges.slice(0, 200)) {
     if (!rawEdge || typeof rawEdge !== 'object') continue
-    const source = String(rawEdge.source || '').trim()
-    const target = String(rawEdge.target || '').trim()
+    const source = String(rawEdge.source || rawEdge.from || '').trim()
+    const target = String(rawEdge.target || rawEdge.to || '').trim()
     if (!source || !target) continue
 
     if (!knownNodeIds.has(source)) {
@@ -2115,6 +2115,136 @@ async function assessConnectivityEndpointForNeuronClass({ client, side, rawValue
   }
 }
 
+/**
+ * Auto-generate a graph spec from vfb_query_connectivity results.
+ * This ensures a consistent, complete graph regardless of LLM behavior.
+ */
+function autoGraphFromConnectivity(toolOutputs = []) {
+  // Build a map of FBbt ID → term info from any vfb_get_term_info results
+  const termInfoMap = new Map()
+  for (const item of toolOutputs) {
+    if (item.name !== 'vfb_get_term_info') continue
+    const output = typeof item.output === 'string' ? (() => { try { return JSON.parse(item.output) } catch { return null } })() : item.output
+    if (!output || typeof output !== 'object') continue
+    // Handle format: { "FBbt_XXX": { Name, SuperTypes, ... } }
+    for (const [id, info] of Object.entries(output)) {
+      if (info && typeof info === 'object' && info.Name) {
+        termInfoMap.set(id, info)
+      }
+    }
+    // Handle format: { Name, Id: "FBbt_XXX", SuperTypes, ... } (single term info)
+    if (output.Id && output.Name && !termInfoMap.has(output.Id)) {
+      termInfoMap.set(output.Id, output)
+    }
+  }
+
+  for (const item of toolOutputs) {
+    if (item.name !== 'vfb_query_connectivity') continue
+    const output = typeof item.output === 'string' ? (() => { try { return JSON.parse(item.output) } catch { return null } })() : item.output
+    if (!output || !Array.isArray(output.connections) || output.connections.length === 0) continue
+
+    const nodeMap = new Map()
+    const edges = []
+
+    // Extract a short symbol from a class name like "adult medulla neuron MeVPMe6" → "MeVPMe6"
+    function extractSymbol(className) {
+      if (!className) return className
+      const m1 = className.match(/\b([A-Z][A-Za-z0-9_]*\d*[a-z]?)$/)
+      if (m1) return m1[1]
+      const m2 = className.match(/\b(\d{2,})$/)
+      if (m2) return m2[1]
+      const m3 = className.match(/\b([A-Z][A-Za-z]{0,4}\d+[A-Za-z]?\d*)\b/)
+      if (m3) return m3[1]
+      const m4 = className.match(/neuron\s+(\S+)$/i)
+      if (m4) return m4[1]
+      return className
+    }
+
+    // Derive group from SuperTypes tags (prefer neurotransmitter/system tags)
+    const NT_TAGS = new Set(['Cholinergic', 'GABAergic', 'Glutamatergic', 'Serotonergic', 'Dopaminergic', 'Octopaminergic', 'Tyraminergic', 'Histaminergic'])
+    const SYSTEM_TAGS = new Set(['Visual_system', 'Olfactory_system', 'Gustatory_system', 'Auditory_system', 'Mechanosensory_system'])
+
+    function groupFromTags(superTypes) {
+      if (!Array.isArray(superTypes)) return null
+      // Prefer neurotransmitter type
+      for (const tag of superTypes) {
+        if (NT_TAGS.has(tag)) return tag.toLowerCase()
+      }
+      // Then system
+      for (const tag of superTypes) {
+        if (SYSTEM_TAGS.has(tag)) return tag.replace(/_/g, ' ').toLowerCase()
+      }
+      return null
+    }
+
+    // Fallback: coarsen class name to brain region
+    function coarsenGroup(className) {
+      if (!className) return 'other'
+      const lc = className.toLowerCase()
+      if (lc.includes('ellipsoid body') || lc.includes('ring neuron') || /\beb\b/.test(lc)) return 'ellipsoid body'
+      if (lc.includes('medulla') || lc.includes('lobula') || lc.includes('optic') || lc.includes('visual')) return 'visual system'
+      if (lc.includes('protocerebrum') || lc.includes('protocerebral')) return 'protocerebrum'
+      if (lc.includes('bridge') || lc.includes('fan-shaped') || lc.includes('central complex')) return 'central complex'
+      if (lc.includes('mushroom body') || lc.includes('kenyon')) return 'mushroom body'
+      if (lc.includes('slope') || lc.includes('tangential')) return 'posterior slope'
+      return 'other'
+    }
+
+    const usedIds = new Set()
+    function uniqueId(baseId) {
+      if (!usedIds.has(baseId)) { usedIds.add(baseId); return baseId }
+      let i = 2
+      while (usedIds.has(`${baseId}_${i}`)) i++
+      const uid = `${baseId}_${i}`
+      usedIds.add(uid)
+      return uid
+    }
+
+    for (const conn of output.connections) {
+      const upFbbt = conn.upstream_class_id || conn.upstream_neuron_id || ''
+      const downFbbt = conn.downstream_class_id || conn.downstream_neuron_id || ''
+      const upLabel = conn.upstream_class || conn.upstream_neuron || upFbbt
+      const downLabel = conn.downstream_class || conn.downstream_neuron || downFbbt
+      if (!upFbbt || !downFbbt) continue
+
+      if (!nodeMap.has(upFbbt)) {
+        const info = termInfoMap.get(upFbbt)
+        const sym = info?.Name || extractSymbol(upLabel)
+        const id = uniqueId(sym)
+        const group = groupFromTags(info?.SuperTypes) || coarsenGroup(upLabel)
+        nodeMap.set(upFbbt, { id, label: sym, group })
+      }
+      if (!nodeMap.has(downFbbt)) {
+        const info = termInfoMap.get(downFbbt)
+        const sym = info?.Name || extractSymbol(downLabel)
+        const id = uniqueId(sym)
+        const group = groupFromTags(info?.SuperTypes) || coarsenGroup(downLabel)
+        nodeMap.set(downFbbt, { id, label: sym, group })
+      }
+
+      edges.push({
+        source: nodeMap.get(upFbbt).id,
+        target: nodeMap.get(downFbbt).id,
+        weight: conn.total_weight || conn.weight || null
+      })
+    }
+
+    if (edges.length === 0) continue
+
+    const spec = normalizeGraphSpec({
+      title: 'Connectivity results',
+      directed: true,
+      nodes: Array.from(nodeMap.values()),
+      edges
+    })
+    if (spec) {
+      console.log(`[VFBchat] Auto-generated graph from connectivity: ${spec.nodes.length} nodes, ${spec.edges.length} edges`)
+      return spec
+    }
+  }
+  return null
+}
+
 function createBasicGraph(args = {}) {
   const normalized = normalizeGraphSpec(args)
   if (!normalized) {
@@ -2662,145 +2792,72 @@ ${queryLines}`
 
 const VFB_QUERY_LINK_SKILL = buildVfbQueryLinkSkill()
 
-const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant specialising in Drosophila melanogaster neuroanatomy, neuroscience, and related research.
+const systemPrompt = `You are a Virtual Fly Brain (VFB) assistant for Drosophila melanogaster neuroanatomy and neuroscience.
 
-SCOPE:
-You may only discuss:
-- Drosophila neuroanatomy, neural circuits, brain regions, and cell types
-- Gene expression, transgenes, and genetic tools used in Drosophila neuroscience
-- Connectomics, morphological analysis (including NBLAST), and neural connectivity data
-- VFB tools, data, approved documentation pages, and related peer-reviewed or preprint literature
+SCOPE: Only discuss Drosophila neuroanatomy, neural circuits, cell types, gene expression, transgenes, connectomics, NBLAST, VFB tools/data, and related peer-reviewed literature. Decline off-topic requests.
 
-Decline unrelated questions, including general web browsing, non-Drosophila topics, coding help, or other off-topic requests.
+APPROVED LINK DOMAINS: virtualflybrain.org, neurofly.org, vfb-connect.readthedocs.io, flybase.org, doi.org, pubmed.ncbi.nlm.nih.gov, biorxiv.org, medrxiv.org. Do not link to other domains.
 
-APPROVED OUTPUT LINKS ONLY:
-You may only output links or images from these approved domains:
-- virtualflybrain.org and subdomains
-- neurofly.org and subdomains
-- vfb-connect.readthedocs.io
-- flybase.org
-- doi.org
-- pubmed.ncbi.nlm.nih.gov
-- biorxiv.org
-- medrxiv.org
-If a source is not on this list, do not cite or link to it.
-
-ACCURACY:
-- Use VFB and publication tools rather than answering from memory when data is available.
-- If tools return no results, say so instead of guessing.
-- Distinguish clearly between VFB-derived facts and broader scientific context.
+ACCURACY: Use tools over memory. If tools return nothing, say so. Distinguish VFB-derived facts from general context.
 
 TOOLS:
-- vfb_search_terms: search VFB terms with filters
-- vfb_get_term_info: fetch detailed VFB term information
-- vfb_run_query: run VFB analyses returned by vfb_get_term_info
-- vfb_resolve_entity / vfb_find_stocks: resolve FlyBase entity names and find relevant stocks
-- vfb_resolve_combination / vfb_find_combo_publications: resolve split-GAL4 combinations and fetch linked publications
-- vfb_list_connectome_datasets / vfb_query_connectivity: comparative class-level or neuron-level connectivity across datasets
-- create_basic_graph: package node/edge graph specs for UI graph rendering
-- search_reviewed_docs: search approved VFB, NeuroFly, VFB Connect docs, and reviewed FlyBase pages using a server-side site index
-- get_reviewed_page: fetch and extract content from an approved page returned by search_reviewed_docs
-- search_pubmed / get_pubmed_article: search and fetch peer-reviewed publications
-- biorxiv_search_preprints / biorxiv_get_preprint / biorxiv_search_published_preprints / biorxiv_get_categories: preprint discovery
+- vfb_search_terms, vfb_get_term_info, vfb_run_query: search/lookup/analyse VFB terms
+- vfb_resolve_entity, vfb_find_stocks: resolve FlyBase entities and stocks
+- vfb_resolve_combination, vfb_find_combo_publications: split-GAL4 combinations
+- vfb_list_connectome_datasets, vfb_query_connectivity: connectivity across datasets
+- create_basic_graph: render node/edge graph in UI
+- search_reviewed_docs, get_reviewed_page: approved documentation
+- search_pubmed, get_pubmed_article: peer-reviewed literature
+- biorxiv_search_preprints, biorxiv_get_preprint, biorxiv_search_published_preprints, biorxiv_get_categories: preprints
 
 ${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
-- Choose tools dynamically based on the user request and available evidence; the guidance below is preferred, not a rigid workflow.
-- CRITICAL: NEVER use PubMed or bioRxiv/medRxiv for questions about anatomy, neurons, connectivity, gene expression, or any query that VFB tools can answer with data. Publication search is ONLY for: (1) the user explicitly asks about papers/literature, or (2) VFB tool results reference a specific paper and the user wants more details. If a VFB tool times out, retry with parameters that reduce result size (raise weight threshold, set group_by_class=true) — do NOT fall back to literature search as a substitute for data queries.
-- Questions about VFB terms, anatomy, neurons, genes, or datasets: use VFB tools
-- For VFB entity questions where suitable query types are available, prefer vfb_get_term_info + vfb_run_query as a first pass because vfb_run_query is usually cached and faster.
-- Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
-- Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
-- Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
-- For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
-- CRITICAL vfb_query_connectivity parameters (per MCP guidance):
-  * weight: ALWAYS use weight=1 (minimum 1+ synapse). This gives all observed connections without noise.
-  * upstream_type + downstream_type (both-ends query): if timeout occurs, increase weight to 5, then 10, then 50.
-  * upstream_type only (single-end): same escalation: start 1, then 5, 10, 50.
-  * exclude_dbs: DEFAULT to ["hb", "fafb"] (exclude unsuitable datasets). Only use [] to search ALL datasets if user explicitly requests it.
-  * group_by_class: false for per-neuron detail (shows individual connections).
-  * Note: query_connectivity runs LIVE queries (not cached) — can take up to several minutes.
-  * Truncation behavior: when >50 per-neuron rows returned, system shows top 20 sorted by weight descending + summary stats.
-- IMPORTANT: When the user gives a multi-word neuron name like "adult ellipsoid body ring neuron", pass the ENTIRE phrase as the label. Do NOT break it into sub-terms (e.g. do NOT search for "ellipsoid body" separately). Always use the longest, most specific term the user provides.
-- For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
-- Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
-- Never claim "TERM_A (ID) is TERM_B" unless vfb_get_term_info confirms that exact mapping.
-- Questions about published papers or recent literature (ONLY when the user explicitly asks about papers/publications, or when VFB results cite a paper the user wants to explore): use PubMed first, optionally bioRxiv/medRxiv for preprints. NEVER use publication search as a fallback for data queries.
-- Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
-- For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
-- For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not search PubMed or reviewed-docs first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
-- If vfb_query_connectivity returns requires_user_selection: true, do not claim connectivity results. Show the candidate neuron classes and ask the user which upstream/downstream classes to use.
-- When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
-- Do not attempt general web search or browsing outside the approved reviewed-doc index
+- Use VFB tools for anatomy, neurons, connectivity, gene expression. NEVER use PubMed/bioRxiv as fallback for data queries — publication search is ONLY for explicit literature requests.
+- Prefer vfb_get_term_info + vfb_run_query (cached, fast) as first pass for entity questions.
+- FlyBase genes/alleles/stocks: vfb_resolve_entity → vfb_find_stocks.
+- Split-GAL4 (e.g. MB002B, SS04495): vfb_resolve_combination → vfb_find_combo_publications.
+- Connectivity between classes: call vfb_query_connectivity directly with FULL neuron labels or FBbt IDs. Do NOT pre-search with vfb_search_terms. The server resolves terms and returns requires_user_selection if ambiguous.
+- "Connections from X to Y": X=upstream, Y=downstream. Use vfb_query_connectivity.
+- Pass multi-word neuron names as the ENTIRE phrase (e.g. "adult ellipsoid body ring neuron"). Never split into sub-terms.
+- Documentation/Python/vfb-connect: search_reviewed_docs → get_reviewed_page.
+- If resolver returns SYNONYM/BROAD or multiple candidates, confirm with user before proceeding.
+- Tool parameter IDs: always plain short-form (e.g. FBbt_00048241). Never markdown links or URLs.
+- Only map IDs↔labels from tool outputs in this turn, never from prompt examples.
 
-TOOL PARAMETER IDs:
-- When passing IDs to tool parameters, ALWAYS use plain short-form IDs (e.g. FBbt_00048241, VFB_00102107).
-- NEVER pass markdown links, full IRIs/URLs, labels, or symbols as ID parameters.
-- Markdown link formatting is for your response text only, not for tool arguments.
+vfb_query_connectivity RULES:
+- Runs LIVE (not cached) — can take several minutes. Do not treat slow responses as failures.
+- Default params: weight=1, exclude_dbs=["hb","fafb"], group_by_class=false.
+- ZERO-RESULTS RELAXATION (follow this exact sequence, stop at first success):
+  Step 1: retry with weight=1, exclude_dbs=[] (remove exclusions — this is the most common fix)
+  Step 2: retry with weight=1, exclude_dbs=[], group_by_class=true
+  Step 3: retry with weight=5, exclude_dbs=[], group_by_class=true
+  Do NOT skip steps. Do NOT manually search/resolve terms — vfb_query_connectivity resolves terms internally.
+- TIMEOUT HANDLING: retry with group_by_class=true. If still times out, escalate weight to 5, then 10, then 50.
+- If requires_user_selection: true, show candidates and ask user to choose.
 
-ENTITY RESOLUTION RULES:
-- If vfb_resolve_entity or vfb_resolve_combination returns match_type SYNONYM or BROAD, confirm the resolved entity with the user before running downstream tools.
-- If resolver output includes multiple candidates, show a short disambiguation list and ask the user to choose before continuing.
-- If the user already provided a canonical FlyBase ID (for example FBgn..., FBal..., FBti..., FBco..., FBst...), you may call downstream tools directly.
+CONNECTIVITY RESPONSE WORKFLOW (when vfb_query_connectivity returns connections):
+1. Present a text summary listing ALL connections with their weights.
+2. A graph is automatically generated server-side from connectivity data — you do NOT need to call create_basic_graph for connectivity results.
+3. Do NOT call vfb_get_term_info, vfb_run_query, or vfb_search_terms to "enrich" connectivity results. Term info is fetched automatically server-side.
+4. If supplementary tool calls fail but the primary query succeeded, present the successful results.
 
-TOOL ERRORS AND TIMEOUTS:
-- vfb_query_connectivity runs LIVE queries (NOT cached) — responses can take up to several MINUTES. Do NOT treat slow responses as failures. Be patient.
-- If vfb_query_connectivity returns ZERO results, apply relaxation loop (in this order):
-  1. Lower weight to 1 (from 50)
-  2. If still zero, remove exclude_dbs filter (include all datasets)
-  3. If still zero, try group_by_class=true
-  4. Present results at whichever relaxation step succeeds.
-- If vfb_query_connectivity times out after 5+ minutes, retry with group_by_class=true (aggregates by class, faster). Always present whatever partial results you have gathered so far.
-- Never tell the user a query "failed" without attempting at least one alternative VFB path. NEVER substitute a PubMed search for a failed VFB data query.
-- CRITICAL: When vfb_query_connectivity returns connectivity data successfully, present those results immediately AND call create_basic_graph with the top connections. Do NOT make additional tool calls (vfb_run_query, vfb_get_term_info) to "enrich" the connectivity answer — this wastes time and risks timeouts that obscure the successful results.
-- If supplementary tool calls fail but the primary query succeeded, present the successful results and ignore the supplementary failures. Never lead your response with error messages when you have valid data to show.
+create_basic_graph FORMAT (for non-connectivity graphs only):
+- nodes: [{id: "ExR5", label: "ExR5", group: "ring neuron"}]. "id" is REQUIRED.
+- edges: [{source: "LC33", target: "ExR5", weight: 146}]. Use "source" and "target".
 
 TOOL ECONOMY:
-- Prefer the fewest tool steps needed to produce a useful answer.
-- Start with cached vfb_run_query pathways when they can answer the question, then use other tools for deeper refinement only when needed.
-- Do not keep calling tools just to exhaustively enumerate large result sets.
-- If the question is broad or combinatorial, stop once you have enough evidence to give a partial answer.
-- For broad gene-expression or transgene-pattern requests, prefer a short representative list (about 3-5 items) and ask how the user wants to narrow further instead of trying to enumerate everything in one turn.
-- If the question is broad or underspecified, it is good to ask 1-3 short clarifying questions instead of trying to enumerate everything immediately.
-- When stopping early, clearly summarize what you found so far and end with 2-4 direct clarifying questions the user can answer to narrow the query (for example: one dataset, one transmitter class, one neuron subtype, one brain region, or a capped number of results).
+- Use fewest tool steps needed. For broad queries, give a representative sample (3-5 items) and ask clarifying questions.
+- Do not exhaustively enumerate large result sets.
 
-CITATIONS:
-- Only cite publications returned by VFB, PubMed, or bioRxiv/medRxiv tools
-- Use markdown links with human-readable titles, not bare URLs or raw IDs when a title is available
-- For FlyBase references, prefer author/year or paper title as the link text
+FORMATTING:
+- Use markdown links with descriptive names for VFB/FBbt IDs in response text (not in tool params).
+- Include thumbnail images from tool results when available.
+- Cite only publications returned by tools, using readable titles.
 
-FORMATTING VFB REFERENCES (response text only — NOT for tool parameters):
-- Use markdown links with descriptive names, not bare VFB or FBbt IDs in your response text
-- When thumbnail URLs are present in tool output, include them using markdown image syntax
-- Only use thumbnail URLs that actually appear in tool results
+TOOL RELAY: Request tools via relay protocol. Use tool results directly; do not invent values.
 
-GRAPH VISUALS:
-- ENRICHMENT FIRST — MANDATORY WORKFLOW:
-  1. When vfb_query_connectivity returns connectivity data, extract ALL unique node IDs from the results (both upstream and downstream)
-  2. MAKE ONE SINGLE BATCH REQUEST to vfb_get_term_info with the complete array of IDs (e.g., ["FBbt_20001532", "FBbt_00047035", ...])
-  3. For each term info response, extract: the top-level "Name" field (this IS the symbol, e.g., "IB029", "LC33", "ExR5")
-  4. Only THEN call create_basic_graph with node labels = Name field from term info
-  5. NEVER make individual vfb_get_term_info calls — always batch
-- Node label source: Use the top-level "Name" field from vfb_get_term_info response (e.g., "IB029", "ExR5", "PLP032"). This is the official symbol.
-- Use "Meta.Name" (full descriptive name) for the node group field for color-coding.
-- ALWAYS call create_basic_graph when vfb_query_connectivity returns connectivity data. Do not wait for the user to ask for a graph — include it automatically alongside the text summary.
-- For connectivity answers, include ALL connections returned from vfb_query_connectivity in the graph (no artificial limits). If results >50 rows, the MCP already truncates to top 20 sorted by weight, so show all of those.
-- Do NOT filter by "strongest" or "top N" — show complete connectivity.
-- Every node MUST have a meaningful "group" field for colour-coding. Use the upstream_class or downstream_class name from the connectivity results (e.g. "lobula columnar neuron LC33", "adult ellipsoid body extrinsic ring neuron ExR5") so nodes are coloured by their actual neuron class. This is the preferred approach. Fallback hierarchy when there are too many classes (>6 distinct groups):
-  * Neurotransmitter type (cholinergic, GABAergic, glutamatergic, etc.) when NT data is available
-  * Brain region/system (visual system, central complex, mushroom body, etc.) when comparing across regions
-  * Cell class (sensory neuron, interneuron, projection neuron, motor neuron, etc.) as a general fallback
-  * Do NOT use generic "source-side" / "target-side" as groups — these carry no biological meaning
-  * The LLM should use its knowledge of Drosophila neurobiology to assign the most useful grouping
-
-TOOL RELAY:
-- You can request server-side tool execution using the tool relay protocol.
-- If tool results are available, use them directly and do not invent missing values.
-- If a question needs data and no results are available yet, request tools first, then answer after results arrive.
-
-FOLLOW-UP QUESTIONS:
-When useful, suggest 2-3 short potential follow-up questions that are directly answerable with the available tools in this chat.`
+FOLLOW-UP: When useful, suggest 2-3 short follow-up questions answerable with available tools.`
 
 /**
  * Build a short, human-readable suffix from tool arguments so the status
@@ -3307,8 +3364,7 @@ function buildToolPolicyCorrectionMessage({
     '- Choose the smallest set of tools that best answers the user request.',
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
     '- Use more specialized tools (for example vfb_query_connectivity, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
-    '- When connectivity data is returned, ALWAYS call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding.',
-    '- For directional connectivity graphs, keep graph groups coarse and reusable (usually source-side, target-side, and optional intermediate), not one unique group per node.',
+    '- When connectivity data is returned, do NOT call create_basic_graph or vfb_get_term_info — the graph and term enrichment are generated automatically server-side. Just summarise the connections in text.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
     '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
   ]
@@ -3867,8 +3923,22 @@ async function processResponseStream({
 
       toolRounds += 1
 
+      // Filter out redundant vfb_get_term_info calls when connectivity data
+      // has already been fetched (term info is auto-enriched server-side)
+      const connectivityAlreadyReturned = collectedGraphSpecs.length > 0 ||
+        (toolUsage.vfb_query_connectivity || 0) > 0
+      const filteredToolCalls = connectivityAlreadyReturned
+        ? requestedToolCalls.filter(tc => {
+            if (tc.name === 'vfb_get_term_info') {
+              console.log(`[VFBchat] Skipping redundant vfb_get_term_info call (auto-enriched server-side)`)
+              return false
+            }
+            return true
+          })
+        : requestedToolCalls
+
       const announcedStatuses = new Set()
-      for (const toolCall of requestedToolCalls) {
+      for (const toolCall of filteredToolCalls) {
         const status = getStatusForTool(toolCall.name, toolCall.arguments)
         if (!announcedStatuses.has(status.message)) {
           sendEvent('status', status)
@@ -3876,7 +3946,7 @@ async function processResponseStream({
         }
       }
 
-      const toolOutputs = await Promise.all(requestedToolCalls.map(async (toolCall) => {
+      const toolOutputs = await Promise.all(filteredToolCalls.map(async (toolCall) => {
         toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
         console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
 
@@ -3905,7 +3975,79 @@ async function processResponseStream({
         console.log(`[VFBchat] Graph tool outputs: ${graphToolOutputs.length}, output type: ${typeof graphToolOutputs[0]?.output}, has nodes: ${!!graphToolOutputs[0]?.output?.nodes}`)
       }
       const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
-      if (graphSpecsFromTools.length > 0) {
+
+      // Enrich connectivity results with batch vfb_get_term_info for SuperTypes-based grouping.
+      // Kept separate from toolOutputs to avoid flooding LLM context.
+      const enrichedTermInfo = []
+      const connectivityOutputs = toolOutputs.filter(t => t.name === 'vfb_query_connectivity')
+      if (connectivityOutputs.length > 0) {
+        // Gather FBbt IDs already fetched via vfb_get_term_info
+        const alreadyFetchedIds = new Set()
+        for (const t of toolOutputs) {
+          if (t.name !== 'vfb_get_term_info') continue
+          const parsed = typeof t.output === 'string' ? (() => { try { return JSON.parse(t.output) } catch { return null } })() : t.output
+          if (parsed && typeof parsed === 'object') {
+            for (const id of Object.keys(parsed)) {
+              if (id.startsWith('FBbt_')) alreadyFetchedIds.add(id)
+            }
+            // Also check for single-object format
+            if (parsed.Id && parsed.Id.startsWith('FBbt_')) alreadyFetchedIds.add(parsed.Id)
+          }
+        }
+
+        // Collect all unique FBbt IDs from connectivity results
+        const allFbbtIds = new Set()
+        for (const t of connectivityOutputs) {
+          const parsed = typeof t.output === 'string' ? (() => { try { return JSON.parse(t.output) } catch { return null } })() : t.output
+          if (!parsed?.connections) continue
+          for (const conn of parsed.connections) {
+            const upId = conn.upstream_class_id || conn.upstream_neuron_id
+            const downId = conn.downstream_class_id || conn.downstream_neuron_id
+            if (upId && !alreadyFetchedIds.has(upId)) allFbbtIds.add(upId)
+            if (downId && !alreadyFetchedIds.has(downId)) allFbbtIds.add(downId)
+          }
+        }
+
+        // Batch fetch term info using cached API (fast HTTP, not MCP)
+        if (allFbbtIds.size > 0) {
+          console.log(`[VFBchat] Batch-fetching cached term info for ${allFbbtIds.size} FBbt IDs for graph grouping`)
+          const idsArray = Array.from(allFbbtIds)
+          const BATCH = 15
+          for (let i = 0; i < idsArray.length; i += BATCH) {
+            const batch = idsArray.slice(i, i + BATCH)
+            console.log(`[VFBchat] Fetching batch ${Math.floor(i/BATCH)+1}/${Math.ceil(idsArray.length/BATCH)} (${batch.length} IDs)`)
+            const batchResults = await Promise.all(batch.map(async (fbbtId) => {
+              try {
+                const output = await fetchCachedVfbTermInfo(fbbtId)
+                return { name: 'vfb_get_term_info', arguments: { id: fbbtId }, output }
+              } catch (e) {
+                console.log(`[VFBchat] Cached term info failed for ${fbbtId}: ${e.message?.substring(0, 80)}`)
+                return null
+              }
+            }))
+            const batchSuccess = batchResults.filter(Boolean).length
+            console.log(`[VFBchat] Batch ${Math.floor(i/BATCH)+1} complete: ${batchSuccess}/${batch.length} succeeded`)
+            for (const r of batchResults) {
+              if (r) enrichedTermInfo.push(r)
+            }
+          }
+          console.log(`[VFBchat] Term info enrichment complete: ${enrichedTermInfo.length}/${allFbbtIds.size} IDs`)
+        }
+      }
+
+      // Auto-generate graph from connectivity results for consistency.
+      // Combine toolOutputs + enrichedTermInfo for graph generation only (not sent to LLM).
+      const autoGraph = autoGraphFromConnectivity([...toolOutputs, ...enrichedTermInfo])
+      if (autoGraph) {
+        const bestLlmGraph = graphSpecsFromTools.reduce((best, g) => (!best || (g.edges?.length || 0) > (best.edges?.length || 0)) ? g : best, null)
+        if (!bestLlmGraph || (autoGraph.edges?.length || 0) > (bestLlmGraph.edges?.length || 0)) {
+          collectedGraphSpecs.push(autoGraph)
+          console.log(`[VFBchat] Using auto-generated connectivity graph (${autoGraph.edges.length} edges) over LLM graph (${bestLlmGraph?.edges?.length || 0} edges)`)
+        } else {
+          collectedGraphSpecs.push(...graphSpecsFromTools)
+          console.log(`[VFBchat] LLM graph has >= edges (${bestLlmGraph.edges.length}), using LLM graph`)
+        }
+      } else if (graphSpecsFromTools.length > 0) {
         collectedGraphSpecs.push(...graphSpecsFromTools)
         console.log(`[VFBchat] Collected ${graphSpecsFromTools.length} graph spec(s), total: ${collectedGraphSpecs.length}`)
       }
