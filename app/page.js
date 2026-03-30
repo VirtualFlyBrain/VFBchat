@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
 
-const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
+const cytoscape = typeof window !== 'undefined' ? require('cytoscape') : null
 
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
@@ -55,7 +55,8 @@ function getGraphNodeRole(stats = {}, directed = true) {
 
 const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const containerRef = useRef(null)
-  const fgRef = useRef(null)
+  const graphRef = useRef(null)
+  const cyRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
 
   const nodes = useMemo(() => (Array.isArray(graph?.nodes) ? graph.nodes : []), [graph?.nodes])
@@ -146,30 +147,36 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     }
   }, [nodes, edges, isDirected])
 
-  const graphData = useMemo(() => {
+  const elements = useMemo(() => {
     const nodeIds = new Set(nodes.map(n => String(n.id)))
-    return {
-      nodes: nodes.map(n => {
-        const id = String(n.id)
-        const visualGroup = visualGrouping.byNodeId[id] || {}
-        return {
+    const maxWeight = Math.max(1, ...edges.map(e => Number(e.weight) || 1))
+    const cyNodes = nodes.map(n => {
+      const id = String(n.id)
+      const visualGroup = visualGrouping.byNodeId[id] || {}
+      return {
+        data: {
           id,
           label: n.label || n.id,
           group: visualGroup.label || normalizeGraphGroup(n.group),
           originalGroup: normalizeGraphGroup(n.group),
           color: visualGroup.color || n.color || GRAPH_PALETTE[hashString(n.label || n.id) % GRAPH_PALETTE.length],
-          size: n.size || 1
+          size: Math.max(20, 20 + (n.size || 1) * 10)
         }
-      }),
-      links: edges
-        .filter(e => nodeIds.has(String(e.source)) && nodeIds.has(String(e.target)))
-        .map(e => ({
+      }
+    })
+    const cyEdges = edges
+      .filter(e => nodeIds.has(String(e.source)) && nodeIds.has(String(e.target)))
+      .map((e, i) => ({
+        data: {
+          id: `e${i}`,
           source: String(e.source),
           target: String(e.target),
           label: e.label || (Number.isFinite(Number(e.weight)) ? String(e.weight) : ''),
-          weight: Number(e.weight) || 1
-        }))
-    }
+          weight: Number(e.weight) || 1,
+          width: Math.max(1, 1 + ((Number(e.weight) || 1) / maxWeight) * 4)
+        }
+      }))
+    return [...cyNodes, ...cyEdges]
   }, [nodes, edges, visualGrouping])
 
   // Measure container width
@@ -185,17 +192,102 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     return () => ro.disconnect()
   }, [])
 
-  // Zoom to fit after initial layout settles
+  // Initialize and update Cytoscape instance
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (fgRef.current) fgRef.current.zoomToFit(300, 40)
-    }, 800)
-    return () => clearTimeout(timer)
-  }, [graphData])
+    if (!graphRef.current || !cytoscape || elements.length === 0) return
+
+    if (cyRef.current) {
+      cyRef.current.destroy()
+    }
+
+    const cy = cytoscape({
+      container: graphRef.current,
+      elements: elements,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': 'data(color)',
+            'label': 'data(label)',
+            'width': 'data(size)',
+            'height': 'data(size)',
+            'font-size': '11px',
+            'color': '#e5e7eb',
+            'text-valign': 'bottom',
+            'text-margin-y': 5,
+            'text-outline-color': '#0f0f12',
+            'text-outline-width': 2,
+            'border-width': 1,
+            'border-color': '#1a1a2e'
+          }
+        },
+        {
+          selector: 'edge',
+          style: {
+            'width': 'data(width)',
+            'line-color': '#4b5563',
+            'target-arrow-color': '#4b5563',
+            'target-arrow-shape': isDirected ? 'triangle' : 'none',
+            'curve-style': 'bezier',
+            'label': 'data(label)',
+            'font-size': '9px',
+            'color': '#8f9aad',
+            'text-outline-color': '#0f0f12',
+            'text-outline-width': 1.5,
+            'text-rotation': 'autorotate'
+          }
+        },
+        {
+          selector: 'node:selected',
+          style: {
+            'border-width': 3,
+            'border-color': '#fff'
+          }
+        },
+        {
+          selector: 'edge:selected',
+          style: {
+            'line-color': '#9ecbff',
+            'target-arrow-color': '#9ecbff',
+            'width': 4
+          }
+        }
+      ],
+      layout: {
+        name: isDirected ? 'breadthfirst' : 'cose',
+        directed: isDirected,
+        spacingFactor: 1.2,
+        animate: true,
+        animationDuration: 500,
+        padding: 30,
+        nodeDimensionsIncludeLabels: true,
+        ...(isDirected ? {} : {
+          idealEdgeLength: 100,
+          nodeRepulsion: 4500,
+          gravity: 0.25
+        })
+      },
+      userZoomingEnabled: true,
+      userPanningEnabled: true,
+      boxSelectionEnabled: false
+    })
+
+    cy.on('layoutstop', () => cy.fit(undefined, 30))
+    cyRef.current = cy
+
+    return () => {
+      cy.destroy()
+      cyRef.current = null
+    }
+  }, [elements, isDirected])
+
+  // Resize cytoscape when dimensions change
+  useEffect(() => {
+    if (cyRef.current) cyRef.current.resize()
+  }, [dimensions])
 
   if (nodes.length === 0 || edges.length === 0) return null
 
-  const maxWeight = Math.max(1, ...graphData.links.map(l => l.weight))
   const legendEntries = visualGrouping.legend
 
   return (
@@ -232,58 +324,9 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           ))}
         </div>
       )}
-      <ForceGraph2D
-        ref={fgRef}
-        graphData={graphData}
-        width={dimensions.width - 20}
-        height={dimensions.height}
-        backgroundColor="#0f0f12"
-        nodeRelSize={6}
-        nodeVal={n => Math.max(1, (n.size || 1) * 1.5)}
-        nodeColor={n => n.color}
-        nodeLabel={n => {
-          const details = []
-          if (n.originalGroup) details.push(`type: ${n.originalGroup}`)
-          if (visualGrouping.useStructuralColoring && n.group && n.group !== n.originalGroup) {
-            details.push(`role: ${n.group}`)
-          }
-          return details.length > 0 ? `${n.label} (${details.join('; ')})` : n.label
-        }}
-        nodeCanvasObject={(node, ctx, globalScale) => {
-          const r = Math.max(3, 4 + (node.size || 1) * 2)
-          ctx.beginPath()
-          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
-          ctx.fillStyle = node.color
-          ctx.fill()
-          ctx.strokeStyle = '#1a1a2e'
-          ctx.lineWidth = 0.5
-          ctx.stroke()
-          // Draw label when zoomed in enough
-          if (globalScale > 0.7) {
-            const label = node.label || node.id
-            const fontSize = Math.max(3, 10 / globalScale)
-            ctx.font = `${fontSize}px sans-serif`
-            ctx.textAlign = 'center'
-            ctx.textBaseline = 'top'
-            ctx.fillStyle = '#e5e7eb'
-            ctx.fillText(label, node.x, node.y + r + 2)
-          }
-        }}
-        linkColor={() => '#4b5563'}
-        linkWidth={link => Math.max(0.5, 1 + (link.weight / maxWeight) * 3)}
-        linkDirectionalArrowLength={isDirected ? 5 : 0}
-        linkDirectionalArrowRelPos={1}
-        linkLabel={link => link.label}
-        linkCurvature={link => {
-          // Curve parallel edges between same node pairs
-          const key = [link.source?.id || link.source, link.target?.id || link.target].sort().join('-')
-          const rev = [link.target?.id || link.target, link.source?.id || link.source].sort().join('-')
-          return key === rev ? 0 : 0.15
-        }}
-        d3VelocityDecay={0.3}
-        cooldownTicks={80}
-        enableZoomInteraction={true}
-        enablePanInteraction={true}
+      <div
+        ref={graphRef}
+        style={{ width: dimensions.width - 20, height: dimensions.height, backgroundColor: '#0f0f12' }}
       />
     </div>
   )
