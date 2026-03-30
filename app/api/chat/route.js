@@ -2229,8 +2229,8 @@ async function executeFunctionTool(name, args, context = {}) {
         return JSON.stringify({
           requires_user_selection: true,
           tool: 'vfb_query_connectivity',
-          message: 'vfb_query_connectivity requires neuron class inputs. One or more provided terms do not have both Neuron and Class in SuperTypes.',
-          instruction: 'Ask the user to choose one neuron class from each side before running connectivity.',
+          message: 'One or more terms are not neuron classes. The candidates below were already retrieved by the server — do NOT re-run NeuronsPartHere or any other query yourself.',
+          instruction: 'Present the candidate neuron classes to the user and ask them to pick which one(s) to use. Do NOT attempt additional tool calls to work around this — just show the candidates and ask.',
           selections_needed: selectionsNeeded
         })
       }
@@ -2658,7 +2658,7 @@ TOOL SELECTION:
 - Questions about FlyBase genes/alleles/insertions/stocks: use vfb_resolve_entity first (if unresolved), then vfb_find_stocks
 - Questions about split-GAL4 combination names/synonyms (for example MB002B, SS04495): use vfb_resolve_combination first, then vfb_find_combo_publications (and optionally vfb_find_stocks if the user asks for lines)
 - Questions about comparative connectivity between neuron classes across datasets: use vfb_query_connectivity (optionally vfb_list_connectome_datasets first to pick valid dataset symbols)
-- For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere or vfb_search_terms first. The server handles term resolution and will return requires_user_selection if disambiguation is needed.
+- For connectivity questions, call vfb_query_connectivity directly with the FULL neuron class labels or FBbt IDs the user mentions — do NOT manually run NeuronsPartHere, vfb_run_query, or vfb_search_terms first. The server handles term resolution internally and will return requires_user_selection if disambiguation is needed. If you receive a requires_user_selection response, present the candidates to the user — do NOT attempt additional tool calls to work around it.
 - IMPORTANT: When the user gives a multi-word neuron name like "adult ellipsoid body ring neuron", pass the ENTIRE phrase as the label. Do NOT break it into sub-terms (e.g. do NOT search for "ellipsoid body" separately). Always use the longest, most specific term the user provides.
 - For directional requests like "connections from X to Y" or "between X and Y", treat X as upstream (presynaptic) and Y as downstream (postsynaptic), and prefer vfb_query_connectivity over a single-term run_query.
 - Do not infer identity from examples in this prompt. Only map IDs to labels (or labels to IDs) using tool outputs from this turn.
@@ -2667,7 +2667,7 @@ TOOL SELECTION:
 - Questions about VFB, NeuroFly, VFB Connect Python documentation, or approved FlyBase documentation pages, news posts, workshops, conference pages, or event dates: use search_reviewed_docs, then use get_reviewed_page when you need page details
 - For questions about how to run VFB queries in Python or how to use vfb-connect, prioritize search_reviewed_docs/get_reviewed_page on vfb-connect.readthedocs.io alongside VFB tool outputs when useful.
 - For connectivity, synaptic, or NBLAST questions, and especially when the user explicitly asks for vfb_run_query, do not search PubMed or reviewed-docs first; use VFB tools (vfb_search_terms/vfb_get_term_info/vfb_run_query). Use vfb_query_connectivity when the user asks for class-to-class connectivity comparisons across datasets.
-- If vfb_query_connectivity returns requires_user_selection: true, do not claim connectivity results. Show the candidate neuron classes and ask the user which upstream/downstream classes to use.
+- CRITICAL: If vfb_query_connectivity returns requires_user_selection: true, this means the backend already resolved the term and found it is not a neuron class. Do NOT re-run NeuronsPartHere, vfb_run_query, or vfb_search_terms yourself — the backend already did this work. Instead: (1) clearly explain that the term the user gave is an anatomy region / neuron type, not a neuron class; (2) show the candidate neuron classes from the "candidates" array in the response; (3) ask the user to pick which neuron class(es) to use for the connectivity query. If the candidates array is empty, suggest the user try a more specific neuron class name.
 - When connectivity relationships would be easier to understand visually, you may call create_basic_graph with key nodes and weighted edges.
 - Do not attempt general web search or browsing outside the approved reviewed-doc index
 
