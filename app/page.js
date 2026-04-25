@@ -6,8 +6,6 @@ import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
 
-const cytoscape = typeof window !== 'undefined' ? require('cytoscape') : null
-
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
   wrong: 'Wrong',
@@ -55,8 +53,6 @@ function getGraphNodeRole(stats = {}, directed = true) {
 
 const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const containerRef = useRef(null)
-  const graphRef = useRef(null)
-  const cyRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
 
   const nodes = useMemo(() => (Array.isArray(graph?.nodes) ? graph.nodes : []), [graph?.nodes])
@@ -179,6 +175,97 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     return [...cyNodes, ...cyEdges]
   }, [nodes, edges, visualGrouping])
 
+  const svgSize = useMemo(() => ({
+    width: Math.max(280, dimensions.width - 20),
+    height: dimensions.height
+  }), [dimensions])
+
+  const svgGraph = useMemo(() => {
+    const graphNodes = elements.filter(element => !element.data?.source)
+    const graphEdges = elements.filter(element => element.data?.source && element.data?.target)
+    const margin = 48
+    const availableHeight = Math.max(1, svgSize.height - (margin * 2))
+    const availableWidth = Math.max(1, svgSize.width - (margin * 2))
+    const statsByNodeId = new Map(graphNodes.map(node => [node.data.id, { indegree: 0, outdegree: 0 }]))
+
+    graphEdges.forEach(edge => {
+      const sourceStats = statsByNodeId.get(edge.data.source)
+      const targetStats = statsByNodeId.get(edge.data.target)
+      if (sourceStats) sourceStats.outdegree += 1
+      if (targetStats) targetStats.indegree += 1
+    })
+
+    const sortedNodes = graphNodes.slice().sort((a, b) => String(a.data.label).localeCompare(String(b.data.label)))
+    const positions = new Map()
+    const directedRoles = ['source', 'bridge', 'target', 'isolated']
+    const roleBuckets = Object.fromEntries(directedRoles.map(role => [role, []]))
+
+    sortedNodes.forEach(node => {
+      const role = getGraphNodeRole(statsByNodeId.get(node.data.id), isDirected)
+      roleBuckets[role].push(node)
+    })
+
+    const useDirectionalLayout = isDirected && roleBuckets.source.length > 0 && roleBuckets.target.length > 0
+
+    if (useDirectionalLayout) {
+      const roleColumns = {
+        source: margin,
+        bridge: margin + (availableWidth * 0.5),
+        target: margin + availableWidth,
+        isolated: margin + (availableWidth * 0.5)
+      }
+
+      directedRoles.forEach(role => {
+        const bucket = roleBuckets[role]
+        bucket.forEach((node, index) => {
+          positions.set(node.data.id, {
+            x: roleColumns[role],
+            y: margin + ((index + 1) * availableHeight / (bucket.length + 1))
+          })
+        })
+      })
+    } else {
+      const radius = Math.max(60, Math.min(availableWidth, availableHeight) * 0.38)
+      const centerX = svgSize.width / 2
+      const centerY = svgSize.height / 2
+      sortedNodes.forEach((node, index) => {
+        const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / Math.max(1, sortedNodes.length))
+        positions.set(node.data.id, {
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius
+        })
+      })
+    }
+
+    const laidOutNodes = graphNodes.map(node => ({
+      id: node.data.id,
+      label: node.data.label,
+      group: node.data.group,
+      color: node.data.color,
+      radius: Math.max(14, Math.min(32, Number(node.data.size) / 2 || 18)),
+      ...(positions.get(node.data.id) || { x: svgSize.width / 2, y: svgSize.height / 2 })
+    }))
+    const laidOutNodeById = new Map(laidOutNodes.map(node => [node.id, node]))
+
+    return {
+      nodes: laidOutNodes,
+      edges: graphEdges
+        .map(edge => {
+          const source = laidOutNodeById.get(edge.data.source)
+          const target = laidOutNodeById.get(edge.data.target)
+          if (!source || !target) return null
+          return {
+            id: edge.data.id,
+            label: edge.data.label,
+            width: edge.data.width,
+            source,
+            target
+          }
+        })
+        .filter(Boolean)
+    }
+  }, [elements, isDirected, svgSize.height, svgSize.width])
+
   // Measure container width
   useEffect(() => {
     if (!containerRef.current) return
@@ -191,100 +278,6 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     ro.observe(containerRef.current)
     return () => ro.disconnect()
   }, [])
-
-  // Initialize and update Cytoscape instance
-  useEffect(() => {
-    if (!graphRef.current || !cytoscape || elements.length === 0) return
-
-    if (cyRef.current) {
-      cyRef.current.destroy()
-    }
-
-    const cy = cytoscape({
-      container: graphRef.current,
-      elements: elements,
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': 'data(color)',
-            'label': 'data(label)',
-            'width': 'data(size)',
-            'height': 'data(size)',
-            'font-size': '11px',
-            'color': '#e5e7eb',
-            'text-valign': 'bottom',
-            'text-margin-y': 5,
-            'text-outline-color': '#0f0f12',
-            'text-outline-width': 2,
-            'border-width': 1,
-            'border-color': '#1a1a2e'
-          }
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 'data(width)',
-            'line-color': '#4b5563',
-            'target-arrow-color': '#4b5563',
-            'target-arrow-shape': isDirected ? 'triangle' : 'none',
-            'curve-style': 'bezier',
-            'label': 'data(label)',
-            'font-size': '9px',
-            'color': '#8f9aad',
-            'text-outline-color': '#0f0f12',
-            'text-outline-width': 1.5,
-            'text-rotation': 'autorotate'
-          }
-        },
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': 3,
-            'border-color': '#fff'
-          }
-        },
-        {
-          selector: 'edge:selected',
-          style: {
-            'line-color': '#9ecbff',
-            'target-arrow-color': '#9ecbff',
-            'width': 4
-          }
-        }
-      ],
-      layout: {
-        name: isDirected ? 'breadthfirst' : 'cose',
-        directed: isDirected,
-        spacingFactor: 1.2,
-        animate: true,
-        animationDuration: 500,
-        padding: 30,
-        nodeDimensionsIncludeLabels: true,
-        ...(isDirected ? {} : {
-          idealEdgeLength: 100,
-          nodeRepulsion: 4500,
-          gravity: 0.25
-        })
-      },
-      userZoomingEnabled: true,
-      userPanningEnabled: true,
-      boxSelectionEnabled: false
-    })
-
-    cy.on('layoutstop', () => cy.fit(undefined, 30))
-    cyRef.current = cy
-
-    return () => {
-      cy.destroy()
-      cyRef.current = null
-    }
-  }, [elements, isDirected])
-
-  // Resize cytoscape when dimensions change
-  useEffect(() => {
-    if (cyRef.current) cyRef.current.resize()
-  }, [dimensions])
 
   if (nodes.length === 0 || edges.length === 0) return null
 
@@ -325,9 +318,96 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         </div>
       )}
       <div
-        ref={graphRef}
-        style={{ width: dimensions.width - 20, height: dimensions.height, backgroundColor: '#0f0f12' }}
-      />
+        style={{ width: svgSize.width, height: svgSize.height, backgroundColor: '#0f0f12' }}
+      >
+        <svg
+          role="img"
+          aria-label={graph?.title || 'Graph visualisation'}
+          width="100%"
+          height="100%"
+          viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+          style={{ display: 'block' }}
+        >
+          <defs>
+            <marker
+              id="graph-arrow"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M0,0 L8,4 L0,8 Z" fill="#4b5563" />
+            </marker>
+          </defs>
+          {svgGraph.edges.map(edge => {
+            const dx = edge.target.x - edge.source.x
+            const dy = edge.target.y - edge.source.y
+            const distance = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)))
+            const sourcePad = edge.source.radius + 2
+            const targetPad = edge.target.radius + 9
+            const x1 = edge.source.x + (dx / distance) * sourcePad
+            const y1 = edge.source.y + (dy / distance) * sourcePad
+            const x2 = edge.target.x - (dx / distance) * targetPad
+            const y2 = edge.target.y - (dy / distance) * targetPad
+            const midX = (x1 + x2) / 2
+            const midY = (y1 + y2) / 2
+
+            return (
+              <g key={edge.id}>
+                <line
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  stroke="#4b5563"
+                  strokeWidth={edge.width}
+                  markerEnd={isDirected ? 'url(#graph-arrow)' : undefined}
+                />
+                {edge.label && (
+                  <text
+                    x={midX}
+                    y={midY - 4}
+                    textAnchor="middle"
+                    fill="#8f9aad"
+                    fontSize="9"
+                    paintOrder="stroke"
+                    stroke="#0f0f12"
+                    strokeWidth="3"
+                  >
+                    {edge.label}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+          {svgGraph.nodes.map(node => (
+            <g key={node.id}>
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={node.radius}
+                fill={node.color}
+                stroke="#1a1a2e"
+                strokeWidth="1"
+              />
+              <text
+                x={node.x}
+                y={node.y + node.radius + 13}
+                textAnchor="middle"
+                fill="#e5e7eb"
+                fontSize="11"
+                paintOrder="stroke"
+                stroke="#0f0f12"
+                strokeWidth="3"
+              >
+                {node.label}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
     </div>
   )
 })
