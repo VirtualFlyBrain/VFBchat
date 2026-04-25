@@ -29,6 +29,7 @@ on:
       - app/**
       - lib/**
       - scripts/run-task-battery.mjs
+      - tests/task-battery/**
       - package.json
       - package-lock.json
       - .github/workflows/task-battery.yml
@@ -38,6 +39,7 @@ on:
       - app/**
       - lib/**
       - scripts/run-task-battery.mjs
+      - tests/task-battery/**
       - package.json
       - package-lock.json
       - .github/workflows/task-battery.yml
@@ -59,12 +61,6 @@ jobs:
         with:
           path: VFBchat
           persist-credentials: true
-
-      - name: Checkout vfb-paper task battery
-        uses: actions/checkout@v4
-        with:
-          repository: VirtualFlyBrain/vfb-paper
-          path: vfb-paper
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -116,7 +112,7 @@ jobs:
           TASK_BATTERY_LIMIT: ${{ github.event.inputs.limit || '' }}
           TASK_BATTERY_IDS: ${{ github.event.inputs.ids || '' }}
         run: |
-          args=(--task-file ../vfb-paper/task_battery.md --server-command start --port 3210)
+          args=(--task-file tests/task-battery/tasks.json --server-command start --port 3210)
           npm run benchmark:task-battery -- "${args[@]}"
 
       - name: Upload benchmark artifact

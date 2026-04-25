@@ -8,10 +8,16 @@ Local quick run:
 npm run benchmark:task-battery -- --limit 1
 ```
 
-Full local run, using the sibling paper checkout:
+Full local run, using the vendored question snapshot:
 
 ```sh
-TASK_BATTERY_FILE=../vfb-paper/task_battery.md npm run benchmark:task-battery
+npm run benchmark:task-battery
+```
+
+Run directly from a sibling paper checkout when you want the latest paper version:
+
+```sh
+npm run benchmark:task-battery -- --task-file ../vfb-paper/task_battery.md
 ```
 
 Run against an already deployed server:

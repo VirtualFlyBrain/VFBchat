@@ -77,7 +77,8 @@ function candidateTaskFiles(options) {
     process.env.VFB_TASK_BATTERY_FILE,
     path.join(REPO_ROOT, '..', 'vfb-paper', 'task_battery.md'),
     path.join(REPO_ROOT, 'vfb-paper', 'task_battery.md'),
-    path.join(REPO_ROOT, 'tests', 'task-battery', 'task_battery.md')
+    path.join(REPO_ROOT, 'tests', 'task-battery', 'task_battery.md'),
+    path.join(REPO_ROOT, 'tests', 'task-battery', 'tasks.json')
   ].filter(Boolean)
 }
 
@@ -119,6 +120,32 @@ function parseTaskBattery(markdown) {
       question
     }
   })
+}
+
+function parseTaskListJson(rawJson) {
+  const parsed = JSON.parse(rawJson)
+  if (!Array.isArray(parsed)) {
+    throw new Error('Task JSON must be an array of task objects.')
+  }
+
+  return parsed.map((task, index) => {
+    const id = String(task.id || '').trim()
+    const title = String(task.title || '').trim()
+    const question = String(task.question || '').trim()
+    const tier = Number.parseInt(task.tier ?? id.match(/^T(\d+)/)?.[1] ?? '', 10)
+
+    if (!id || !Number.isFinite(tier) || !title || !question) {
+      throw new Error(`Invalid task JSON entry at index ${index}. Required fields: id, tier, title, question.`)
+    }
+
+    return { id, tier, title, question }
+  })
+}
+
+async function loadTasksFromFile(taskFile) {
+  const raw = await fs.readFile(taskFile, 'utf8')
+  if (taskFile.endsWith('.json')) return parseTaskListJson(raw)
+  return parseTaskBattery(raw)
 }
 
 function selectTasks(tasks, options) {
@@ -418,8 +445,7 @@ async function main() {
     throw new Error(`Could not find task_battery.md. Checked: ${candidateTaskFiles(options).join(', ')}`)
   }
 
-  const markdown = await fs.readFile(taskFile, 'utf8')
-  const tasks = parseTaskBattery(markdown)
+  const tasks = await loadTasksFromFile(taskFile)
   const selectedTasks = selectTasks(tasks, options)
   const repetitions = normalizeInteger(envOrOption(options, 'repetitions', 'TASK_BATTERY_REPETITIONS', '1'), 1, 1, 10)
   const timeoutMs = normalizeInteger(envOrOption(options, 'timeoutMs', 'TASK_BATTERY_TIMEOUT_MS', '300000'), 300000, 30000, 1800000)
