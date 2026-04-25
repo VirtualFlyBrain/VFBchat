@@ -1,0 +1,146 @@
+name: VFB Task Battery
+
+on:
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Repetitions per task
+        required: true
+        default: '1'
+      limit:
+        description: Optional number of tasks to run
+        required: false
+        default: ''
+      ids:
+        description: Optional comma-separated task IDs, e.g. T1.1,T3.4
+        required: false
+        default: ''
+      commit_results:
+        description: Commit JSON results back to test-results/task-battery
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  push:
+    branches: '**'
+    paths:
+      - app/**
+      - lib/**
+      - scripts/run-task-battery.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/task-battery.yml
+  pull_request:
+    branches: [ main ]
+    paths:
+      - app/**
+      - lib/**
+      - scripts/run-task-battery.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/task-battery.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: task-battery-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout VFBchat
+        uses: actions/checkout@v4
+        with:
+          path: VFBchat
+          persist-credentials: true
+
+      - name: Checkout vfb-paper task battery
+        uses: actions/checkout@v4
+        with:
+          repository: VirtualFlyBrain/vfb-paper
+          path: vfb-paper
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: VFBchat/package-lock.json
+
+      - name: Install dependencies
+        working-directory: VFBchat
+        run: npm ci
+
+      - name: Lint
+        working-directory: VFBchat
+        run: npm run lint
+
+      - name: Build
+        working-directory: VFBchat
+        run: npm run build
+
+      - name: Check benchmark credentials
+        id: creds
+        working-directory: VFBchat
+        env:
+          ELM_API_KEY: ${{ secrets.ELM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$ELM_API_KEY" ] || [ -n "$OPENAI_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "No ELM_API_KEY or OPENAI_API_KEY secret is configured; skipping live task battery run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run task battery
+        id: task_battery
+        if: steps.creds.outputs.available == 'true'
+        continue-on-error: true
+        working-directory: VFBchat
+        env:
+          ELM_API_KEY: ${{ secrets.ELM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELM_BASE_URL: ${{ secrets.ELM_BASE_URL || vars.ELM_BASE_URL || 'https://elm.edina.ac.uk/api/v1' }}
+          APPROVED_ELM_BASE_URL: ${{ secrets.ELM_BASE_URL || vars.ELM_BASE_URL || 'https://elm.edina.ac.uk/api/v1' }}
+          ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
+          APPROVED_ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
+          RATE_LIMIT_PER_IP: '10000'
+          TASK_BATTERY_REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
+          TASK_BATTERY_LIMIT: ${{ github.event.inputs.limit || '' }}
+          TASK_BATTERY_IDS: ${{ github.event.inputs.ids || '' }}
+        run: |
+          args=(--task-file ../vfb-paper/task_battery.md --server-command start --port 3210)
+          npm run benchmark:task-battery -- "${args[@]}"
+
+      - name: Upload benchmark artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-battery-results
+          path: VFBchat/test-results/task-battery
+          if-no-files-found: warn
+
+      - name: Commit benchmark results
+        if: steps.creds.outputs.available == 'true' && github.event_name != 'pull_request' && (github.event.inputs.commit_results != 'false')
+        working-directory: VFBchat
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add test-results/task-battery
+          if git diff --cached --quiet; then
+            echo "No benchmark result changes to commit."
+          else
+            git commit -m "Add task battery results for ${GITHUB_SHA::7} [skip ci]"
+            git push
+          fi
+
+      - name: Fail when task battery had errors
+        if: steps.task_battery.outcome == 'failure'
+        run: exit 1
