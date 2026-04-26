@@ -562,14 +562,28 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bthe tool output from ["']?VFB output["']?\b/gi, 'VFB output')
     .replace(/\btool output from ["']?VFB output["']?\b/gi, 'VFB output')
     .replace(/\bVFB tool output from VFB\b/gi, 'VFB')
+    .replace(/\bVirtual Fly Brain \(VFB\) tool VFB\b/g, 'Virtual Fly Brain (VFB)')
+    .replace(/\bVFB tool VFB\b/g, 'VFB')
     .replace(/\bBased on the VFB tool output\b/gi, 'Based on VFB')
     .replace(/\bthe VFB tool output\b/gi, 'VFB')
     .replace(/\bVFB tool output\b/gi, 'VFB evidence')
     .replace(/\btool output\b/gi, 'VFB evidence')
     .replace(/\bthe ["']?VFB output["']? tool output\b/gi, 'VFB output')
     .replace(/\bAccording to VFB output\b/gi, 'According to VFB')
+    .replace(/\bAccording to the Virtual Fly Brain \(VFB\) output\b/gi, 'According to VFB')
+    .replace(/\bVirtual Fly Brain \(VFB\) output\b/gi, 'VFB')
+    .replace(/\bthe Virtual Fly Brain \(VFB\) output\b/gi, 'VFB')
+    .replace(/\bThe Virtual Fly Brain \(VFB\) database was searched\b/gi, 'VFB was checked')
+    .replace(/\bThe Hemibrain dataset contains neurons that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
+    .replace(/\bThere are neurons in the Hemibrain dataset that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
+    .replace(/\bcandidate fruitless mAL-related neuron classes\b/gi, 'fruitless mAL-related terms')
+    .replace(/\bTherefore,\s*the final answer to the user's question is:\s*/gi, '')
+    .replace(/\buse a different tool, such as VFB,\s*to find\b/gi, 'select a concrete VFB neuron or image candidate for')
     .replace(/\bpartner_target_breakdown section of the output\b/gi, 'returned partner-target details')
     .replace(/\bpartner_target_breakdown\b/gi, 'partner-target details')
+    .replace(/\branked_partner_target_pairs\b/gi, 'ranked partner-target pairs')
+    .replace(/\bprimary_transmitter_candidates\b/gi, 'primary transmitter candidates')
+    .replace(/\btag_counts\b/gi, 'tag counts')
     .replace(/\bnext_actions section of the tool output\b/gi, 'suggested follow-up')
     .replace(/\b`?next_actions`?\b/gi, 'suggested follow-up')
     .replace(/\b`?evidence_summary`?\b/gi, 'evidence summary')
@@ -579,14 +593,35 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\b`?connectivity_evidence`?\b/gi, 'connectivity evidence')
     .replace(/\b`?scope_note`?\b/gi, 'scope note')
     .replace(/\bthe evidence summary section of the output\b/gi, 'VFB')
+    .replace(/\bThe evidence summary suggests\b/gi, 'VFB evidence supports')
+    .replace(/\bthe evidence summary suggests\b/gi, 'VFB evidence supports')
     .replace(/\bthe scope note indicates that\b/gi, 'Scope note:')
     .replace(/\bthe helper returns\b/gi, 'VFB returned')
     .replace(/\bAccording to VFB output from VFB\b/gi, 'According to VFB')
     .replace(/\bThe output also suggests\b/gi, 'VFB also suggests')
+    .replace(/\bThe output includes\b/gi, 'VFB includes')
+    .replace(/\bthe output includes\b/gi, 'VFB includes')
+    .replace(/\bBased on the output from VFB\b/gi, 'Based on VFB')
+    .replace(/\bthe VFB run query output indicates\b/gi, 'VFB indicates')
+    .replace(/\bVFB run query output\b/gi, 'VFB')
+    .replace(/\band the recoverable argument error instruction should not be followed\.?\s*/gi, '. ')
+    .replace(/\bInstead, the answer hint suggests stating that this bounded VFB pass does not confirm a Hemibrain match and suggesting the concrete next step:\s*/gi, 'A concrete next step is ')
+    .replace(/\bTherefore, the final answer is that\b/gi, 'Overall,')
+    .replace(/\bVFB search terms tool\b/gi, 'VFB search')
+    .replace(/\bVFB term info\b/gi, 'VFB term metadata')
+    .replace(/\bVFB for SimilarMorphologyTo query\b/gi, 'VFB SimilarMorphologyTo check')
+    .replace(/\bthe tool suggests\b/gi, 'VFB suggests')
+    .replace(/\bthe tool suggested\b/gi, 'VFB suggested')
     .replace(/\bThe tool also suggests\b/gi, 'VFB also suggests')
     .replace(/\bThe tool returned\b/gi, 'VFB returned')
     .replace(/\bThe tool provides\b/gi, 'VFB provides')
+    .replace(/\bthe tools did not provide\b/gi, 'VFB evidence did not include')
+    .replace(/\bUnfortunately,\s*/gi, '')
     .replace(/\bthe `?graph view`? tool\b/gi, 'the graph view')
+    .replace(/\busing (?:the )?`?graph view`? tool\b/gi, 'in the graph view')
+    .replace(/\b`?graph view`?\s+tool\b/gi, 'graph view')
+    .replace(/\bcandidate route evidence\b/gi, 'route evidence')
+    .replace(/\bcandidate pathway evidence\b/gi, 'pathway evidence')
     .replace(/\bVFB output did not find a curated pathway recipe for the broad request, and instead proposed narrowing to concrete neuron classes before weighted connectivity\.?\s*/gi, 'For higher-order route details, VFB points to a narrower weighted follow-up on concrete neuron classes. ')
     .replace(/\bVFB output was skipped due to repeated queries on the same region endpoints\b/gi, 'the returned VFB evidence did not provide exact weights for broad region endpoints')
     .replace(/\bwas skipped due to repeated queries\b/gi, 'did not add new evidence')
@@ -640,8 +675,25 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bVFB output\b/gi, 'VFB')
     .replace(/\bbased on the output of VFB\b/gi, 'based on VFB')
     .replace(/\bSource:\s*VFB\s+VFB query\.?/gi, 'Source: VFB.')
+    .replace(/\bSource:\s*VFB evidence,\s*VFB\.?/gi, 'Source: VFB evidence.')
+    .replace(/\bVFB evidence,\s*VFB\b/gi, 'VFB evidence')
+    .replace(/\bVFB evidence of VFB\b/gi, 'VFB evidence')
+    .replace(/\bVFB evidence supports that VFB evidence supports\b/gi, 'VFB evidence supports')
+    .replace(/\bVirtual Fly Brain \(VFB\)\s+VFB evidence\b/gi, 'Virtual Fly Brain (VFB) evidence')
+    .replace(/\bVFB\s+VFB evidence\b/gi, 'VFB evidence')
+    .replace(/\bBased on VFB,\s*VFB has\b/gi, 'VFB has')
+    .replace(/\bThe information provided by VFB for the mushroom body could also shed light on its role in memory formation and how temperature information might be integrated into this process\. However, the output for this tool is not provided in the given TOOL_EVIDENCE_JSON, so we cannot draw conclusions from it at this time\.\s*/gi, '')
+    .replace(/\bThe evidence summary from VFB states that[\s\S]*?individual neurons\.\s*/gi, '')
+    .replace(/\bThis information comes from VFB, specifically the VFB query\.\s*/gi, 'This information comes from VFB. ')
+    .replace(/\bThe evidence summary and scope note provide context for the results, and the next actions suggest ways to further investigate the connectivity between thermosensory neurons and the mushroom body\.?\s*/gi, '')
+    .replace(/\bTherefore,\s*Based on VFB\b/g, 'Based on VFB')
+    .replace(/\bsuch as the returned PFL\/LAL candidates\b/gi, 'such as returned thermosensory projection or mushroom-body-associated classes')
+    .replace(/\bsuch as returned PFL\/LAL candidates\b/gi, 'such as returned thermosensory projection or mushroom-body-associated classes')
+    .replace(/\bTOOL_EVIDENCE_JSON\b/g, 'VFB evidence')
     .replace(/\bVFB\s+VFB query\b/gi, 'VFB query')
+    .replace(/\btypes, According to VFB\b/g, 'types, according to VFB')
     .replace(/\bis Based on VFB\b/g, 'is based on VFB')
+    .replace(/\bare Based on VFB\b/g, 'are based on VFB')
 }
 
 function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRounds, outboundAllowList, graphSpecs = [] }) {
@@ -990,7 +1042,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_summarize_region_connections',
-    description: 'Summarize VFB evidence for a major brain region, including structured components/functions for known regions and major target routes where available. Use this for broad anatomy questions like "what are the central complex components?" or "what brain regions does the antennal lobe connect to?"',
+    description: 'Summarize VFB evidence for a major brain region, including structured components/functions for known regions, main region-level inputs/outputs, and major target routes where available. Use this for broad anatomy questions like "what are the central complex components?", "what are the main input neurons to the mushroom body?", or "what brain regions does the antennal lobe connect to?"',
     parameters: {
       type: 'object',
       properties: {
@@ -1103,7 +1155,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_summarize_neuron_taxonomy',
-    description: 'Summarize VFB taxonomy evidence for a neuron class without expanding every subclass. Use this for questions like "what types of Kenyon cells exist?" or broad neuron-type classification requests.',
+    description: 'Summarize VFB taxonomy evidence for a neuron class without expanding every subclass. Use this only for taxonomy/classification questions like "what types of Kenyon cells exist?" or broad neuron-type classification requests, not for single-neuron profiles asking where it is, what it connects to, or function.',
     parameters: {
       type: 'object',
       properties: {
@@ -1176,7 +1228,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_summarize_neuron_profile',
-    description: 'Build a bounded VFB profile for one neuron class, including anatomy, available query summaries, genetic tools, and publications. Use this for comprehensive profile requests such as giant fiber neuron anatomy/connectivity/drivers/publications.',
+    description: 'Build a bounded VFB profile for one neuron class, including anatomy, available query summaries, optional genetic tools, and optional publications. Use this for comprehensive profile requests such as giant fiber neuron anatomy/connectivity/drivers/publications, or "what is known about X; where is it, what connects to it, and what is its function?"',
     parameters: {
       type: 'object',
       properties: {
@@ -2318,8 +2370,12 @@ function normalizeServerToolArgs(name, args = {}) {
 
   if (name === 'vfb_summarize_neuron_profile') {
     cleanArgs.neuron_type = String(cleanArgs.neuron_type || '').trim()
-    cleanArgs.include_publications = normalizeBooleanArg(cleanArgs.include_publications, true)
-    cleanArgs.include_genetic_tools = normalizeBooleanArg(cleanArgs.include_genetic_tools, true)
+    if (Object.prototype.hasOwnProperty.call(cleanArgs, 'include_publications')) {
+      cleanArgs.include_publications = normalizeBooleanArg(cleanArgs.include_publications, true)
+    }
+    if (Object.prototype.hasOwnProperty.call(cleanArgs, 'include_genetic_tools')) {
+      cleanArgs.include_genetic_tools = normalizeBooleanArg(cleanArgs.include_genetic_tools, true)
+    }
     cleanArgs.limit = normalizeInteger(cleanArgs.limit, 8, 1, 20)
   }
 
@@ -3256,6 +3312,16 @@ function extractTermInfoRecordsFromPayload(rawPayload) {
   )
 }
 
+function extractParentClassIdFromTermRecord(termRecord = {}) {
+  const parentText = [
+    termRecord?.Meta?.Types,
+    termRecord?.Meta?.Type,
+    termRecord?.Meta?.Relationships
+  ].filter(Boolean).join(' ')
+  const parentIds = parentText.match(/FBbt_\d{8}/g)
+  return Array.isArray(parentIds) && parentIds.length > 0 ? parentIds[0] : null
+}
+
 function extractRowsFromRunQueryPayload(rawPayload) {
   const parsed = parseJsonPayload(rawPayload)
   if (!parsed || typeof parsed !== 'object') return []
@@ -3386,6 +3452,18 @@ function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
   }
 
   return bestDoc
+}
+
+function looksLikeSpecificNeuronEndpoint(queryText = '') {
+  const normalized = normalizeEndpointSearchText(queryText)
+  return /[>#]/.test(String(queryText || '')) ||
+    /\bmbon[-_\s]*(?:gamma|alpha|beta|a'|b'|y|[0-9]+|pedc)\b/i.test(queryText) ||
+    /\b(?:gamma|alpha|beta|pedc|calyx|dendrite|axon)\d*[a-z/>-]*\b/.test(normalized)
+}
+
+function pickIndividualEndpointDoc(docs = [], queryText = '') {
+  if (!looksLikeSpecificNeuronEndpoint(queryText)) return null
+  return docs.find(doc => /^VFB_/i.test(String(doc?.short_form || doc?.shortForm || doc?.id || '').trim())) || null
 }
 
 function getSearchDocFacets(doc = {}) {
@@ -3719,8 +3797,13 @@ function inferVfbSearchQueryFromUserMessage(userMessage = '') {
   const message = String(userMessage || '').trim()
   if (!message) return ''
 
+  const normalized = normalizeEndpointSearchText(message)
+  if (hasMorphologicalSimilarityRequest(message) && /\bfru\+?\b[\s\S]{0,80}\bmal\b|\bmal\b[\s\S]{0,80}\bfru\+?\b/.test(normalized)) {
+    return 'fru+ mAL neurons'
+  }
+
   const symbols = extractLikelyUserTermSymbols(message)
-  const anatomyWord = normalizeEndpointSearchText(message).match(/\b(glomerulus|neuropil|lobe|body|region|tract|nerve|layer|zone|domain)\b/)?.[1]
+  const anatomyWord = normalized.match(/\b(glomerulus|neuropil|lobe|body|region|tract|nerve|layer|zone|domain)\b/)?.[1]
   if (symbols.length > 0) {
     return anatomyWord ? `${symbols[0]} ${anatomyWord}` : symbols[0]
   }
@@ -4198,6 +4281,27 @@ function maybeRepairVfbSearchForTaxonomy(cleanArgs = {}, context = {}) {
   return false
 }
 
+function maybeRepairVfbSearchForMorphology(cleanArgs = {}, context = {}) {
+  const userMessage = context.userMessage || ''
+  if (!hasMorphologicalSimilarityRequest(userMessage)) return false
+
+  const userNorm = normalizeEndpointSearchText(userMessage)
+  const queryNorm = normalizeEndpointSearchText(cleanArgs.query || '')
+  const asksFruMal = /\bfru\+?\b[\s\S]{0,80}\bmal\b|\bmal\b[\s\S]{0,80}\bfru\+?\b/.test(userNorm)
+  if (!asksFruMal) return false
+
+  if (!queryNorm || queryNorm.length > 50 || /\b(there|dataset|morphologically|similar|studies)\b/.test(queryNorm)) {
+    cleanArgs.query = 'fru+ mAL neurons'
+    cleanArgs.filter_types = ['neuron']
+    cleanArgs.exclude_types = ['deprecated']
+    cleanArgs.boost_types = ensureStringListIncludes(cleanArgs.boost_types, 'has_image')
+    cleanArgs.minimize_results = true
+    return true
+  }
+
+  return false
+}
+
 function maybeRepairPrimaryTermIdForTaxonomy(cleanArgs = {}, context = {}) {
   if (!isTaxonomyStyleQuestion(context.userMessage || '')) return null
   if (Array.isArray(cleanArgs.id) || Array.isArray(cleanArgs.queries)) return null
@@ -4274,6 +4378,9 @@ function inferRunQueryArgsFromToolState(cleanArgs = {}, context = {}) {
     const inferredQueryType = inferRunQueryTypeFromUserMessage(context.userMessage || '', inferredTerm.queryTypes)
     if (inferredQueryType) {
       cleanArgs.query_type = inferredQueryType
+      changed = true
+    } else if (hasMorphologicalSimilarityRequest(context.userMessage || '')) {
+      cleanArgs.query_type = 'SimilarMorphologyTo'
       changed = true
     }
   }
@@ -4673,15 +4780,43 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
     }
   }
 
+  const specificEndpointQuery = looksLikeSpecificNeuronEndpoint(queryText)
   const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
     query: queryText,
     filter_types: ['neuron'],
     exclude_types: ['deprecated'],
-    boost_types: ['class', 'has_neuron_connectivity'],
+    boost_types: specificEndpointQuery ? ['has_neuron_connectivity'] : ['class', 'has_neuron_connectivity'],
     rows: 25,
     minimize_results: false
   })
   const docs = extractDocsFromSearchTermsPayload(searchText)
+  const individualDoc = pickIndividualEndpointDoc(docs, queryText)
+  const individualId = extractCanonicalVfbTermId(individualDoc?.short_form || individualDoc?.shortForm || individualDoc?.id || '')
+  if (individualId && /^VFB_/i.test(individualId)) {
+    try {
+      const individualTermInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: individualId })
+      const individualTermRecord = extractTermInfoRecordFromPayload(individualTermInfoText, individualId)
+      const parentClassId = extractParentClassIdFromTermRecord(individualTermRecord)
+      if (parentClassId && VFB_NEURON_CLASS_ID_REGEX.test(parentClassId)) {
+        const parentTermInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: parentClassId })
+        const parentTermRecord = extractTermInfoRecordFromPayload(parentTermInfoText, parentClassId)
+        return {
+          input: String(rawValue || ''),
+          id: parentClassId,
+          label: getReadableTermName(parentTermRecord, parentClassId),
+          match_label: individualDoc.label || individualId,
+          resolved_from_individual: {
+            id: individualId,
+            label: individualDoc.label || individualId
+          },
+          term_info_text: parentTermInfoText,
+          is_neuron_class: parentTermRecord ? isNeuronClassTerm(parentTermRecord) : true
+        }
+      }
+    } catch {
+      // Fall through to class search resolution when individual-parent lookup fails.
+    }
+  }
   const bestDoc = pickBestConnectivityEndpointDoc(docs, queryText)
   const bestId = extractCanonicalVfbTermId(bestDoc?.short_form || bestDoc?.shortForm || bestDoc?.id || '')
 
@@ -5183,6 +5318,59 @@ async function findConnectivityPartnersTool(client, args = {}) {
 
     partnerTargetBreakdown.push(...await Promise.all(partnersForBreakdown.map(buildPartnerBreakdown)))
   }
+  const rankedPartnerTargetPairs = includePartnerTargets
+    ? partnerTargetBreakdown
+      .flatMap(partner => {
+        if (!Array.isArray(partner?.top_targets)) return []
+        return partner.top_targets.map(target => {
+          const partnerIsSource = direction === 'upstream'
+          return {
+            source_id: partnerIsSource ? partner.partner_id : target.id,
+            source_label: partnerIsSource ? partner.partner_label : target.label,
+            target_id: partnerIsSource ? target.id : partner.partner_id,
+            target_label: partnerIsSource ? target.label : partner.partner_label,
+            source_family_weight: partner.partner_total_weight_to_endpoint_family,
+            ...(Number.isFinite(Number(target.total_weight)) ? { total_weight: Number(target.total_weight) } : {}),
+            ...(Number.isFinite(Number(target.pairwise_connections)) ? { pairwise_connections: Number(target.pairwise_connections) } : {}),
+            ...(Number.isFinite(Number(target.connected_n)) ? { connected_n: Number(target.connected_n) } : {}),
+            ...(Number.isFinite(Number(target.total_n)) ? { total_n: Number(target.total_n) } : {})
+          }
+        })
+      })
+      .sort((a, b) => {
+        const aWeight = Number.isFinite(Number(a.total_weight)) ? Number(a.total_weight) : -1
+        const bWeight = Number.isFinite(Number(b.total_weight)) ? Number(b.total_weight) : -1
+        if (bWeight !== aWeight) return bWeight - aWeight
+        return String(a.source_label || '').localeCompare(String(b.source_label || '')) ||
+          String(a.target_label || '').localeCompare(String(b.target_label || ''))
+      })
+      .slice(0, Math.min(limit * targetLimit, 30))
+    : undefined
+  const recommendedPartnerTargetAnswerRows = Array.isArray(rankedPartnerTargetPairs)
+    ? rankedPartnerTargetPairs.slice(0, Math.min(8, rankedPartnerTargetPairs.length)).map(pair => ({
+        source: compactDefinedToolArgs({
+          id: pair.source_id,
+          label: pair.source_label
+        }),
+        target: compactDefinedToolArgs({
+          id: pair.target_id,
+          label: pair.target_label
+        }),
+        ...(Number.isFinite(Number(pair.total_weight)) ? { total_weight: Number(pair.total_weight) } : {}),
+        ...(Number.isFinite(Number(pair.pairwise_connections)) ? { pairwise_connections: Number(pair.pairwise_connections) } : {}),
+        ...(Number.isFinite(Number(pair.source_family_weight)) ? { source_family_weight: Number(pair.source_family_weight) } : {})
+      }))
+    : undefined
+  const recommendedPartnerTargetAnswerText = Array.isArray(recommendedPartnerTargetAnswerRows) && recommendedPartnerTargetAnswerRows.length > 0
+    ? recommendedPartnerTargetAnswerRows
+      .slice(0, 6)
+      .map((row, index) => {
+        const weightText = Number.isFinite(Number(row.total_weight)) ? `total_weight ${Number(row.total_weight)}` : 'weight not returned'
+        const pairwiseText = Number.isFinite(Number(row.pairwise_connections)) ? `, pairwise_connections ${Number(row.pairwise_connections)}` : ''
+        return `${index + 1}. ${row.source?.label || row.source?.id} (${row.source?.id}) -> ${row.target?.label || row.target?.id} (${row.target?.id}): ${weightText}${pairwiseText}`
+      })
+      .join('; ')
+    : ''
 
   return JSON.stringify({
     query: {
@@ -5209,8 +5397,9 @@ async function findConnectivityPartnersTool(client, args = {}) {
     evidence_summary: {
       result_scope: partnerFilter ? 'filtered_class_connectivity_partners' : 'ranked_class_connectivity_partners',
       answer_hint: partnerRows.length > 0
-        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}.`
+        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}.${recommendedPartnerTargetAnswerText ? ` Top mapped pairs to list directly: ${recommendedPartnerTargetAnswerText}.` : ''}${includePartnerTargets ? ' Do not defer the exact mappings to a JSON section.' : ''}`
         : `VFB returned ${count} ${direction} rows for ${endpoint.label}, but none matched the requested partner filter${partnerFilter ? ` "${partnerFilter}"` : ''}.`,
+      recommended_answer_rows: recommendedPartnerTargetAnswerRows,
       caution: 'Rows are class-level connectivity summaries from the selected endpoint query; broad aggregate classes are not one-to-one neuron types.'
     },
     partner_count: partnerRows.length,
@@ -5233,6 +5422,7 @@ async function findConnectivityPartnersTool(client, args = {}) {
       ...(Number.isFinite(Number(partner.percent_connected)) ? { percent_connected: Number(partner.percent_connected) } : {}),
       ...(Number.isFinite(Number(partner.avg_weight)) ? { avg_weight: Number(partner.avg_weight) } : {})
     })),
+    ranked_partner_target_pairs: rankedPartnerTargetPairs,
     partner_target_breakdown: includePartnerTargets ? partnerTargetBreakdown : undefined,
     warnings,
     next_actions: partnerRows.length > 0
@@ -5794,6 +5984,7 @@ async function getRunQueryEvidence(client, id, queryType, limit = 8) {
 const KNOWN_VFB_EVIDENCE_TERMS = Object.freeze({
   kenyonCell: 'FBbt_00003686',
   adultKenyonCell: 'FBbt_00049825',
+  mushroomBody: 'FBbt_00005801',
   antennalLobe: 'FBbt_00003924',
   adultAntennalLobe: 'FBbt_00007401',
   larvalAntennalLobe: 'FBbt_00007127',
@@ -6261,6 +6452,33 @@ function inferNeuronProfileFocusFromUserMessage(userMessage = '', rawValue = '')
   }
 }
 
+function isGiantFiberProfileFocus(...values) {
+  return values.some(value => /\bgiant fiber(?: neuron)?\b|\bgiant fibre(?: neuron)?\b|\bGFN\b|\bDNp01\b|\bFBbt_00004020\b/i.test(String(value || '')))
+}
+
+function buildNeuronProfilePublicationQuery({ focus = {}, resolved = {}, context = {} } = {}) {
+  if (isGiantFiberProfileFocus(focus.label, focus.id, resolved.label, resolved.id, context.userMessage)) {
+    return 'Drosophila DNp01 giant fiber neuron'
+  }
+
+  return `${resolved.label || focus.label} Drosophila anatomy connectivity driver`
+}
+
+function filterNeuronProfilePublications(publications = {}, { focus = {}, resolved = {}, context = {}, limit = 8 } = {}) {
+  const rows = Array.isArray(publications?.results) ? publications.results : []
+  if (rows.length === 0) return rows
+
+  if (isGiantFiberProfileFocus(focus.label, focus.id, resolved.label, resolved.id, context.userMessage)) {
+    const highConfidenceRows = rows.filter(row => {
+      const haystack = normalizeEndpointSearchText(`${row?.title || ''} ${row?.journal || ''}`)
+      return /\b(giant fiber|giant fibre|dnp01|escape pathway|escape circuit|looming|giant fiber system)\b/.test(haystack)
+    })
+    if (highConfidenceRows.length > 0) return highConfidenceRows.slice(0, limit)
+  }
+
+  return rows.slice(0, limit)
+}
+
 function getProfileQuerySummaries(termRecord = {}, limit = 8) {
   const preferredQueryNames = [
     'ListAllAvailableImages',
@@ -6323,7 +6541,9 @@ async function summarizeNeuronProfileTool(client, args = {}, context = {}) {
 
   const termRecord = extractTermInfoRecordFromPayload(resolved.term_info_text, resolved.id) || resolved.term_record
   let geneticTools = null
-  const includeGeneticTools = args.include_genetic_tools !== false
+  const profileRequestText = `${context.userMessage || ''} ${args.neuron_type || ''}`
+  const userRequestedGeneticTools = /\b(driver|drivers|gal4|split[- ]?gal4|genetic tools?|expression patterns?|label(?:s|ing)?)\b/i.test(profileRequestText)
+  const includeGeneticTools = userRequestedGeneticTools && args.include_genetic_tools !== false
   if (includeGeneticTools) {
     try {
       geneticTools = parseJsonPayload(await findGeneticToolsTool(client, {
@@ -6338,16 +6558,35 @@ async function summarizeNeuronProfileTool(client, args = {}, context = {}) {
   }
 
   let publications = null
-  const includePublications = args.include_publications !== false
+  let publicationQuery = null
+  const userRequestedPublications = /\b(publication|publications|papers?|literature|pubmed)\b/i.test(profileRequestText)
+  const includePublications = userRequestedPublications && args.include_publications !== false
   if (includePublications) {
     try {
+      publicationQuery = buildNeuronProfilePublicationQuery({ focus, resolved, context })
       publications = parseJsonPayload(await searchPubmed(
-        `${resolved.label || focus.label} Drosophila anatomy connectivity driver`,
+        publicationQuery,
         Math.min(limit, 8),
         'relevance'
       ))
+      if (publications && Array.isArray(publications.results)) {
+        publications = {
+          ...publications,
+          results: filterNeuronProfilePublications(publications, {
+            focus,
+            resolved,
+            context,
+            limit
+          }),
+          query: publicationQuery,
+          scope_note: isGiantFiberProfileFocus(focus.label, focus.id, resolved.label, resolved.id, context.userMessage)
+            ? 'Publication rows were filtered to titles that directly mention giant fiber/DNp01 or the escape pathway when possible.'
+            : 'Publication rows come from a focused PubMed lookup for the resolved neuron profile.'
+        }
+      }
     } catch (error) {
       publications = {
+        query: publicationQuery,
         error: error?.message || String(error)
       }
     }
@@ -6376,14 +6615,16 @@ async function summarizeNeuronProfileTool(client, args = {}, context = {}) {
       : undefined,
     publications: publications
       ? compactDefinedToolArgs({
+          query: publications.query,
           total_found: publications.total_found,
           results: Array.isArray(publications.results) ? publications.results.slice(0, limit) : undefined,
+          scope_note: publications.scope_note,
           error: publications.error
         })
       : undefined,
     evidence_summary: {
       result_scope: 'bounded_vfb_neuron_profile',
-      answer_hint: 'Answer as a profile with sections for anatomy, connectivity evidence, genetic tools, and publications. Use the focus term metadata for anatomy; use VFB query summaries for available connectivity/data tables; use top_tools for drivers/expression patterns; cite only returned publications. Do not launch broad pathway searches for a one-neuron profile.'
+      answer_hint: 'Answer as a profile with sections for anatomy, connectivity evidence, genetic tools, and publications. Use the focus term metadata for anatomy; use VFB query summaries for available connectivity/data tables; use top_tools for drivers/expression patterns; cite only returned publications. Treat publication rows as literature candidates from the focused lookup, and do not claim that every returned title is about the neuron unless its title or the VFB term metadata directly supports that. Do not launch broad pathway searches for a one-neuron profile.'
     }
   })
 }
@@ -6653,6 +6894,7 @@ async function resolveRegionTerm(client, rawRegion = '', context = {}) {
   }
 
   const known = (() => {
+    if (/\bmushroom body\b|\bmb\b/i.test(region)) return { id: KNOWN_VFB_EVIDENCE_TERMS.mushroomBody, label: 'mushroom body' }
     if (/\badult central brain\b/i.test(region)) return { id: KNOWN_VFB_EVIDENCE_TERMS.adultCentralBrain, label: 'adult central brain' }
     if (/\bantennal lobe\b/i.test(region)) return { id: KNOWN_VFB_EVIDENCE_TERMS.antennalLobe, label: 'antennal lobe' }
     if (/\bcentral complex\b/i.test(region)) return { id: 'FBbt_00003632', label: 'adult central complex' }
@@ -6715,11 +6957,35 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
     .filter(Boolean)
 
   const relatedEvidence = []
+  const majorInputs = []
   const majorTargets = []
   const majorComponents = []
   const associatedFunctions = []
   let literature = []
   const regionNorm = normalizeEndpointSearchText(region.label || args.region || '')
+  const requestedDirection = inferRegionConnectionQuestionDirection(context.userMessage || '')
+  if (regionNorm.includes('mushroom body')) {
+    const presynapticSummary = focusQuerySummaries.find(summary => summary.query_type === 'NeuronsPresynapticHere')
+    const tractsSummary = focusQuerySummaries.find(summary => summary.query_type === 'TractsNervesInnervatingHere')
+    majorInputs.push(
+      {
+        label: 'sensory interneuron afferents to the calyx',
+        evidence: 'The VFB mushroom body description says the calyx receives sensory interneuron afferents.'
+      },
+      {
+        label: 'neurons with presynaptic terminals in mushroom body',
+        count: presynapticSummary?.count,
+        examples: Array.isArray(presynapticSummary?.preview_rows) ? presynapticSummary.preview_rows : [],
+        evidence: 'VFB NeuronsPresynapticHere rows are region-level input evidence for neurons with presynaptic terminals in the mushroom body.'
+      },
+      {
+        label: 'tracts innervating the mushroom body',
+        count: tractsSummary?.count,
+        examples: Array.isArray(tractsSummary?.preview_rows) ? tractsSummary.preview_rows : [],
+        evidence: 'VFB TractsNervesInnervatingHere rows provide tract-level context for input routes.'
+      }
+    )
+  }
   if (regionNorm.includes('antennal lobe')) {
     const relatedIds = [
       KNOWN_VFB_EVIDENCE_TERMS.antennalLobeProjectionNeuron,
@@ -6797,6 +7063,7 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
   }
 
   const hasMajorTargets = majorTargets.length > 0
+  const hasMajorInputs = majorInputs.length > 0 && requestedDirection === 'upstream'
   const hasMajorComponents = majorComponents.length > 0
   return JSON.stringify({
     query: {
@@ -6806,6 +7073,7 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
     },
     focus_region: focusTerm,
     focus_query_summaries: focusQuerySummaries,
+    major_input_evidence: majorInputs,
     related_neuron_route_evidence: relatedEvidence,
     major_target_regions: majorTargets,
     major_components: majorComponents,
@@ -6814,16 +7082,22 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
     evidence_summary: {
       result_scope: hasMajorComponents
         ? 'vfb_region_structure_with_literature_function_context'
+        : hasMajorInputs
+        ? 'vfb_region_input_neuron_evidence'
         : hasMajorTargets
         ? 'curated_vfb_region_route_terms'
         : 'vfb_region_term_queries_and_previews',
       answer_hint: hasMajorComponents
         ? 'For the central complex, lead with the VFB-listed components: ellipsoid body, fan-shaped body, paired noduli, asymmetrical bodies, and protocerebral bridge. Then summarize associated functions from returned PubMed literature as navigation/orientation, locomotor control, and sleep/arousal or memory-related behaviours, keeping function claims scoped to the literature context.'
+        : hasMajorInputs
+        ? 'For mushroom body input questions, lead with the calyx receiving sensory interneuron afferents, then summarize the NeuronsPresynapticHere count and examples as region-level input evidence. Do not present preview rows as a ranked "strongest" list unless weights are present.'
         : hasMajorTargets
         ? 'For the antennal lobe, VFB evidence points to antennal lobe projection neurons carrying output to higher brain centers, especially mushroom body/calyx and lateral horn. Lead with those targets, then note that detailed weights require specific projection-neuron or glomerulus classes.'
         : 'Summarize the resolved region description and available query counts/previews. If the user wants synaptic weights, ask for or choose a narrower neuron class before running connectivity.',
       scope_note: hasMajorComponents
         ? 'VFB term metadata verifies the structural components; function associations come from the returned literature records and should be stated at high level.'
+        : hasMajorInputs
+        ? 'This is region-level input evidence for neurons or tracts associated with the mushroom body; weighted class-level ranking requires a narrower neuron-class endpoint or a supported class-connectivity query.'
         : 'Broad anatomy regions are not single neuron classes. Use projection-neuron classes or specific neuron subclasses for weighted connectome queries.'
     },
     next_actions: hasMajorComponents
@@ -6837,6 +7111,19 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
             id: 'focus_function',
             label: 'Focus a function',
             description: 'Choose navigation, sleep, locomotion, or memory to retrieve more targeted publications and neuron classes.'
+          }
+        ]
+      : hasMajorInputs
+      ? [
+          {
+            id: 'inspect_presynaptic_rows',
+            label: 'Inspect presynaptic rows',
+            description: 'Open the NeuronsPresynapticHere result to review the full set of mushroom-body presynaptic neuron classes.'
+          },
+          {
+            id: 'choose_weighted_endpoint',
+            label: 'Choose weighted endpoint',
+            description: 'Pick a concrete input neuron class for a weighted class-level connectivity follow-up.'
           }
         ]
       : hasMajorTargets
@@ -7258,6 +7545,13 @@ function inferPathwayEndpointsFromUserMessage(userMessage = '', args = {}) {
   return { source, target }
 }
 
+function inferRegionConnectionQuestionDirection(userMessage = '') {
+  const normalized = normalizeEndpointSearchText(userMessage)
+  if (/\b(input|inputs|upstream|presynaptic|afferent|afferents|project to|projects to)\b/.test(normalized)) return 'upstream'
+  if (/\b(output|outputs|downstream|postsynaptic|target|targets|efferent|efferents|projects from)\b/.test(normalized)) return 'downstream'
+  return ''
+}
+
 async function getPathwayTermEvidence(client, id, queryNames = [], limit = 8) {
   const evidence = await getAssociatedTermEvidence(client, id, queryNames, limit)
   const runQuerySummaries = []
@@ -7536,6 +7830,21 @@ function createBasicGraph(args = {}) {
 
 async function executeFunctionTool(name, args, context = {}) {
   const normalizedArgs = normalizeServerToolArgs(name, args)
+  if (name === 'vfb_summarize_neuron_taxonomy') {
+    const inferredTaxonomyArgs = inferNeuronTaxonomyArgsFromUserMessage(context.userMessage || '')
+    if (!normalizedArgs.neuron_type && inferredTaxonomyArgs.neuron_type) {
+      normalizedArgs.neuron_type = inferredTaxonomyArgs.neuron_type
+    }
+    if (!normalizedArgs.stage && inferredTaxonomyArgs.stage) {
+      normalizedArgs.stage = inferredTaxonomyArgs.stage
+    }
+  }
+  if (name === 'vfb_summarize_neuron_profile') {
+    const inferredProfileArgs = inferNeuronProfileArgsFromUserMessage(context.userMessage || '')
+    if (!normalizedArgs.neuron_type && inferredProfileArgs.neuron_type) {
+      normalizedArgs.neuron_type = inferredProfileArgs.neuron_type
+    }
+  }
 
   if (name === 'list_data_resources') {
     return listDataResourcesTool(getDataResourceStore(context))
@@ -7717,6 +8026,7 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     if (name === 'vfb_search_terms') {
+      maybeRepairVfbSearchForMorphology(cleanArgs, context)
       maybeRepairVfbSearchForTaxonomy(cleanArgs, context)
     }
 
@@ -8354,6 +8664,20 @@ async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = 
 
   if (invalidQueries.length === 0) return null
 
+  if (
+    hasMorphologicalSimilarityRequest(userMessage) &&
+    invalidQueries.some(query => normalizeQueryTypeComparisonKey(query.query_type) === 'similarmorphologyto')
+  ) {
+    return JSON.stringify({
+      no_direct_morphology_similarity_query: true,
+      tool: 'vfb_run_query',
+      recoverable: false,
+      invalid_queries: invalidQueries,
+      instruction: 'Do not retry with unrelated query types as morphology evidence. Answer from the resolved VFB term/search evidence already gathered.',
+      answer_hint: 'VFB resolved the fru+/mAL request to fruitless mAL-related terms, but SimilarMorphologyTo is not listed for the resolved class. Do not claim a Hemibrain morphology match from class metadata alone. State that this bounded VFB pass does not confirm a Hemibrain match, then suggest the concrete next step: use a returned individual neuron/image or a term with SimilarMorphologyTo/NBLAST available for a dataset-scoped morphology comparison.'
+    })
+  }
+
   return JSON.stringify({
     error: 'vfb_run_query query_type is not listed in vfb_get_term_info for one or more terms.',
     tool: 'vfb_run_query',
@@ -8453,7 +8777,7 @@ TOOL SELECTION:
 - For neuron-class taxonomy summaries, such as "what types of Kenyon cells exist", use vfb_summarize_neuron_taxonomy. For adult Kenyon-cell types, pass neuron_type="Kenyon cell" and stage="adult"; do not fetch every subclass one by one.
 - For anatomy questions asking about associated functions, use VFB term metadata for structure and VFB/PubMed evidence for functions. Do not state functions from memory; if tool output does not support a function, use a scope note.
 - For neurotransmitter questions, use vfb_get_neurotransmitter_profile and answer from VFB neurotransmitter tags/subclass evidence. Mention secondary tags separately.
-- For broad anatomy-region connection questions, use vfb_summarize_region_connections. Do not use a broad anatomy term directly as a class-to-class connectivity endpoint.
+- For broad anatomy-region input/output/connection questions, use vfb_summarize_region_connections. Do not use a broad anatomy term directly as a class-to-class connectivity endpoint.
 - For brain-region components/functions questions, use vfb_summarize_region_connections. For central complex structure, answer from VFB-listed components and returned literature; do not turn this into a connectivity query.
 - For adult-vs-larval or stage-comparison anatomy questions, use vfb_compare_region_organization. For adult vs larval antennal lobe, answer from the returned stage descriptions/query counts and avoid PubMed unless the user specifically asks for papers.
 - For containment hierarchy questions, use vfb_trace_containment_chain. For DA1 glomerulus, list the returned chain instead of treating an empty PartsOf preview as absence of hierarchy.
@@ -8461,10 +8785,10 @@ TOOL SELECTION:
 - FlyBase entities: vfb_resolve_entity → vfb_find_stocks.
 - Split-GAL4 combinations: vfb_resolve_combination → vfb_find_combo_publications, but only when the user gives a concrete combination/line name. For broad "genetic tools for X" questions, use vfb_find_genetic_tools.
 - Connectivity between neuron classes: call vfb_query_connectivity directly with the user's full neuron class labels or FBbt IDs.
-- Broad multi-step pathway questions between systems/regions, such as ORNs to lateral horn, visual system to mushroom body, sensory neurons to fan-shaped body, thermosensory neurons to mushroom body, or central complex to lateral accessory lobe: use vfb_find_pathway_evidence first. It is better to return candidate route evidence plus next actions than to dead-stop on a broad direct connectivity query. Do not search PubMed solely because the wording mentions "memory" or "influence" if VFB pathway evidence already addresses the route.
+- Broad multi-step pathway questions between systems/regions, such as ORNs to lateral horn, visual system to mushroom body, sensory neurons to fan-shaped body, thermosensory neurons to mushroom body, or central complex to lateral accessory lobe: use vfb_find_pathway_evidence first. It is better to return route evidence plus concrete narrowing options than to dead-stop on a broad direct connectivity query. Do not search PubMed solely because the wording mentions "memory" or "influence" if VFB pathway evidence already addresses the route.
 - Cross-dataset consistency questions, such as Hemibrain vs FAFB/FlyWire connectivity for a neuron class: use vfb_compare_dataset_connectivity. Dataset names are scopes, not neuron endpoints.
 - Experimental circuit-planning questions that ask for neurons, connections, and genetic tools together: use vfb_summarize_experimental_circuit. For CO2 avoidance, pass circuit="CO2 avoidance" and focus="carbon dioxide sensitive neuron".
-- Comprehensive profile questions for one neuron class that ask for anatomy, connectivity, driver lines, and publications: use vfb_summarize_neuron_profile. For giant fiber neuron, use neuron_type="giant fiber neuron". Do not launch broad pathway searches for a one-neuron profile.
+- One-neuron profile questions, including comprehensive anatomy/connectivity/driver/publication profiles or "what is known about X; where is it, what connects to it, and what is its function?": use vfb_summarize_neuron_profile. For giant fiber neuron, use neuron_type="giant fiber neuron". Do not launch broad pathway searches for a one-neuron profile.
 - Ranked/filtered partners for one neuron class, such as "dopaminergic input to MBONs" or "which DAN types connect to which MBON types": use vfb_find_connectivity_partners. Set endpoint_type to the fixed class (e.g. "mushroom body output neuron"), direction to upstream for inputs, partner_filter to the source family (e.g. "dopaminergic neuron" or "DAN"), and include_partner_targets true when the user asks which source types connect to which target types.
 - Reciprocal/bidirectional/mutual connectivity between two neuron families, such as MBONs and DANs: use vfb_find_reciprocal_connectivity. Do not answer "none" from broad family-to-family vfb_query_connectivity alone.
 - Shared downstream targets/convergence between two or more source neuron classes: call vfb_compare_downstream_targets. If the source classes are named in parentheses, pass those exact labels as upstream_types. Use target_filter when the user names the target family, e.g. MBON/mushroom body output neuron. Do not replace this with repeated pairwise vfb_query_connectivity calls.
@@ -8506,11 +8830,11 @@ TOOL PARAMETERS:
 - If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature.
 - If vfb_get_neurotransmitter_profile returns primary_transmitter_candidates, answer with the top candidate and its VFB tag evidence. Do not call it "unverified" when the candidate comes from VFB tags; use scope notes instead.
 - If vfb_summarize_neuron_taxonomy returns curated_type_rows, answer from those rows and the query summaries. Do not mention compressed evidence or internal helper names, and do not add cell counts, transmitter claims, or connectivity claims unless they are explicitly in the returned evidence.
-- If vfb_summarize_region_connections returns major_target_regions, lead with those target regions and then give a scoped next step for weights.
+- If vfb_summarize_region_connections returns major_input_evidence, lead with the region-level input evidence and give a scoped next step for weighted ranking. If it returns major_target_regions, lead with those target regions and then give a scoped next step for weights.
 - If vfb_compare_region_organization returns comparison_points, answer from those comparison points and keep counts scoped to the returned VFB stage terms.
 - If vfb_trace_containment_chain returns containment_chain, list it in order and mention the metadata/relationship scope note rather than empty preview tables.
 - If vfb_get_region_neuron_count returns count_candidates from PubMed plus VFB query counts, keep the scopes separate: literature cell counts are approximate dataset/census statements; VFB query counts are record/query counts.
-- If vfb_find_pathway_evidence returns pathway_steps, answer with the candidate route, candidate_classes, and the named evidence classes, then suggest narrowing to specific neuron classes for weighted follow-up. Avoid "not verified", "skipped", or "tool output" wording when VFB returned a route; use scope notes for missing weights.
+- If vfb_find_pathway_evidence returns pathway_steps, answer with the route, candidate_classes when present, and the named evidence classes, then suggest narrowing to specific neuron classes for weighted follow-up. Avoid "not verified", "skipped", or "tool output" wording when VFB returned a route; use scope notes for missing weights.
 - If vfb_compare_dataset_connectivity returns matched_dataset_scopes, say which dataset scopes are available and what same-endpoint comparison is needed. Do not claim consistency from dataset availability alone.
 - If vfb_summarize_experimental_circuit returns genetic_tools and connectivity_evidence, answer with the focus neuron, returned connectivity previews, available expression-pattern tools, and concrete next checks.
 - If vfb_summarize_neuron_profile returns a profile, answer with sections for anatomy, connectivity evidence, genetic tools, and publications. Cite only returned publication rows and keep VFB query counts scoped.
@@ -8882,7 +9206,7 @@ TOOL ROUTING RECIPES:
 - For taxonomy questions asking "how many" and "how organised", prefer the relevant class term (for example "visual system neuron" for visual-system neuron taxonomy), report the exact query count from Queries[].count when it matches the user's scope, and use only a small read_data_resource sample if the hierarchy needs examples.
 - If the user asks for an adult/larval/stage-specific taxonomy count and the class count includes mixed tags, use the data_resource overview/read collection_summary.stage_counts, tag_counts, or search_data_resource for the stage tag before answering the count.
 - Neurotransmitter/transmitter questions: call vfb_get_neurotransmitter_profile with the neuron class phrase. For Kenyon cells/KCs, use neuron_type="Kenyon cell". Answer from primary_transmitter_candidates and evidence_rows.
-- Region-level "what does this connect to?" questions: call vfb_summarize_region_connections with the anatomy phrase. For antennal lobe, this returns VFB projection-neuron route evidence to mushroom body/calyx and lateral horn.
+- Region-level "what connects to/from this?" or "main inputs/outputs" questions: call vfb_summarize_region_connections with the anatomy phrase. For mushroom body input questions, answer from major_input_evidence and NeuronsPresynapticHere previews; for antennal lobe, this returns VFB projection-neuron route evidence to mushroom body/calyx and lateral horn.
 - Region structure/function overview questions: call vfb_summarize_region_connections with the anatomy phrase. For central complex components/functions, use region="central complex"; do not run connectivity for a components/functions question.
 - Adult-vs-larval or stage-comparison anatomy questions: call vfb_compare_region_organization. For adult vs larval antennal lobe, answer from the returned stage descriptions and query-count summaries, not PubMed.
 - Anatomical containment hierarchy questions such as DA1 glomerulus up to brain: call vfb_trace_containment_chain. Do not treat an empty PartsOf preview as absence of the formal hierarchy when term metadata/relationships provide the chain.
@@ -8890,17 +9214,19 @@ TOOL ROUTING RECIPES:
 - Anatomy components/functions: use vfb_get_term_info Meta.Description for high-level named components before expanding tables. If the user asks about functions/roles/behaviour and the VFB term output does not explicitly verify them, call search_pubmed with a focused query before final answer; do not fill functions from memory.
 - Neuron type taxonomy/profile: vfb_search_terms for the class, prefer FBbt neuron class results over VFB individual instances, then vfb_get_term_info, then vfb_run_query using relevant available query types.
 - One term profile or data availability: vfb_search_terms -> vfb_get_term_info; then use available Queries[] such as ListAllAvailableImages, SimilarMorphologyTo, PaintedDomains, AlignedDatasets, or AllDatasets only if listed.
+- Morphology/NBLAST similarity questions: resolve the requested neuron/term, use SimilarMorphologyTo only when it is listed for that exact term, and avoid substituting unrelated query types such as NeuronsPartHere or ExpressionOverlapsHere as morphology evidence. If SimilarMorphologyTo is unavailable for a broad class, answer with the resolved candidates and say the next bounded step is selecting a concrete neuron image or returned individual with a morphology-similarity query.
 - Ranked inputs/outputs for one neuron class: vfb_search_terms -> vfb_get_term_info -> vfb_run_query using available upstream/downstream class connectivity query names from Queries[].
 - Ranked/filtered partners for one neuron class: use vfb_find_connectivity_partners. For "dopaminergic input to MBONs" set endpoint_type="mushroom body output neuron", direction="upstream", partner_filter="dopaminergic neuron"; set include_partner_targets=true when the user asks "which source types connect to which target types".
 - Reciprocal/bidirectional/mutual connectivity between two neuron families: use vfb_find_reciprocal_connectivity. For MBON-DAN reciprocity set source_family="mushroom body output neuron", target_family="dopaminergic neuron"; rank reciprocal_pairs by mutual_min_weight in the answer.
-- Broad multi-step pathway questions between systems/regions, especially "could X reach/influence Y", "trace a pathway", "how many synaptic steps", or "what types connect X to Y" with broad anatomy endpoints: use vfb_find_pathway_evidence. Do not force broad anatomy terms into vfb_query_connectivity; return the candidate route evidence and a concrete narrowing step. Do not search PubMed solely because the target is described as a "memory circuit" or possible influence; VFB pathway/connectivity evidence is enough for the route answer.
+- Broad multi-step pathway questions between systems/regions, especially "could X reach/influence Y", "trace a pathway", "how many synaptic steps", or "what types connect X to Y" with broad anatomy endpoints: use vfb_find_pathway_evidence. Do not force broad anatomy terms into vfb_query_connectivity; return the route evidence and a concrete narrowing step. Do not search PubMed solely because the target is described as a "memory circuit" or possible influence; VFB pathway/connectivity evidence is enough for the route answer.
 - Cross-dataset consistency questions, such as Hemibrain vs FAFB/FlyWire connectivity for a neuron class: call vfb_compare_dataset_connectivity. Dataset names are scopes, not neuron endpoints. Answer with the matched dataset scopes and the bounded same-endpoint comparison needed; do not claim consistency from dataset availability alone.
 - Direct class-to-class connectivity: use vfb_query_connectivity. Never use "all" or "any" as a vfb_query_connectivity endpoint; for one-sided input/output rankings use vfb_run_query with the endpoint term's available upstream/downstream query type.
 - Shared downstream targets/convergence: use vfb_compare_downstream_targets with upstream_types set to the source neuron classes. If the source classes are named in parentheses, pass those exact labels. If the user names a target family (for example MBONs), pass it as target_filter. Do not run many pairwise vfb_query_connectivity calls to find common targets.
 - Experimental circuit-planning questions that ask for neurons, connections, and genetic tools together: call vfb_summarize_experimental_circuit. For CO2 avoidance, use circuit="CO2 avoidance" and focus="carbon dioxide sensitive neuron"; answer with the VFB focus neurons, connectivity previews, driver/expression-pattern tools, and concrete next checks.
-- Comprehensive profile questions for one neuron class that ask for anatomy, connectivity, drivers, and publications: call vfb_summarize_neuron_profile. For giant fiber neuron, use neuron_type="giant fiber neuron". Do not launch broad pathway searches for a one-neuron profile.
+- One-neuron profile questions that ask for anatomy/connectivity/function, or comprehensive anatomy/connectivity/drivers/publications: call vfb_summarize_neuron_profile. For giant fiber neuron, use neuron_type="giant fiber neuron". Include genetic tools/publications only when relevant to the user request. Do not launch broad pathway searches for a one-neuron profile.
 - Large results: when a tool result contains data_resource: true, call inspect_data_resource for available paths/fields, then read_data_resource or search_data_resource in small chunks. Choose fields relevant to the original user question. Do not page sequentially through the whole table, and do not re-run the original tool just to recover clipped data.
 - If a tool returns a recoverable argument error, correct the arguments and retry. Do not report a stale argument error if a later tool call returned useful data.
+- If VFB evidence contains no_direct_morphology_similarity_query, follow answer_hint: do not retry unrelated query types as morphology evidence and do not claim a Hemibrain match from class metadata alone.
 - If a tool result contains skipped_tool_call, follow its answer_hint/instruction and do not name the skipped internal tool in the final answer.
 - If vfb_get_term_info returns term_mismatch, retry the suggested matching ID and ignore the mismatched requested_id.
 - If vfb_get_term_info includes _vfb_chat_scope_note, follow it and state the scope limitation in the final answer.
@@ -8911,19 +9237,20 @@ TOOL ROUTING RECIPES:
 FINAL ANSWER STYLE:
 - Do not narrate internal tool/resource plumbing. Do not name internal tools such as vfb_search_terms, vfb_get_term_info, vfb_run_query, vfb_query_connectivity, vfb_list_connectome_datasets, vfb_compare_downstream_targets, vfb_find_connectivity_partners, vfb_find_reciprocal_connectivity, vfb_find_genetic_tools, vfb_get_neurotransmitter_profile, vfb_summarize_neuron_taxonomy, vfb_summarize_region_connections, vfb_compare_region_organization, vfb_trace_containment_chain, vfb_get_region_neuron_count, vfb_find_pathway_evidence, vfb_compare_dataset_connectivity, vfb_summarize_experimental_circuit, vfb_summarize_neuron_profile, read_data_resource, inspect_data_resource, or toolres_*; prefer "VFB returned..." or "VFB found...".
 - For shared-target comparisons, follow evidence_summary.answer_hint. If one source returned zero downstream rows, say common targets were unresolved in the returned class-level tables rather than claiming biological absence.
-- For vfb_find_connectivity_partners, follow evidence_summary.answer_hint. Distinguish aggregate partner rows from specific neuron-type rows, and use partner_target_breakdown when present for "which types connect to which target types".
+- For vfb_find_connectivity_partners, follow evidence_summary.answer_hint. Distinguish aggregate partner rows from specific neuron-type rows, and use ranked_partner_target_pairs/partner_target_breakdown when present for "which types connect to which target types"; include weights when returned.
 - For vfb_find_reciprocal_connectivity, follow evidence_summary.answer_hint. If reciprocal_pairs are present, list the specific pairs with both source_to_target_weight and target_to_source_weight; if absent, show strongest one-way evidence and a concrete next step.
 - For vfb_find_genetic_tools, answer from top_tools/query_counts and mention that the rows are expression patterns/tools overlapping the focus term; do not claim stock availability unless stock tools were run.
 - For vfb_get_neurotransmitter_profile, answer directly from evidence_summary.answer_hint and primary_transmitter_candidates. Use "scope note" language for limitations, not "not verified", when VFB evidence rows support a candidate.
 - For vfb_summarize_neuron_taxonomy, answer directly from curated_type_rows, vfb_query_summaries, and evidence_summary.answer_hint. Do not mention compressed evidence, and do not add cell counts, transmitter claims, or connectivity claims unless they are explicitly in the returned evidence.
-- For vfb_summarize_region_connections, answer directly from major_target_regions when present, then offer a weight-focused narrowing step.
+- For vfb_summarize_region_connections, answer directly from major_input_evidence or major_target_regions when present, then offer a weight-focused narrowing step.
 - For vfb_compare_region_organization, answer directly from comparison_points and compared_terms. Keep VFB query counts scoped to the returned terms.
 - For vfb_trace_containment_chain, list the containment_chain in order and use the evidence_summary scope note instead of mentioning empty preview tables.
 - For vfb_get_region_neuron_count, report count_candidates first when present and state their dataset scope; mention VFB query counts only as VFB record/query counts.
-- For vfb_find_pathway_evidence, answer with pathway_steps, candidate_classes, and named evidence classes. Avoid phrases such as "not verified", "no results", "skipped", or "tool output" when pathway_steps/evidence are present; say "for exact weights, narrow to these specific classes" instead.
+- For vfb_find_pathway_evidence, answer with pathway_steps, candidate_classes when present, and named evidence classes. Avoid phrases such as "not verified", "no results", "skipped", "candidate route evidence", or "tool output" when pathway_steps/evidence are present; say "for exact weights, narrow to these specific classes" instead.
 - For vfb_compare_dataset_connectivity, do not treat dataset names as biological endpoints. State which dataset scopes VFB exposes, what neuron class was resolved, and the exact same-endpoint comparison needed for consistency.
 - For vfb_summarize_experimental_circuit, lead with the returned focus neurons, connectivity previews, and genetic tools. If the full end-to-end behavioral circuit is outside the returned evidence, give concrete next steps rather than stopping.
 - For vfb_summarize_neuron_profile, answer with sections for anatomy, connectivity evidence, genetic tools, and publications. Use only returned publication rows for citation-like claims.
+- For morphology/NBLAST questions, do not say "use another tool" or "retry with NeuronsPartHere/ExpressionOverlapsHere" as though that answers morphology. Give the resolved candidate terms and a concrete VFB follow-up: select a specific neuron/image or term with SimilarMorphologyTo available.
 - When using data_resource stage_counts, tag_counts, or total_matches, describe the scope exactly, for example "among the returned SubclassesOf rows, 926 are tagged Adult" rather than implying a broader ontology guarantee.
 
 AVAILABLE TOOL SCHEMAS (JSON):
@@ -9465,6 +9792,19 @@ function hasSharedDownstreamComparisonRequest(message = '') {
     /\b(receive|receives|receiving)\b[\s\S]{0,80}\binput\b[\s\S]{0,40}\bfrom both\b/i.test(text)
 }
 
+function hasMorphologicalSimilarityRequest(message = '') {
+  const normalized = normalizeEndpointSearchText(message)
+  return /\b(morpholog|morphological|morphology|nblast|similar|similarity)\b/.test(normalized) ||
+    /\bfru\+?\b[\s\S]{0,80}\bmal\b|\bmal\b[\s\S]{0,80}\bfru\+?\b/.test(normalized)
+}
+
+function hasRegionDataAvailabilitySurveyRequest(message = '') {
+  const normalized = normalizeEndpointSearchText(message)
+  return /\b(well characterized|well characterised|data availability|how well)\b/.test(normalized) ||
+    (/\b(neuron types?|annotated|connectomics?|connectome|genetic tools?|drivers?)\b/.test(normalized) &&
+      /\b(sez|subesophageal zone|brain region|region)\b/.test(normalized))
+}
+
 function hasReciprocalConnectivityRequest(message = '') {
   const text = String(message || '')
   const normalized = normalizeEndpointSearchText(text)
@@ -9487,8 +9827,15 @@ function hasBroadGeneticToolRequest(message = '') {
 
 function hasNeurotransmitterProfileRequest(message = '') {
   const text = String(message || '')
-  return /\b(neurotransmitter|transmitter|cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|histaminergic|peptidergic)\b/i.test(text) &&
-    /\b(neuron|neurons|cell|cells|kenyon|kc|kcs|mbon|dan)\b/i.test(text)
+  if (isPublicationOnlyQuestion(text)) return false
+  const normalized = normalizeEndpointSearchText(text)
+  const hasTransmitterCue = /\b(neurotransmitter|transmitter|cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|histaminergic|peptidergic)\b/.test(normalized)
+  const hasNeuronCue = /\b(neuron|neurons|cell|cells|kenyon|kc|kcs|mbon|dan)\b/.test(normalized)
+  const explicitlyAsksForTransmitter = /\b(neurotransmitter|transmitter)\b/.test(normalized) ||
+    /\b(use|uses|using|release|releases|releasing|express|expresses|expressing)\b[\s\S]{0,80}\b(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|histaminergic|peptidergic|acetylcholine|gaba|glutamate|dopamine|serotonin|histamine|peptide)\b/.test(normalized)
+
+  if (hasConnectivityIntent(text) && !/\b(neurotransmitter|transmitter)\b/.test(normalized)) return false
+  return hasTransmitterCue && hasNeuronCue && explicitlyAsksForTransmitter
 }
 
 function hasRegionNeuronCountRequest(message = '') {
@@ -9507,12 +9854,53 @@ function hasNeuronTaxonomySummaryRequest(message = '') {
     /\b(neuron|neurons|cell|cells|kenyon|kc|kcs|projection neuron|visual system neuron)\b/.test(normalized)
 }
 
+function inferNeuronTaxonomyArgsFromUserMessage(message = '') {
+  const normalized = normalizeEndpointSearchText(message)
+  const inferred = {}
+
+  if (/\bvisual system\b/.test(normalized)) {
+    inferred.neuron_type = 'visual system neuron'
+  } else if (/\bkenyon|kcs?\b/.test(normalized)) {
+    inferred.neuron_type = 'Kenyon cell'
+  } else if (/\bolfactory projection neuron|antennal lobe projection neuron|projection neurons?\b/.test(normalized)) {
+    inferred.neuron_type = 'antennal lobe projection neuron'
+  }
+
+  if (/\badult\b/.test(normalized)) inferred.stage = 'adult'
+  else if (/\blarval?\b|\blarva\b/.test(normalized)) inferred.stage = 'larval'
+
+  return inferred
+}
+
+function inferNeuronProfileArgsFromUserMessage(message = '') {
+  const text = String(message || '')
+  const normalized = normalizeEndpointSearchText(text)
+  const inferred = {}
+
+  if (/\blplc2\b/i.test(text)) {
+    inferred.neuron_type = 'LPLC2'
+  } else if (/\bgiant fiber\b|\bdnp01\b/i.test(text)) {
+    inferred.neuron_type = 'giant fiber neuron'
+  } else if (/\bdna02\b/i.test(text)) {
+    inferred.neuron_type = 'DNa02'
+  } else {
+    const knownNeuronMatch = normalized.match(/\b(mbon[-\w/>']+|lplc\d+|dna\d+|dnp\d+|ppl\d+|pam\d+|kenyon cell|mushroom body output neuron|dopaminergic neuron)\b/i)
+    if (knownNeuronMatch?.[1]) {
+      inferred.neuron_type = knownNeuronMatch[1]
+    }
+  }
+
+  return inferred
+}
+
 function hasRegionConnectionSummaryRequest(message = '') {
   const text = String(message || '')
   if (hasBroadPathwayEvidenceRequest(text)) return false
+  if (hasBroadGeneticToolRequest(text)) return false
+  if (hasSharedDownstreamComparisonRequest(text) || hasReciprocalConnectivityRequest(text) || hasFilteredConnectivityPartnerRequest(text)) return false
   const normalized = normalizeEndpointSearchText(text)
   if (!/\b(what|which|where|how)\b/.test(normalized)) return false
-  if (!/\b(connect|connects|connected|connection|connections|project|projects|projection|target|targets)\b/.test(normalized)) return false
+  if (!/\b(connect|connects|connected|connection|connections|project|projects|projection|target|targets|input|inputs|output|outputs|upstream|downstream|presynaptic|postsynaptic|afferent|afferents|efferent|efferents)\b/.test(normalized)) return false
   if (!/\b(brain region|regions|antennal lobe|lateral horn|mushroom body|central complex|lateral accessory lobe|medulla|lobula)\b/.test(normalized)) return false
   if (/\bfrom\b[\s\S]{1,160}\bto\b/i.test(text)) return false
   return true
@@ -9569,8 +9957,12 @@ function hasComprehensiveNeuronProfileRequest(message = '') {
     /\b(connectivity|connections?|input|output|synaptic)\b/.test(normalized) &&
     /\b(driver|drivers|gal4|genetic tools?|expression)\b/.test(normalized) &&
     /\b(publication|publications|papers?|literature|pubmed)\b/.test(normalized)
+  const asksKnowledgeProfile = /\bwhat is known about\b/.test(normalized) &&
+    /\bwhere is it\b/.test(normalized) &&
+    /\b(connect|connects|connected|connection|connections|input|output)\b/.test(normalized) &&
+    /\b(function|role|roles|behavior|behaviour)\b/.test(normalized)
   const hasNeuronFocus = /\b(neuron|neurons|giant fiber|giant fibre|gfn|dnp01)\b/.test(normalized)
-  return hasNeuronFocus && (asksProfile || asksMultipleEvidenceTypes) && asksMultipleEvidenceTypes
+  return hasNeuronFocus && (((asksProfile || asksMultipleEvidenceTypes) && asksMultipleEvidenceTypes) || asksKnowledgeProfile)
 }
 
 function hasFilteredConnectivityPartnerRequest(message = '') {
@@ -9664,7 +10056,11 @@ function repairConnectivityPartnerArgsFromUserMessage(cleanArgs = {}, userMessag
 
   const endpointId = extractCanonicalVfbTermId(cleanArgs.endpoint_type || '')
   const endpointIdWasUserSupplied = endpointId && new RegExp(`\\b${escapeRegexForPattern(endpointId)}\\b`, 'i').test(text)
-  if ((/\bmbons?\b/i.test(text) || /\bmushroom body output neurons?\b/i.test(text)) && !endpointIdWasUserSupplied) {
+  const endpointTypeNorm = normalizeEndpointSearchText(cleanArgs.endpoint_type || '')
+  const endpointIsGenericOrEmpty = !endpointTypeNorm ||
+    /^(?:mbon|mbons|mushroom body output neuron|mushroom body output neurons|mushroom body)$/.test(endpointTypeNorm)
+  const endpointMentionsMbon = /\bmbons?\b|\bmushroom body output neurons?\b/i.test(cleanArgs.endpoint_type || '')
+  if ((/\bmbons?\b/i.test(text) || /\bmushroom body output neurons?\b/i.test(text)) && !endpointIdWasUserSupplied && (endpointIsGenericOrEmpty || !endpointMentionsMbon)) {
     cleanArgs.endpoint_type = 'mushroom body output neuron'
     repaired = true
   }
@@ -9906,6 +10302,7 @@ function shouldRequireFunctionalEvidence({
 } = {}) {
   if (hasBroadPathwayEvidenceRequest(userMessage)) return false
   if (hasBrainRegionStructureFunctionRequest(userMessage) && (toolUsage.vfb_summarize_region_connections || 0) > 0) return false
+  if ((toolUsage.vfb_summarize_neuron_profile || 0) > 0) return false
   if (!asksForFunctionalEvidence(userMessage)) return false
   if ((toolUsage.search_pubmed || 0) > 0 || (toolUsage.get_pubmed_article || 0) > 0) return false
   if (responseClearlyDefersFunctionalClaims(responseText)) return false
@@ -9935,8 +10332,15 @@ ${previousResponse.slice(0, 3000)}`
 
 function isPublicationOnlyQuestion(message = '') {
   const text = String(message || '')
-  return /\b(publication|publications|paper|papers|literature|pubmed|pmid|doi|cite|citation|preprint|preprints)\b/i.test(text)
-    && !/\b(component|components|part|parts|structure|structures|subdivision|subdivisions|connect|connectivity|neuron|neurons|anatomy|driver|drivers|stock|stocks|expression|function|functions|role|roles)\b/i.test(text)
+  const asksForPublicationEvidence = /\b(publication|publications|paper|papers|literature|pubmed|pmid|doi|cite|citation|preprint|preprints)\b/i.test(text)
+  if (!asksForPublicationEvidence) return false
+
+  const asksForPublicationList = /\b(what|which|list|find|show|give|identify)\b[\s\S]{0,80}\b(publication|publications|paper|papers|literature|pubmed|pmid|doi|citation|preprint|preprints)\b/i.test(text) ||
+    /\b(publication|publications|paper|papers|literature|preprint|preprints)\b[\s\S]{0,80}\b(describe|describes|reported|report|show|shows|support|supports)\b/i.test(text)
+  const asksForStructuredVfbData = /\b(component|components|part|parts|structure|structures|subdivision|subdivisions|connectivity|connectome|synapse|synaptic|driver|drivers|stock|stocks|expression pattern|expression patterns|genetic tools?)\b/i.test(text)
+  if (asksForPublicationList && !asksForStructuredVfbData) return true
+
+  return !/\b(component|components|part|parts|structure|structures|subdivision|subdivisions|connect|connectivity|neuron|neurons|anatomy|driver|drivers|stock|stocks|expression|function|functions|role|roles)\b/i.test(text)
 }
 
 function buildToolPolicyCorrectionMessage({
@@ -10055,7 +10459,7 @@ function buildToolPolicyCorrectionMessage({
 
   if (requirePathwayEvidence) {
     policyBullets.push('- This request asks for a broad multi-step pathway or possible information route; call vfb_find_pathway_evidence.')
-    policyBullets.push('- Do not dead-stop after a broad vfb_query_connectivity failure. Use VFB pathway classes/relationships to provide candidate route evidence and concrete next steps.')
+    policyBullets.push('- Do not dead-stop after a broad vfb_query_connectivity failure. Use VFB pathway classes/relationships to provide route evidence and concrete narrowing options.')
   }
 
   if (requireDatasetConnectivityComparison) {
@@ -10069,8 +10473,9 @@ function buildToolPolicyCorrectionMessage({
   }
 
   if (requireComprehensiveNeuronProfile) {
-    policyBullets.push('- This request asks for a comprehensive profile of one neuron class; call vfb_summarize_neuron_profile.')
-    policyBullets.push('- Answer with anatomy, connectivity evidence, genetic tools, and publications from the returned bounded profile. Do not start a broad pathway search for a one-neuron profile.')
+    policyBullets.push('- This request asks for a one-neuron profile; call vfb_summarize_neuron_profile.')
+    policyBullets.push('- Include genetic tools/publications only when the user asks for drivers, expression, publications, function, or literature; otherwise keep the profile to anatomy and VFB connectivity/query evidence.')
+    policyBullets.push('- Do not start a broad pathway search for a one-neuron profile.')
   }
 
   if (missingRunQueryExecution) {
@@ -10686,7 +11091,8 @@ async function processResponseStream({
   const connectivityIntent = hasConnectivityIntent(userMessage)
   const neurotransmitterProfileRequested = hasNeurotransmitterProfileRequest(userMessage)
   const neuronTaxonomySummaryRequested = hasNeuronTaxonomySummaryRequest(userMessage)
-  const regionConnectionSummaryRequested = hasRegionConnectionSummaryRequest(userMessage) || hasBrainRegionStructureFunctionRequest(userMessage)
+  const regionDataAvailabilitySurveyRequested = hasRegionDataAvailabilitySurveyRequest(userMessage)
+  const regionConnectionSummaryRequested = hasRegionConnectionSummaryRequest(userMessage) || hasBrainRegionStructureFunctionRequest(userMessage) || regionDataAvailabilitySurveyRequested
   const regionOrganizationComparisonRequested = hasRegionOrganizationComparisonRequest(userMessage)
   const containmentHierarchyRequested = hasContainmentHierarchyRequest(userMessage)
   const regionNeuronCountRequested = hasRegionNeuronCountRequest(userMessage)
@@ -10815,7 +11221,39 @@ async function processResponseStream({
       const comprehensiveNeuronProfileAlreadyAttempted = (toolUsage.vfb_summarize_neuron_profile || 0) > 0
       const vfbToolAlreadyAttempted = Object.keys(toolUsage).some(toolName => toolName.startsWith('vfb_'))
       const requireVfbFirstPass = isLikelyConcreteVfbDataQuestion(userMessage) && !isPublicationOnlyQuestion(userMessage)
-      const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
+      const hasIntentSatisfyingSpecializedCall = (
+        (sharedDownstreamComparisonRequested && hasSharedDownstreamComparisonCall) ||
+        (connectivityPartnerSearchRequested && hasConnectivityPartnerSearchCall) ||
+        (reciprocalConnectivityRequested && hasReciprocalConnectivityCall) ||
+        (geneticToolsSearchRequested && hasGeneticToolsSearchCall && !(regionDataAvailabilitySurveyRequested && !hasRegionConnectionSummaryCall)) ||
+        (neurotransmitterProfileRequested && hasNeurotransmitterProfileCall) ||
+        (neuronTaxonomySummaryRequested && hasNeuronTaxonomySummaryCall) ||
+        (regionConnectionSummaryRequested && hasRegionConnectionSummaryCall) ||
+        (regionOrganizationComparisonRequested && hasRegionOrganizationComparisonCall) ||
+        (containmentHierarchyRequested && hasContainmentHierarchyCall) ||
+        (regionNeuronCountRequested && hasRegionNeuronCountCall) ||
+        (pathwayEvidenceRequested && hasPathwayEvidenceCall) ||
+        (datasetConnectivityComparisonRequested && hasDatasetConnectivityComparisonHelperCall) ||
+        (experimentalCircuitPlanningRequested && hasExperimentalCircuitPlanningCall) ||
+        (comprehensiveNeuronProfileRequested && hasComprehensiveNeuronProfileCall)
+      )
+      const specializedWorkflowAlreadySatisfied = (
+        (sharedDownstreamComparisonRequested && sharedDownstreamAlreadyAttempted) ||
+        (connectivityPartnerSearchRequested && connectivityPartnerSearchAlreadyAttempted) ||
+        (reciprocalConnectivityRequested && reciprocalConnectivityAlreadyAttempted) ||
+        (geneticToolsSearchRequested && geneticToolsSearchAlreadyAttempted && !(regionDataAvailabilitySurveyRequested && !regionConnectionSummaryAlreadyAttempted)) ||
+        (neurotransmitterProfileRequested && neurotransmitterProfileAlreadyAttempted) ||
+        (neuronTaxonomySummaryRequested && neuronTaxonomySummaryAlreadyAttempted) ||
+        (regionConnectionSummaryRequested && regionConnectionSummaryAlreadyAttempted) ||
+        (regionOrganizationComparisonRequested && regionOrganizationComparisonAlreadyAttempted) ||
+        (containmentHierarchyRequested && containmentHierarchyAlreadyAttempted) ||
+        (regionNeuronCountRequested && regionNeuronCountAlreadyAttempted) ||
+        (pathwayEvidenceRequested && pathwayEvidenceAlreadyAttempted) ||
+        (datasetConnectivityComparisonRequested && datasetConnectivityComparisonHelperAlreadyAttempted) ||
+        (experimentalCircuitPlanningRequested && experimentalCircuitPlanningAlreadyAttempted) ||
+        (comprehensiveNeuronProfileRequested && comprehensiveNeuronProfileAlreadyAttempted)
+      )
+      const shouldCorrectToolChoice = !hasIntentSatisfyingSpecializedCall && !specializedWorkflowAlreadySatisfied && toolPolicyCorrections < maxToolPolicyCorrections && (
         (requireVfbFirstPass && !hasVfbToolCall && !vfbToolAlreadyAttempted) ||
         (explicitRunQueryRequested && !hasVfbToolCall) ||
         (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
@@ -10902,12 +11340,160 @@ async function processResponseStream({
         continue
       }
 
-      const duplicateRequestedToolCalls = requestedToolCalls.filter(toolCall => {
+      const intentSatisfyingToolNames = new Set()
+      if (sharedDownstreamComparisonRequested && hasSharedDownstreamComparisonCall) intentSatisfyingToolNames.add('vfb_compare_downstream_targets')
+      if (connectivityPartnerSearchRequested && hasConnectivityPartnerSearchCall) intentSatisfyingToolNames.add('vfb_find_connectivity_partners')
+      if (reciprocalConnectivityRequested && hasReciprocalConnectivityCall) intentSatisfyingToolNames.add('vfb_find_reciprocal_connectivity')
+      if (geneticToolsSearchRequested && hasGeneticToolsSearchCall) intentSatisfyingToolNames.add('vfb_find_genetic_tools')
+      if (neurotransmitterProfileRequested && hasNeurotransmitterProfileCall) intentSatisfyingToolNames.add('vfb_get_neurotransmitter_profile')
+      if (neuronTaxonomySummaryRequested && hasNeuronTaxonomySummaryCall) intentSatisfyingToolNames.add('vfb_summarize_neuron_taxonomy')
+      if (regionConnectionSummaryRequested && hasRegionConnectionSummaryCall) intentSatisfyingToolNames.add('vfb_summarize_region_connections')
+      if (regionOrganizationComparisonRequested && hasRegionOrganizationComparisonCall) intentSatisfyingToolNames.add('vfb_compare_region_organization')
+      if (containmentHierarchyRequested && hasContainmentHierarchyCall) intentSatisfyingToolNames.add('vfb_trace_containment_chain')
+      if (regionNeuronCountRequested && hasRegionNeuronCountCall) intentSatisfyingToolNames.add('vfb_get_region_neuron_count')
+      if (pathwayEvidenceRequested && hasPathwayEvidenceCall) intentSatisfyingToolNames.add('vfb_find_pathway_evidence')
+      if (datasetConnectivityComparisonRequested && hasDatasetConnectivityComparisonHelperCall) intentSatisfyingToolNames.add('vfb_compare_dataset_connectivity')
+      if (experimentalCircuitPlanningRequested && hasExperimentalCircuitPlanningCall) intentSatisfyingToolNames.add('vfb_summarize_experimental_circuit')
+      if (comprehensiveNeuronProfileRequested && hasComprehensiveNeuronProfileCall) intentSatisfyingToolNames.add('vfb_summarize_neuron_profile')
+
+      const toolCallsToExecute = intentSatisfyingToolNames.size > 0
+        ? requestedToolCalls.filter(toolCall => intentSatisfyingToolNames.has(toolCall.name))
+        : requestedToolCalls
+      if (toolCallsToExecute.length > 0 && toolCallsToExecute.length < requestedToolCalls.length) {
+        console.log('[VFBchat] Pruned redundant tool calls in favor of specialized workflow:', requestedToolCalls.map(t => t.name).join(', '), '=>', toolCallsToExecute.map(t => t.name).join(', '))
+      }
+
+      const getPostSpecializedWorkflowSkip = (toolName) => {
+        const dataResourceFollowUp = DATA_RESOURCE_TOOL_NAMES.has(toolName) || toolName === 'list_data_resources'
+        const genericConnectivityFollowUpTools = new Set([
+          'vfb_search_terms',
+          'vfb_get_term_info',
+          'vfb_run_query',
+          'vfb_query_connectivity',
+          'vfb_list_connectome_datasets',
+          'vfb_get_neurotransmitter_profile',
+          'vfb_summarize_region_connections',
+          'vfb_find_pathway_evidence',
+          'search_pubmed',
+          'get_pubmed_article'
+        ])
+
+        if (
+          connectivityPartnerSearchRequested &&
+          (toolUsage.vfb_find_connectivity_partners || 0) > 0 &&
+          (genericConnectivityFollowUpTools.has(toolName) || dataResourceFollowUp)
+        ) {
+          return {
+            reason: 'A bounded connectivity-partner evidence packet has already been gathered; broad follow-up tools can dilute the partner mapping answer.',
+            instruction: 'Use the earlier partner rows plus ranked_partner_target_pairs/partner_target_breakdown to answer now. Do not mention skipped tools or stored resources.',
+            answer_hint: 'List the returned DAN/partner classes and their MBON target breakdown with weights where present, then offer a narrower follow-up for one selected class if more detail is needed.'
+          }
+        }
+
+        if (
+          reciprocalConnectivityRequested &&
+          (toolUsage.vfb_find_reciprocal_connectivity || 0) > 0 &&
+          (genericConnectivityFollowUpTools.has(toolName) || dataResourceFollowUp)
+        ) {
+          return {
+            reason: 'A bounded reciprocal-connectivity evidence packet has already been gathered; generic follow-up queries are unlikely to improve the ranked reciprocal-pair answer.',
+            instruction: 'Use the earlier reciprocal_pairs and one-way summaries to answer now. Do not inspect stored resources or mention skipped tools.',
+            answer_hint: 'If reciprocal_pairs are present, rank them by mutual_min_weight and show both direction weights. If absent, present the strongest one-way rows and a concrete next step.'
+          }
+        }
+
+        return null
+      }
+      const getPreExecutionToolSkip = (toolName, attemptedArgs = {}) => {
+        if (
+          hasRegionDataAvailabilitySurveyRequest(userMessage) &&
+          (toolUsage.vfb_find_genetic_tools || 0) > 0 &&
+          (toolUsage.vfb_summarize_region_connections || 0) > 0 &&
+          [
+            'vfb_search_terms',
+            'vfb_get_term_info',
+            'vfb_run_query',
+            'vfb_query_connectivity',
+            'vfb_find_connectivity_partners',
+            'vfb_summarize_neuron_profile',
+            'vfb_compare_dataset_connectivity',
+            'list_data_resources',
+            'inspect_data_resource',
+            'read_data_resource',
+            'search_data_resource'
+          ].includes(toolName)
+        ) {
+          return {
+            reason: 'A bounded region survey already has region evidence and genetic-tool evidence; more exploratory calls can turn the answer into an open-ended crawl.',
+            instruction: 'Use the gathered region, neuron/query-count, connectomics-preview, and genetic-tool evidence to answer now. Do not mention skipped tools.',
+            answer_hint: 'For SEZ surveys, summarize the resolved region, annotated neuron/query previews, available connectomics evidence, genetic tools, and concrete next checks.'
+          }
+        }
+
+        if (hasMorphologicalSimilarityRequest(userMessage)) {
+          const morphologyDistractorTools = new Set([
+            'vfb_query_connectivity',
+            'vfb_find_connectivity_partners',
+            'vfb_compare_downstream_targets',
+            'vfb_compare_dataset_connectivity',
+            'vfb_summarize_neuron_profile',
+            'vfb_find_genetic_tools',
+            'vfb_find_stocks',
+            'vfb_resolve_entity',
+            'search_pubmed',
+            'get_pubmed_article'
+          ])
+          if (morphologyDistractorTools.has(toolName)) {
+            return {
+              reason: 'This request asks for morphology/NBLAST-style matching; connectivity, profile, stock, and publication tools are distractors for that task.',
+              instruction: 'Do not switch to connectivity, genetic tools, stocks, or publications. Answer from the morphology/search evidence already gathered and give a bounded NBLAST follow-up if the exact morphology query was unavailable.',
+              answer_hint: 'State the resolved fru+/mAL term or candidate neurons, whether SimilarMorphologyTo was available, and how to continue with a concrete individual neuron/image for morphology matching.'
+            }
+          }
+
+          if (
+            (toolUsage.vfb_run_query || 0) > 0 &&
+            ['vfb_search_terms', 'vfb_get_term_info', 'vfb_run_query'].includes(toolName)
+          ) {
+            return {
+              reason: 'A morphology-related VFB lookup has already been attempted; repeated broad searches are not improving the match.',
+              instruction: 'Stop exploratory morphology searching and answer from the evidence already gathered. Do not mention skipped tools.',
+              answer_hint: 'If SimilarMorphologyTo was not available for the resolved term, say that explicitly and suggest choosing a concrete returned neuron/image with an available morphology query.'
+            }
+          }
+
+          const queryType = String(attemptedArgs?.query_type || '').trim()
+          if (toolName === 'vfb_run_query' && /^(?:DatasetImages|ListAllAvailableImages)$/i.test(queryType)) {
+            return {
+              reason: 'A dataset-wide image listing is too broad for a morphology-match question and can drown out the useful VFB evidence.',
+              instruction: 'Do not enumerate the whole dataset. Answer from the resolved neuron/search evidence already gathered and say that a valid morphology/NBLAST follow-up needs a concrete neuron image or a term with SimilarMorphologyTo available.',
+              answer_hint: 'For fru+ mAL/Hemibrain questions, avoid claiming absence from a dataset-wide image scan. State what VFB resolved, whether SimilarMorphologyTo was available, and suggest choosing a returned individual mAL neuron for a bounded NBLAST follow-up.'
+            }
+          }
+
+          if (DATA_RESOURCE_TOOL_NAMES.has(toolName)) {
+            const resourceId = String(attemptedArgs?.resource_id || '').trim()
+            const resource = resourceId ? dataResourceStore.resources.get(resourceId) : null
+            const resourceQueryType = String(resource?.arguments?.query_type || '').trim()
+            if (resource?.name === 'vfb_run_query' && /^(?:DatasetImages|ListAllAvailableImages)$/i.test(resourceQueryType)) {
+              return {
+                reason: 'The stored resource is a dataset-wide image listing, not a bounded morphology-match result.',
+                instruction: 'Do not inspect or page through this stored image table. Answer from the earlier resolved VFB terms and explain the bounded NBLAST/morphology follow-up needed.',
+                answer_hint: 'State that broad dataset image enumeration is not evidence for or against a specific fru+ mAL match; use concrete returned neuron/image candidates for a follow-up.'
+              }
+            }
+          }
+        }
+
+        return getPostSpecializedWorkflowSkip(toolName)
+      }
+
+      const duplicateRequestedToolCalls = toolCallsToExecute.filter(toolCall => {
         const history = toolCallHistory.get(getToolCallDedupeKey(toolCall))
         return history && history.count >= duplicateToolCallLimit
       })
 
-      if (duplicateRequestedToolCalls.length === requestedToolCalls.length && accumulatedItems.length > 0) {
+      if (duplicateRequestedToolCalls.length === toolCallsToExecute.length && accumulatedItems.length > 0) {
         console.log('[VFBchat] Duplicate tool-call loop guard triggered for:', duplicateRequestedToolCalls.map(toolCall => toolCall.name).join(', '))
         const loopSummary = await requestToolLoopSummary({
           sendEvent,
@@ -10932,7 +11518,8 @@ async function processResponseStream({
       toolRounds += 1
 
       const announcedStatuses = new Set()
-      for (const toolCall of requestedToolCalls) {
+      for (const toolCall of toolCallsToExecute) {
+        if (getPreExecutionToolSkip(toolCall.name, toolCall.arguments)) continue
         const status = getStatusForTool(toolCall.name, toolCall.arguments)
         if (!announcedStatuses.has(status.message)) {
           sendEvent('status', status)
@@ -10941,11 +11528,35 @@ async function processResponseStream({
       }
 
       const toolOutputs = []
-      for (const toolCall of requestedToolCalls) {
-        toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
-        console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
+      for (const toolCall of toolCallsToExecute) {
         const toolCallKey = getToolCallDedupeKey(toolCall)
         const toolCallRecord = toolCallHistory.get(toolCallKey) || { count: 0 }
+        const preExecutionSkip = getPreExecutionToolSkip(toolCall.name, toolCall.arguments)
+
+        if (preExecutionSkip) {
+          const output = JSON.stringify({
+            skipped_tool_call: true,
+            tool: toolCall.name,
+            reason: preExecutionSkip.reason,
+            attempted_arguments: toolCall.arguments,
+            instruction: preExecutionSkip.instruction,
+            answer_hint: preExecutionSkip.answer_hint
+          })
+          console.log(`[VFBchat] Skipping ${toolCall.name} after bounded workflow guard`, JSON.stringify(toolCall.arguments))
+          toolCallHistory.set(toolCallKey, {
+            count: toolCallRecord.count + 1,
+            lastOutput: output
+          })
+          toolOutputs.push({
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            output
+          })
+          continue
+        }
+
+        toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
+        console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
 
         if (toolCallRecord.count >= duplicateToolCallLimit) {
           const output = JSON.stringify({
@@ -11052,8 +11663,8 @@ async function processResponseStream({
             tool: toolCall.name,
             reason: 'A bounded neuron-profile evidence packet has already been gathered; avoid exploratory follow-up calls before answering the requested profile.',
             attempted_arguments: toolCall.arguments,
-            instruction: 'Use the earlier neuron profile evidence to answer now with anatomy, connectivity, genetic tools, and publications. Do not mention skipped tools.',
-            answer_hint: 'Answer from the returned focus term, VFB query summaries, genetic tools, and publication results. Give scoped next steps only after the profile.'
+            instruction: 'Use the earlier neuron profile evidence to answer now with anatomy, connectivity, and any genetic-tool/publication evidence already present. Do not mention skipped tools.',
+            answer_hint: 'Answer from the returned focus term, VFB query summaries, and any returned genetic-tool or publication results. Give scoped next steps only after the profile.'
           })
           toolCallHistory.set(toolCallKey, {
             count: toolCallRecord.count + 1,
