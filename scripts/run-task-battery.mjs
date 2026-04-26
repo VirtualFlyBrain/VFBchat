@@ -231,6 +231,7 @@ function startServer({ port, command, runId }) {
   const args = command === 'start'
     ? ['run', 'start', '--', '-p', String(port), '-H', '127.0.0.1']
     : ['run', 'dev', '--', '-p', String(port), '-H', '127.0.0.1']
+  const detached = process.platform !== 'win32'
 
   const child = spawn('npm', args, {
     cwd: REPO_ROOT,
@@ -240,6 +241,7 @@ function startServer({ port, command, runId }) {
       RATE_LIMIT_PER_IP: process.env.RATE_LIMIT_PER_IP || '10000',
       LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`)
     },
+    detached,
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -249,9 +251,64 @@ function startServer({ port, command, runId }) {
   return child
 }
 
-function stopServer(child) {
+function signalServerProcess(child, signal) {
   if (!child || child.killed) return
-  child.kill('SIGTERM')
+
+  try {
+    if (process.platform !== 'win32') {
+      process.kill(-child.pid, signal)
+    } else {
+      child.kill(signal)
+    }
+  } catch {
+    try {
+      child.kill(signal)
+    } catch {
+      // Process already exited.
+    }
+  }
+}
+
+async function stopServer(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null || child.killed) return
+
+  const waitForExit = (timeoutMs) => new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve(true)
+      return
+    }
+
+    const onExit = () => {
+      clearTimeout(timeout)
+      resolve(true)
+    }
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit)
+      resolve(false)
+    }, timeoutMs)
+
+    child.once('exit', onExit)
+  })
+
+  const closePipes = () => {
+    for (const stream of [child.stdout, child.stderr]) {
+      if (stream && !stream.destroyed) stream.destroy()
+    }
+  }
+
+  try {
+    signalServerProcess(child, 'SIGTERM')
+    const exited = await waitForExit(10000)
+    if (exited) {
+      closePipes()
+      return
+    }
+
+    signalServerProcess(child, 'SIGKILL')
+    await waitForExit(5000)
+  } finally {
+    closePipes()
+  }
 }
 
 function parseSseBlock(block) {
@@ -612,7 +669,7 @@ async function main() {
       options
     })
   } finally {
-    stopServer(server)
+    await stopServer(server)
   }
 
   payload.metadata.completed_at = new Date().toISOString()
