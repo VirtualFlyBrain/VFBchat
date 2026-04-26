@@ -539,7 +539,23 @@ function stripLeakedToolCallJson(text = '') {
 function sanitizeInternalToolMentions(text = '') {
   return String(text || '')
     .replace(/`?vfb_compare_downstream_targets`?(?:\s+tool)?(?:\s+output)?/gi, 'VFB output')
+    .replace(/`?vfb_find_connectivity_partners`?(?:\s+tool)?(?:\s+output)?/gi, 'VFB output')
+    .replace(/`?vfb_find_reciprocal_connectivity`?(?:\s+tool)?(?:\s+output)?/gi, 'VFB output')
+    .replace(/`?vfb_find_genetic_tools`?(?:\s+tool)?(?:\s+output)?/gi, 'VFB output')
+    .replace(/\bAccording to VFB output\b/gi, 'According to VFB')
+    .replace(/\bpartner_target_breakdown section of the output\b/gi, 'returned partner-target details')
+    .replace(/\bpartner_target_breakdown\b/gi, 'partner-target details')
+    .replace(/\breciprocal_pairs\b/gi, 'reciprocal pairs')
+    .replace(/\brank_weight\b/gi, 'rank weight')
+    .replace(/\bmutual_min_weight\b/gi, 'weaker-direction weight')
+    .replace(/\bmutual_summed_weight\b/gi, 'summed bidirectional weight')
+    .replace(/\bsource_to_target_weight\b/gi, 'source-to-target weight')
+    .replace(/\btarget_to_source_weight\b/gi, 'target-to-source weight')
+    .replace(/`(rank weight|weaker-direction weight|summed bidirectional weight|source-to-target weight|target-to-source weight)`/gi, '$1')
     .replace(/\boutput of VFB output\b/gi, 'VFB')
+    .replace(/\bVFB tool VFB output\b/gi, 'VFB output')
+    .replace(/\bVFB output returned\b/gi, 'VFB returned')
+    .replace(/\bVFB output query\b/gi, 'VFB query')
     .replace(/\bthe VFB output\b/gi, 'VFB output')
     .replace(/\bfrom VFB output\b/gi, 'from VFB')
 }
@@ -550,6 +566,7 @@ function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRo
   const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
   const userSafeText = sanitizeInternalToolMentions(textWithoutGraphs)
     .replace(/\bcreate_basic_graph(?:\s+tool)?\b/gi, 'graph view')
+    .replace(/`?graph view`?\s+tool outputs?/gi, 'the graph view')
   const linkedResponseText = linkifyFollowUpQueryItems(userSafeText)
   const images = extractImagesFromResponseText(linkedResponseText)
   const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...leakedToolCallGraphs, ...inlineGraphs])
@@ -848,6 +865,26 @@ function getToolConfig() {
 
   tools.push({
     type: 'function',
+    name: 'vfb_find_genetic_tools',
+    description: 'Find VFB transgene/expression-pattern tools for labeling a named anatomy or neuron class. Use this for broad questions such as "genetic tools to label mushroom body neurons" instead of resolving a single FlyBase entity or stock.',
+    parameters: {
+      type: 'object',
+      properties: {
+        focus: {
+          type: 'string',
+          description: 'Anatomy or neuron-class focus, e.g. "mushroom body", "lateral horn", or "DNa02". If uncertain, pass the phrase from the user.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum tools to return after de-duplication (default 12, max 30).'
+        }
+      },
+      required: ['focus']
+    }
+  })
+
+  tools.push({
+    type: 'function',
     name: 'vfb_resolve_entity',
     description: 'Resolve an unresolved FlyBase name/synonym to an ID and metadata (EXACT/SYNONYM/BROAD match).',
     parameters: {
@@ -954,6 +991,83 @@ function getToolConfig() {
         }
       },
       required: ['upstream_types']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_connectivity_partners',
+    description: 'Rank upstream or downstream class-connectivity partners for one resolved neuron class, optionally filtering partners by label/family. Use for one-sided questions such as "dopaminergic input to MBONs" or "which DAN types connect to which MBON types"; this avoids broad class-to-class queries that can return empty results.',
+    parameters: {
+      type: 'object',
+      properties: {
+        endpoint_type: {
+          type: 'string',
+          description: 'Neuron class label or plain FBbt ID used as the fixed endpoint, e.g. "mushroom body output neuron" or "MBON".'
+        },
+        direction: {
+          type: 'string',
+          enum: ['upstream', 'downstream'],
+          description: '"upstream" ranks inputs to endpoint_type; "downstream" ranks targets of endpoint_type.'
+        },
+        partner_filter: {
+          type: 'string',
+          description: 'Optional partner label/family filter, e.g. "dopaminergic neuron", "DAN", "MBON", or "Kenyon cell".'
+        },
+        include_partner_targets: {
+          type: 'boolean',
+          description: 'When true, for top filtered partners also query the opposite class-connectivity table and return matching endpoint-family targets. Use for "which X types connect to which Y types" questions.'
+        },
+        partner_target_filter: {
+          type: 'string',
+          description: 'Optional target filter for include_partner_targets; defaults to endpoint_type.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum ranked partner rows to return (default 12, max 30).'
+        },
+        target_limit: {
+          type: 'number',
+          description: 'Maximum matching endpoint-family target rows per partner when include_partner_targets is true (default 5, max 12).'
+        },
+        min_total_weight: {
+          type: 'number',
+          description: 'Optional minimum total_weight for rows (default 0).'
+        }
+      },
+      required: ['endpoint_type', 'direction']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_reciprocal_connectivity',
+    description: 'Find reciprocal class-connectivity pairs between two neuron families by intersecting source→target and target→source partner breakdowns. Use for questions like "Are there reciprocal connections between MBONs and DANs? Which pairs have the strongest mutual connectivity?"',
+    parameters: {
+      type: 'object',
+      properties: {
+        source_family: {
+          type: 'string',
+          description: 'First neuron family/class label or FBbt ID, e.g. "mushroom body output neuron" or "MBON".'
+        },
+        target_family: {
+          type: 'string',
+          description: 'Second neuron family/class label or FBbt ID, e.g. "dopaminergic neuron" or "DAN".'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum reciprocal pairs to return (default 12, max 30).'
+        },
+        per_partner_limit: {
+          type: 'number',
+          description: 'Maximum source-family targets inspected per partner in each direction (default 8, max 12).'
+        },
+        min_total_weight: {
+          type: 'number',
+          description: 'Optional minimum total_weight for rows before considering reciprocal pairs (default 0).'
+        }
+      },
+      required: ['source_family', 'target_family']
     }
   })
 
@@ -1799,6 +1913,34 @@ function normalizeServerToolArgs(name, args = {}) {
     if (!cleanArgs.target_filter) delete cleanArgs.target_filter
     cleanArgs.limit = normalizeInteger(cleanArgs.limit, 20, 1, 50)
     cleanArgs.min_total_weight = normalizeInteger(cleanArgs.min_total_weight, 0, 0, 1000000000)
+  }
+
+  if (name === 'vfb_find_connectivity_partners') {
+    cleanArgs.endpoint_type = String(cleanArgs.endpoint_type || '').trim()
+    cleanArgs.direction = String(cleanArgs.direction || '').trim().toLowerCase() === 'downstream'
+      ? 'downstream'
+      : 'upstream'
+    cleanArgs.partner_filter = String(cleanArgs.partner_filter || '').trim()
+    cleanArgs.partner_target_filter = String(cleanArgs.partner_target_filter || '').trim()
+    if (!cleanArgs.partner_filter) delete cleanArgs.partner_filter
+    if (!cleanArgs.partner_target_filter) delete cleanArgs.partner_target_filter
+    cleanArgs.include_partner_targets = normalizeBooleanArg(cleanArgs.include_partner_targets, false)
+    cleanArgs.limit = normalizeInteger(cleanArgs.limit, 12, 1, 30)
+    cleanArgs.target_limit = normalizeInteger(cleanArgs.target_limit, 5, 1, 12)
+    cleanArgs.min_total_weight = normalizeInteger(cleanArgs.min_total_weight, 0, 0, 1000000000)
+  }
+
+  if (name === 'vfb_find_reciprocal_connectivity') {
+    cleanArgs.source_family = String(cleanArgs.source_family || '').trim()
+    cleanArgs.target_family = String(cleanArgs.target_family || '').trim()
+    cleanArgs.limit = normalizeInteger(cleanArgs.limit, 12, 1, 30)
+    cleanArgs.per_partner_limit = normalizeInteger(cleanArgs.per_partner_limit, 8, 1, 12)
+    cleanArgs.min_total_weight = normalizeInteger(cleanArgs.min_total_weight, 0, 0, 1000000000)
+  }
+
+  if (name === 'vfb_find_genetic_tools') {
+    cleanArgs.focus = String(cleanArgs.focus || '').trim()
+    cleanArgs.limit = normalizeInteger(cleanArgs.limit, 12, 1, 30)
   }
 
   if (name === 'vfb_resolve_entity' || name === 'vfb_resolve_combination') {
@@ -3700,6 +3842,37 @@ function maybeRepairPrimaryTermIdForTaxonomy(cleanArgs = {}, context = {}) {
   return null
 }
 
+function maybeRepairPrimaryTermIdFromLastSearch(cleanArgs = {}, context = {}) {
+  if (Array.isArray(cleanArgs.id) || Array.isArray(cleanArgs.queries)) return null
+  const currentId = extractCanonicalVfbTermId(cleanArgs.id || '')
+  const lastSearch = context.toolState?.lastTermSearch
+  const lastSearchId = extractCanonicalVfbTermId(lastSearch?.id || '')
+  if (!currentId || !lastSearchId || currentId.toLowerCase() === lastSearchId.toLowerCase()) return null
+
+  const userMessage = context.userMessage || ''
+  if (new RegExp(`\\b${escapeRegexForPattern(currentId)}\\b`, 'i').test(userMessage)) return null
+
+  const userNorm = normalizeEndpointSearchText(userMessage)
+  const queryNorm = normalizeEndpointSearchText(lastSearch?.query || '')
+  const labelNorm = normalizeEndpointSearchText(lastSearch?.label || '')
+  const queryTokens = queryNorm.split(' ').filter(token => token.length > 2)
+  const labelTokens = labelNorm.split(' ').filter(token => token.length > 2)
+  const relevant =
+    (queryNorm && (userNorm.includes(queryNorm) || queryTokens.every(token => userNorm.includes(token)))) ||
+    (labelNorm && (userNorm.includes(labelNorm) || labelTokens.every(token => userNorm.includes(token)))) ||
+    (/\bmbons?\b/i.test(userMessage) && /\bmushroom body output neuron\b/i.test(lastSearch?.label || '')) ||
+    (/\bdans?\b/i.test(userMessage) && /\bdopaminergic\b/i.test(`${lastSearch?.label || ''} ${lastSearch?.query || ''}`))
+
+  if (!relevant) return null
+
+  cleanArgs.id = lastSearchId
+  return {
+    from: currentId,
+    to: lastSearchId,
+    reason: 'the model selected an ID that was not supplied by the user; using the preferred result from the immediately preceding VFB search'
+  }
+}
+
 function inferRunQueryArgsFromToolState(cleanArgs = {}, context = {}) {
   const state = context.toolState
   if (!state) return null
@@ -3989,20 +4162,45 @@ function getTargetFilterVariants(targetFilter = '') {
     variants.add('mushroom body output neurons')
   }
 
+  if (/\bdans?\b/.test(normalized) || /\bdopaminergic\b/.test(normalized) || /\bdopamine\b/.test(normalized)) {
+    variants.add('dan')
+    variants.add('dans')
+    variants.add('dopaminergic')
+    variants.add('dopaminergic neuron')
+    variants.add('dopaminergic neurons')
+    variants.add('dopamine neuron')
+    variants.add('pam')
+    variants.add('ppl')
+    variants.add('ppm')
+  }
+
+  if (/\bkenyon\b/.test(normalized) || /\bkcs?\b/.test(normalized)) {
+    variants.add('kenyon cell')
+    variants.add('kenyon cells')
+    variants.add('kc')
+    variants.add('kcs')
+  }
+
   return Array.from(variants).filter(Boolean)
 }
 
-function connectivityRowMatchesTargetFilter(row = {}, targetFilter = '') {
-  const variants = getTargetFilterVariants(targetFilter)
+function connectivityRowMatchesLabelFilter(row = {}, filterText = '', direction = 'downstream') {
+  const variants = getTargetFilterVariants(filterText)
   if (variants.length === 0) return true
 
+  const rowClassField = direction === 'upstream' ? row.upstream_class : row.downstream_class
+  const alternateClassField = direction === 'upstream'
+    ? (row.source_class || row.presynaptic_class)
+    : (row.target_class || row.postsynaptic_class)
+
   const haystack = normalizeEndpointSearchText([
-    getConnectivityRowTargetLabel(row, 'downstream'),
+    getConnectivityRowTargetLabel(row, direction),
     row.id,
-    row.downstream_class,
-    row.target_class,
-    row.postsynaptic_class,
-    Array.isArray(row.tags) ? row.tags.join(' ') : ''
+    rowClassField,
+    alternateClassField,
+    row.label,
+    row.name,
+    Array.isArray(row.tags) ? row.tags.join(' ') : row.tags
   ].filter(Boolean).join(' '))
 
   if (!haystack) return false
@@ -4014,11 +4212,15 @@ function connectivityRowMatchesTargetFilter(row = {}, targetFilter = '') {
   })
 }
 
-function summarizeDownstreamConnectivityRow(row = {}, source = {}) {
-  const id = getConnectivityRowTargetId(row, 'downstream')
+function connectivityRowMatchesTargetFilter(row = {}, targetFilter = '') {
+  return connectivityRowMatchesLabelFilter(row, targetFilter, 'downstream')
+}
+
+function summarizeConnectivityPartnerRow(row = {}, source = {}, direction = 'downstream') {
+  const id = getConnectivityRowTargetId(row, direction)
   if (!id) return null
 
-  const label = getConnectivityRowTargetLabel(row, 'downstream') || id
+  const label = getConnectivityRowTargetLabel(row, direction) || id
   const totalWeight = getNumericConnectivityRowField(row, ['total_weight', 'weight', 'synapse_count', 'synapses'])
   const pairwiseConnections = getNumericConnectivityRowField(row, ['pairwise_connections', 'connection_count', 'connections'])
   const connectedN = getNumericConnectivityRowField(row, ['connected_n', 'connected_count'])
@@ -4031,6 +4233,7 @@ function summarizeDownstreamConnectivityRow(row = {}, source = {}) {
     label,
     source_id: source.id,
     source_label: source.label || source.id,
+    direction,
     ...(Number.isFinite(totalWeight) ? { total_weight: totalWeight } : {}),
     ...(Number.isFinite(pairwiseConnections) ? { pairwise_connections: pairwiseConnections } : {}),
     ...(Number.isFinite(connectedN) ? { connected_n: connectedN } : {}),
@@ -4038,6 +4241,10 @@ function summarizeDownstreamConnectivityRow(row = {}, source = {}) {
     ...(Number.isFinite(percentConnected) ? { percent_connected: percentConnected } : {}),
     ...(Number.isFinite(avgWeight) ? { avg_weight: avgWeight } : {})
   }
+}
+
+function summarizeDownstreamConnectivityRow(row = {}, source = {}) {
+  return summarizeConnectivityPartnerRow(row, source, 'downstream')
 }
 
 function compareConnectivityRowStrength(a = {}, b = {}) {
@@ -4127,21 +4334,33 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
 }
 
 async function getDownstreamQueryTypeForComparison(client, source = {}) {
+  return getConnectivityQueryTypeForComparison(client, source, 'downstream')
+}
+
+async function getConnectivityQueryTypeForComparison(client, source = {}, direction = 'downstream') {
   let termInfoText = source.term_info_text
   if (!termInfoText && source.id) {
     termInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: source.id })
   }
 
   const queryTypes = extractQueryNamesFromTermInfoPayload(termInfoText)
-  const queryType = chooseAvailableQueryType(queryTypes, [
-    'DownstreamClassConnectivity',
-    'ref_downstream_class_connectivity_query',
-    'NeuronsPostsynapticHere'
-  ])
+  const isUpstream = direction === 'upstream'
+  const preferredQueryTypes = isUpstream
+    ? [
+        'UpstreamClassConnectivity',
+        'ref_upstream_class_connectivity_query',
+        'NeuronsPresynapticHere'
+      ]
+    : [
+        'DownstreamClassConnectivity',
+        'ref_downstream_class_connectivity_query',
+        'NeuronsPostsynapticHere'
+      ]
+  const queryType = chooseAvailableQueryType(queryTypes, preferredQueryTypes)
 
   if (!queryType && source.id && VFB_NEURON_CLASS_ID_REGEX.test(source.id)) {
     return {
-      queryType: 'DownstreamClassConnectivity',
+      queryType: isUpstream ? 'UpstreamClassConnectivity' : 'DownstreamClassConnectivity',
       queryTypes,
       termInfoText,
       queryTypeSource: 'default_neuron_class_connectivity'
@@ -4157,6 +4376,10 @@ async function getDownstreamQueryTypeForComparison(client, source = {}) {
 }
 
 async function getDownstreamRowsForComparison(client, source = {}, queryType = '') {
+  return getConnectivityRowsForComparison(client, source, queryType)
+}
+
+async function getConnectivityRowsForComparison(client, source = {}, queryType = '') {
   if (!source.id || !queryType) return { rows: [], count: 0, used_cached_recovery: false }
 
   const outputText = await callVfbToolTextWithFallback(client, 'run_query', {
@@ -4429,6 +4652,661 @@ async function compareDownstreamTargetsTool(client, args = {}) {
   })
 }
 
+function isLikelyAggregateConnectivityPartner(summary = {}, partnerFilter = '') {
+  const label = normalizeEndpointSearchText(summary.label || '')
+  const filter = normalizeEndpointSearchText(partnerFilter)
+  if (!label) return false
+
+  if (filter.includes('dopaminergic') || /\bdans?\b/.test(filter)) {
+    return label === 'adult dopaminergic neuron' ||
+      label === 'dopaminergic neuron' ||
+      label === 'mushroom body dopaminergic neuron'
+  }
+
+  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic)\s+neuron\b/.test(label)
+}
+
+async function findConnectivityPartnersTool(client, args = {}) {
+  const endpointType = String(args.endpoint_type || '').trim()
+  const direction = args.direction === 'downstream' ? 'downstream' : 'upstream'
+  const partnerFilter = String(args.partner_filter || '').trim()
+  const includePartnerTargets = args.include_partner_targets === true
+  const partnerTargetFilter = String(args.partner_target_filter || endpointType || '').trim()
+  const limit = normalizeInteger(args.limit, 12, 1, 30)
+  const targetLimit = normalizeInteger(args.target_limit, 5, 1, 12)
+  const minTotalWeight = normalizeInteger(args.min_total_weight, 0, 0, 1000000000)
+
+  if (!endpointType) {
+    return JSON.stringify({
+      error: 'vfb_find_connectivity_partners requires endpoint_type.',
+      tool: 'vfb_find_connectivity_partners',
+      recoverable: true,
+      instruction: 'Use a fixed neuron class label or FBbt ID as endpoint_type, such as "mushroom body output neuron".'
+    })
+  }
+
+  const warnings = []
+  const endpoint = await resolveComparisonUpstreamType(client, endpointType)
+  if (!endpoint.id) {
+    return JSON.stringify({
+      error: endpoint.error || `Could not resolve endpoint_type "${endpointType}" to a VFB neuron class.`,
+      tool: 'vfb_find_connectivity_partners',
+      recoverable: true,
+      endpoint_type: endpointType,
+      instruction: 'Search/choose a concrete neuron-class endpoint before ranking class-connectivity partners.'
+    })
+  }
+
+  if (endpoint.is_neuron_class === false) {
+    warnings.push(`Resolved "${endpointType}" to ${endpoint.label} (${endpoint.id}), but VFB term info did not classify it as a neuron class.`)
+  }
+
+  const { queryType, queryTypes, queryTypeSource } = await getConnectivityQueryTypeForComparison(client, endpoint, direction)
+  if (!queryType) {
+    return JSON.stringify({
+      error: `No ${direction} class-connectivity query was available for ${endpoint.label} (${endpoint.id}).`,
+      tool: 'vfb_find_connectivity_partners',
+      recoverable: true,
+      endpoint: {
+        input: endpointType,
+        id: endpoint.id,
+        label: endpoint.label
+      },
+      available_query_types: queryTypes,
+      instruction: 'Use vfb_get_term_info for this term and choose an available query type, or select a narrower neuron class.'
+    })
+  }
+
+  const { rows, count, used_cached_recovery: usedCachedRecovery } = await getConnectivityRowsForComparison(client, endpoint, queryType)
+  const partnerRows = []
+  const seenPartnerIds = new Set()
+  for (const row of rows) {
+    if (!connectivityRowMatchesLabelFilter(row, partnerFilter, direction)) continue
+
+    const summary = summarizeConnectivityPartnerRow(row, endpoint, direction)
+    if (!summary?.id || seenPartnerIds.has(summary.id)) continue
+
+    const totalWeight = Number.isFinite(Number(summary.total_weight)) ? Number(summary.total_weight) : 0
+    if (totalWeight < minTotalWeight) continue
+
+    seenPartnerIds.add(summary.id)
+    partnerRows.push(summary)
+  }
+  partnerRows.sort(compareConnectivityRowStrength)
+
+  const topPartners = partnerRows.slice(0, limit)
+  const aggregatePartners = topPartners.filter(partner => isLikelyAggregateConnectivityPartner(partner, partnerFilter))
+  const specificPartners = topPartners.filter(partner => !isLikelyAggregateConnectivityPartner(partner, partnerFilter))
+
+  const partnerTargetBreakdown = []
+  if (includePartnerTargets && topPartners.length > 0) {
+    const oppositeDirection = direction === 'upstream' ? 'downstream' : 'upstream'
+    const partnersForBreakdown = [
+      ...specificPartners,
+      ...aggregatePartners
+    ].slice(0, Math.min(6, topPartners.length))
+
+    const buildPartnerBreakdown = async (partner) => {
+      try {
+        const partnerSource = {
+          id: partner.id,
+          label: partner.label,
+          term_info_text: null
+        }
+        const partnerQueryInfo = await getConnectivityQueryTypeForComparison(client, partnerSource, oppositeDirection)
+        if (!partnerQueryInfo.queryType) {
+          return {
+            partner_id: partner.id,
+            partner_label: partner.label,
+            error: `No ${oppositeDirection} class-connectivity query was available for this partner.`
+          }
+        }
+
+        const partnerRowsResult = await getConnectivityRowsForComparison(client, partnerSource, partnerQueryInfo.queryType)
+        const matchingTargets = []
+        const seenTargetIds = new Set()
+        for (const row of partnerRowsResult.rows) {
+          if (!connectivityRowMatchesLabelFilter(row, partnerTargetFilter, oppositeDirection)) continue
+
+          const targetSummary = summarizeConnectivityPartnerRow(row, partnerSource, oppositeDirection)
+          if (!targetSummary?.id || seenTargetIds.has(targetSummary.id)) continue
+          seenTargetIds.add(targetSummary.id)
+          matchingTargets.push(targetSummary)
+        }
+        matchingTargets.sort(compareConnectivityRowStrength)
+
+        return {
+          partner_id: partner.id,
+          partner_label: partner.label,
+          partner_total_weight_to_endpoint_family: partner.total_weight,
+          query_type: partnerQueryInfo.queryType,
+          query_type_source: partnerQueryInfo.queryTypeSource,
+          target_filter: partnerTargetFilter,
+          matching_target_count: matchingTargets.length,
+          top_targets: matchingTargets.slice(0, targetLimit).map(target => ({
+            id: target.id,
+            label: target.label,
+            ...(Number.isFinite(Number(target.total_weight)) ? { total_weight: Number(target.total_weight) } : {}),
+            ...(Number.isFinite(Number(target.pairwise_connections)) ? { pairwise_connections: Number(target.pairwise_connections) } : {}),
+            ...(Number.isFinite(Number(target.connected_n)) ? { connected_n: Number(target.connected_n) } : {}),
+            ...(Number.isFinite(Number(target.total_n)) ? { total_n: Number(target.total_n) } : {})
+          }))
+        }
+      } catch (error) {
+        return {
+          partner_id: partner.id,
+          partner_label: partner.label,
+          error: error?.message || String(error)
+        }
+      }
+    }
+
+    partnerTargetBreakdown.push(...await Promise.all(partnersForBreakdown.map(buildPartnerBreakdown)))
+  }
+
+  return JSON.stringify({
+    query: {
+      endpoint_type: endpointType,
+      direction,
+      partner_filter: partnerFilter || null,
+      partner_filter_variants: getTargetFilterVariants(partnerFilter),
+      include_partner_targets: includePartnerTargets,
+      partner_target_filter: includePartnerTargets ? partnerTargetFilter : null,
+      min_total_weight: minTotalWeight,
+      limit,
+      target_limit: targetLimit
+    },
+    endpoint: {
+      input: endpoint.input,
+      id: endpoint.id,
+      label: endpoint.label,
+      match_label: endpoint.match_label,
+      query_type: queryType,
+      query_type_source: queryTypeSource,
+      total_rows: count,
+      used_cached_recovery: usedCachedRecovery || undefined
+    },
+    evidence_summary: {
+      result_scope: partnerFilter ? 'filtered_class_connectivity_partners' : 'ranked_class_connectivity_partners',
+      answer_hint: partnerRows.length > 0
+        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}.`
+        : `VFB returned ${count} ${direction} rows for ${endpoint.label}, but none matched the requested partner filter${partnerFilter ? ` "${partnerFilter}"` : ''}.`,
+      caution: 'Rows are class-level connectivity summaries from the selected endpoint query; broad aggregate classes are not one-to-one neuron types.'
+    },
+    partner_count: partnerRows.length,
+    aggregate_partners: aggregatePartners.map(partner => ({
+      id: partner.id,
+      label: partner.label,
+      ...(Number.isFinite(Number(partner.total_weight)) ? { total_weight: Number(partner.total_weight) } : {}),
+      ...(Number.isFinite(Number(partner.pairwise_connections)) ? { pairwise_connections: Number(partner.pairwise_connections) } : {}),
+      ...(Number.isFinite(Number(partner.connected_n)) ? { connected_n: Number(partner.connected_n) } : {}),
+      ...(Number.isFinite(Number(partner.total_n)) ? { total_n: Number(partner.total_n) } : {})
+    })),
+    top_partners: topPartners.map(partner => ({
+      id: partner.id,
+      label: partner.label,
+      aggregate_class: isLikelyAggregateConnectivityPartner(partner, partnerFilter) || undefined,
+      ...(Number.isFinite(Number(partner.total_weight)) ? { total_weight: Number(partner.total_weight) } : {}),
+      ...(Number.isFinite(Number(partner.pairwise_connections)) ? { pairwise_connections: Number(partner.pairwise_connections) } : {}),
+      ...(Number.isFinite(Number(partner.connected_n)) ? { connected_n: Number(partner.connected_n) } : {}),
+      ...(Number.isFinite(Number(partner.total_n)) ? { total_n: Number(partner.total_n) } : {}),
+      ...(Number.isFinite(Number(partner.percent_connected)) ? { percent_connected: Number(partner.percent_connected) } : {}),
+      ...(Number.isFinite(Number(partner.avg_weight)) ? { avg_weight: Number(partner.avg_weight) } : {})
+    })),
+    partner_target_breakdown: includePartnerTargets ? partnerTargetBreakdown : undefined,
+    warnings,
+    next_actions: partnerRows.length > 0
+      ? [
+          {
+            id: 'inspect_specific_partner',
+            label: 'Inspect a partner type',
+            description: 'Pick one returned partner class and query its downstream/upstream partners in more detail.'
+          },
+          {
+            id: 'adjust_filter_or_threshold',
+            label: 'Adjust filter or threshold',
+            description: 'Repeat with a narrower partner filter, dataset filter, or minimum weight.'
+          }
+        ]
+      : [
+          {
+            id: 'relax_partner_filter',
+            label: 'Relax partner filter',
+            description: 'Repeat with a broader or blank partner_filter to inspect the top class-connectivity rows.'
+          }
+        ]
+  })
+}
+
+function buildReciprocalPairMap(partnerResult = {}, weightField = '') {
+  const pairMap = new Map()
+  const breakdown = Array.isArray(partnerResult?.partner_target_breakdown)
+    ? partnerResult.partner_target_breakdown
+    : []
+
+  for (const partner of breakdown) {
+    const partnerId = extractCanonicalVfbTermId(partner?.partner_id || '') || String(partner?.partner_id || '').trim()
+    const partnerLabel = String(partner?.partner_label || partnerId || '').trim()
+    if (!partnerId || !Array.isArray(partner?.top_targets)) continue
+
+    for (const target of partner.top_targets) {
+      const sourceId = extractCanonicalVfbTermId(target?.id || '') || String(target?.id || '').trim()
+      const sourceLabel = String(target?.label || sourceId || '').trim()
+      if (!sourceId) continue
+
+      const totalWeight = Number(target?.total_weight)
+      const pairwiseConnections = Number(target?.pairwise_connections)
+      const key = `${sourceId}::${partnerId}`
+      const entry = pairMap.get(key) || {
+        source_id: sourceId,
+        source_label: sourceLabel,
+        target_id: partnerId,
+        target_label: partnerLabel
+      }
+
+      if (Number.isFinite(totalWeight)) entry[weightField] = totalWeight
+      if (Number.isFinite(pairwiseConnections)) {
+        entry[`${weightField}_pairwise_connections`] = pairwiseConnections
+      }
+
+      const existingWeight = Number(pairMap.get(key)?.[weightField])
+      if (!pairMap.has(key) || !Number.isFinite(existingWeight) || totalWeight > existingWeight) {
+        pairMap.set(key, entry)
+      }
+    }
+  }
+
+  return pairMap
+}
+
+function getTopOneWayReciprocalRows(partnerResult = {}, weightField = '', limit = 8) {
+  return Array.from(buildReciprocalPairMap(partnerResult, weightField).values())
+    .filter(row => Number.isFinite(Number(row[weightField])))
+    .sort((a, b) => Number(b[weightField]) - Number(a[weightField]))
+    .slice(0, limit)
+}
+
+async function findReciprocalConnectivityTool(client, args = {}) {
+  const sourceFamily = String(args.source_family || '').trim()
+  const targetFamily = String(args.target_family || '').trim()
+  const limit = normalizeInteger(args.limit, 12, 1, 30)
+  const perPartnerLimit = normalizeInteger(args.per_partner_limit, 8, 1, 12)
+  const minTotalWeight = normalizeInteger(args.min_total_weight, 0, 0, 1000000000)
+
+  if (!sourceFamily || !targetFamily) {
+    return JSON.stringify({
+      error: 'vfb_find_reciprocal_connectivity requires source_family and target_family.',
+      tool: 'vfb_find_reciprocal_connectivity',
+      recoverable: true,
+      instruction: 'Use two neuron family/class labels or FBbt IDs, such as "mushroom body output neuron" and "dopaminergic neuron".'
+    })
+  }
+
+  const [targetToSourceText, sourceToTargetText] = await Promise.all([
+    findConnectivityPartnersTool(client, {
+      endpoint_type: sourceFamily,
+      direction: 'upstream',
+      partner_filter: targetFamily,
+      include_partner_targets: true,
+      partner_target_filter: sourceFamily,
+      limit,
+      target_limit: perPartnerLimit,
+      min_total_weight: minTotalWeight
+    }),
+    findConnectivityPartnersTool(client, {
+      endpoint_type: sourceFamily,
+      direction: 'downstream',
+      partner_filter: targetFamily,
+      include_partner_targets: true,
+      partner_target_filter: sourceFamily,
+      limit,
+      target_limit: perPartnerLimit,
+      min_total_weight: minTotalWeight
+    })
+  ])
+
+  const targetToSource = parseJsonPayload(targetToSourceText) || {}
+  const sourceToTarget = parseJsonPayload(sourceToTargetText) || {}
+  const warnings = [
+    ...(Array.isArray(targetToSource.warnings) ? targetToSource.warnings : []),
+    ...(Array.isArray(sourceToTarget.warnings) ? sourceToTarget.warnings : [])
+  ]
+
+  if (targetToSource.error || sourceToTarget.error) {
+    return JSON.stringify({
+      query: {
+        source_family: sourceFamily,
+        target_family: targetFamily,
+        min_total_weight: minTotalWeight,
+        limit,
+        per_partner_limit: perPartnerLimit
+      },
+      source_family_endpoint: targetToSource.endpoint || sourceToTarget.endpoint,
+      target_to_source_error: targetToSource.error,
+      source_to_target_error: sourceToTarget.error,
+      warnings,
+      evidence_summary: {
+        result_scope: 'reciprocal_connectivity_incomplete',
+        answer_hint: 'VFB could not complete both directions needed for reciprocal class-connectivity analysis. Present any completed direction, then suggest narrowing the endpoint families.'
+      }
+    })
+  }
+
+  const targetToSourceMap = buildReciprocalPairMap(targetToSource, 'target_to_source_weight')
+  const sourceToTargetMap = buildReciprocalPairMap(sourceToTarget, 'source_to_target_weight')
+  const reciprocalPairs = []
+
+  for (const [key, targetToSourceRow] of targetToSourceMap.entries()) {
+    const sourceToTargetRow = sourceToTargetMap.get(key)
+    if (!sourceToTargetRow) continue
+
+    const sourceToTargetWeight = Number(sourceToTargetRow.source_to_target_weight)
+    const targetToSourceWeight = Number(targetToSourceRow.target_to_source_weight)
+    if (!Number.isFinite(sourceToTargetWeight) || !Number.isFinite(targetToSourceWeight)) continue
+
+    const strongestWeakerDirection = Math.min(sourceToTargetWeight, targetToSourceWeight)
+    const summedWeight = sourceToTargetWeight + targetToSourceWeight
+    reciprocalPairs.push({
+      source_id: targetToSourceRow.source_id,
+      source_label: targetToSourceRow.source_label,
+      target_id: targetToSourceRow.target_id,
+      target_label: targetToSourceRow.target_label,
+      source_to_target_weight: sourceToTargetWeight,
+      target_to_source_weight: targetToSourceWeight,
+      rank_weight: strongestWeakerDirection,
+      rank_basis: 'weaker direction total_weight',
+      mutual_min_weight: strongestWeakerDirection,
+      _sort_summed_weight: summedWeight,
+      ...(Number.isFinite(Number(sourceToTargetRow.source_to_target_weight_pairwise_connections))
+        ? { source_to_target_pairwise_connections: Number(sourceToTargetRow.source_to_target_weight_pairwise_connections) }
+        : {}),
+      ...(Number.isFinite(Number(targetToSourceRow.target_to_source_weight_pairwise_connections))
+        ? { target_to_source_pairwise_connections: Number(targetToSourceRow.target_to_source_weight_pairwise_connections) }
+        : {})
+    })
+  }
+
+  reciprocalPairs.sort((a, b) => {
+    if (b.mutual_min_weight !== a.mutual_min_weight) return b.mutual_min_weight - a.mutual_min_weight
+    return b._sort_summed_weight - a._sort_summed_weight
+  })
+  const reciprocalPairsForOutput = reciprocalPairs.map(({ _sort_summed_weight: _sortSummedWeight, ...pair }) => pair)
+
+  return JSON.stringify({
+    query: {
+      source_family: sourceFamily,
+      target_family: targetFamily,
+      min_total_weight: minTotalWeight,
+      limit,
+      per_partner_limit: perPartnerLimit
+    },
+    source_family_endpoint: targetToSource.endpoint || sourceToTarget.endpoint,
+    target_to_source_summary: {
+      direction: `${targetFamily} -> ${sourceFamily}`,
+      partner_count: targetToSource.partner_count,
+      top_partners: targetToSource.top_partners,
+      aggregate_partners: targetToSource.aggregate_partners
+    },
+    source_to_target_summary: {
+      direction: `${sourceFamily} -> ${targetFamily}`,
+      partner_count: sourceToTarget.partner_count,
+      top_partners: sourceToTarget.top_partners,
+      aggregate_partners: sourceToTarget.aggregate_partners
+    },
+    evidence_summary: {
+      result_scope: reciprocalPairs.length > 0
+        ? 'reciprocal_class_connectivity_pairs_found'
+        : 'no_reciprocal_pairs_in_inspected_partner_breakdowns',
+      answer_hint: reciprocalPairs.length > 0
+        ? `VFB found ${reciprocalPairs.length} reciprocal class-level pair${reciprocalPairs.length === 1 ? '' : 's'} between ${sourceFamily} and ${targetFamily} in the inspected partner breakdowns. Rank by rank_weight/mutual_min_weight for strongest bidirectional support.`
+        : `VFB found one-way class-connectivity rows in the inspected tables, but no reciprocal pairs among the top ${perPartnerLimit} source-family targets per partner. This does not prove biological absence; broaden per_partner_limit or inspect specific partners if needed.`,
+      presentation_hint: 'For each reciprocal pair, show rank_weight as the main ranking score, plus source_to_target_weight and target_to_source_weight separately.',
+      caution: 'Rows are class-level summaries. Broad aggregate classes are not one-to-one neuron types; prefer the specific reciprocal_pairs list when present.'
+    },
+    reciprocal_count: reciprocalPairs.length,
+    reciprocal_pairs: reciprocalPairsForOutput.slice(0, limit),
+    top_one_way_target_to_source: getTopOneWayReciprocalRows(targetToSource, 'target_to_source_weight', Math.min(limit, 8)),
+    top_one_way_source_to_target: getTopOneWayReciprocalRows(sourceToTarget, 'source_to_target_weight', Math.min(limit, 8)),
+    warnings,
+    next_actions: reciprocalPairs.length > 0
+      ? [
+          {
+            id: 'inspect_pair',
+            label: 'Inspect a reciprocal pair',
+            description: 'Pick one returned pair and query its class or individual-level connectivity in more detail.'
+          },
+          {
+            id: 'adjust_threshold',
+            label: 'Adjust threshold',
+            description: 'Repeat with a higher minimum weight or inspect dataset-specific contributions.'
+          }
+        ]
+      : [
+          {
+            id: 'increase_partner_limit',
+            label: 'Broaden inspected partners',
+            description: 'Increase per_partner_limit or lower the weight threshold to inspect more candidate pairs.'
+          },
+          {
+            id: 'inspect_one_way_partners',
+            label: 'Inspect one-way partners',
+            description: 'Start from the strongest one-way rows and check individual-level evidence.'
+          }
+        ]
+  })
+}
+
+function inferGeneticToolFocusFromUserMessage(userMessage = '') {
+  const text = String(userMessage || '')
+  if (/\bmushroom body\b/i.test(text)) return 'mushroom body'
+  if (/\blateral horn\b/i.test(text)) return 'lateral horn'
+  if (/\bfan-shaped body\b/i.test(text)) return 'fan-shaped body'
+  if (/\bcentral complex\b/i.test(text)) return 'central complex'
+  if (/\bantennal lobe\b/i.test(text)) return 'antennal lobe'
+
+  const match = text.match(/\b(?:label|target|image|study|visuali[sz]e)\s+(.{3,80}?)(?:\s+neurons?|\s+cells?|\s+in\s+Drosophila|[?.!,]|$)/i) ||
+    text.match(/\b(?:for|in)\s+(.{3,80}?)(?:\s+neurons?|\s+cells?|\s+in\s+Drosophila|[?.!,]|$)/i)
+  if (match?.[1]) {
+    return match[1]
+      .replace(/\b(?:genetic|tools?|commonly|used|available|drosophila|fruit fly)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  return ''
+}
+
+function classifyGeneticToolRow(row = {}) {
+  const name = stripMarkdownLinkText(row.name || row.label || row.id || '')
+  if (/\b(split|dbd|p65|ad)\b|∩/i.test(name)) return 'split-GAL4 / intersectional'
+  if (/\b(gal4|gawB|gmr)\b/i.test(name)) return 'GAL4 driver'
+  if (/\b(lexa|qf|flp|cre)\b/i.test(name)) return 'binary/intersectional driver'
+  if (/\b(lacz|gfp|rfp|reporter)\b/i.test(name)) return 'reporter/transgene'
+  return 'expression pattern'
+}
+
+function summarizePublicationForToolRow(publication = {}) {
+  const core = publication?.core || {}
+  return compactDefinedToolArgs({
+    label: core.label || publication.label,
+    FlyBase: publication.FlyBase || core.short_form,
+    PubMed: publication.PubMed,
+    DOI: publication.DOI
+  })
+}
+
+function summarizeGeneticToolRow(row = {}, sourceQuery = '') {
+  const id = extractCanonicalVfbTermId(row.id || row.name || '') || String(row.id || '').trim()
+  const name = stripMarkdownLinkText(row.name || row.label || id)
+  return compactDefinedToolArgs({
+    id,
+    name,
+    category: classifyGeneticToolRow(row),
+    tags: row.tags,
+    source_query: sourceQuery,
+    publications: Array.isArray(row.pubs)
+      ? row.pubs.slice(0, 4).map(summarizePublicationForToolRow).filter(pub => Object.keys(pub).length > 0)
+      : undefined
+  })
+}
+
+async function findGeneticToolsTool(client, args = {}, context = {}) {
+  const rawFocus = String(args.focus || '').trim()
+  const inferredFocus = inferGeneticToolFocusFromUserMessage(context.userMessage || '')
+  const requestedFocus = rawFocus || inferredFocus
+  const focusSeed = inferredFocus && (
+    requestedFocus.length > 80 ||
+    /\b(genetic tools?|drivers?|gal4|label|commonly used|drosophila)\b/i.test(requestedFocus)
+  )
+    ? inferredFocus
+    : requestedFocus
+  const focus = focusSeed.replace(/\bneurons?\b/gi, ' ').replace(/\s+/g, ' ').trim()
+  const limit = normalizeInteger(args.limit, 12, 1, 30)
+
+  if (!focus) {
+    return JSON.stringify({
+      error: 'vfb_find_genetic_tools requires a focus term.',
+      tool: 'vfb_find_genetic_tools',
+      recoverable: true,
+      instruction: 'Use the anatomy or neuron class the user wants to label, such as "mushroom body".'
+    })
+  }
+
+  let focusTerm = null
+  try {
+    focusTerm = await findPreferredAnatomyTermForPhrase(client, focus)
+  } catch {
+    focusTerm = null
+  }
+
+  if (!focusTerm?.id) {
+    const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
+      query: focus,
+      filter_types: ['neuron'],
+      exclude_types: ['deprecated'],
+      boost_types: ['class'],
+      rows: 20,
+      minimize_results: false
+    })
+    const docs = extractDocsFromSearchTermsPayload(searchText)
+    const bestDoc = pickBestConnectivityEndpointDoc(docs, focus)
+    const bestId = extractCanonicalVfbTermId(bestDoc?.short_form || bestDoc?.shortForm || bestDoc?.id || '')
+    if (bestId) {
+      focusTerm = {
+        id: bestId,
+        label: stripMarkdownLinkText(bestDoc?.label || bestId),
+        query: focus,
+        facets: getSearchDocFacets(bestDoc)
+      }
+    }
+  }
+
+  if (!focusTerm?.id) {
+    return JSON.stringify({
+      error: `Could not resolve "${focus}" to a VFB anatomy or neuron-class term.`,
+      tool: 'vfb_find_genetic_tools',
+      recoverable: true,
+      focus,
+      instruction: 'Search for the anatomy/class first, then call this tool with the selected VFB label or ID.'
+    })
+  }
+
+  const termInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: focusTerm.id })
+  const termRecord = extractTermInfoRecordFromPayload(termInfoText, focusTerm.id)
+  const queryTypes = extractQueryNamesFromTermInfoPayload(termInfoText)
+  const selectedQueries = [
+    chooseAvailableQueryType(queryTypes, ['TransgeneExpressionHere']),
+    chooseAvailableQueryType(queryTypes, ['ExpressionOverlapsHere'])
+  ].filter(Boolean)
+
+  const rowsByQuery = []
+  const warnings = []
+  for (const queryType of Array.from(new Set(selectedQueries))) {
+    try {
+      const outputText = await callVfbToolTextWithFallback(client, 'run_query', {
+        id: focusTerm.id,
+        query_type: queryType
+      })
+      const rows = extractRowsFromRunQueryPayload(outputText)
+      const parsed = parseJsonPayload(outputText)
+      rowsByQuery.push({
+        query_type: queryType,
+        count: Number.isFinite(Number(parsed?.count)) ? Number(parsed.count) : rows.length,
+        rows
+      })
+    } catch (error) {
+      warnings.push(`Failed to run ${queryType} for ${focusTerm.label || focusTerm.id}: ${error?.message || error}`)
+    }
+  }
+
+  const seenIds = new Set()
+  const tools = []
+  for (const result of rowsByQuery) {
+    for (const row of result.rows) {
+      const summary = summarizeGeneticToolRow(row, result.query_type)
+      const key = String(summary.id || summary.name || '').toLowerCase()
+      if (!key || seenIds.has(key)) continue
+      seenIds.add(key)
+      tools.push(summary)
+    }
+  }
+
+  const categoryCounts = tools.reduce((counts, tool) => {
+    const category = tool.category || 'expression pattern'
+    counts[category] = (counts[category] || 0) + 1
+    return counts
+  }, {})
+
+  return JSON.stringify({
+    query: {
+      focus: requestedFocus,
+      normalized_focus: focus,
+      limit
+    },
+    focus_term: {
+      id: focusTerm.id,
+      label: getReadableTermName(termRecord, focusTerm.label || focusTerm.id),
+      match_label: focusTerm.label,
+      super_types: Array.isArray(termRecord?.SuperTypes) ? termRecord.SuperTypes : [],
+      description: termRecord?.Meta?.Description
+    },
+    evidence_summary: {
+      result_scope: 'transgene_and_expression_patterns_for_focus_term',
+      answer_hint: tools.length > 0
+        ? `VFB returned ${tools.length} genetic tool/expression pattern row${tools.length === 1 ? '' : 's'} for ${focusTerm.label || focusTerm.id}.`
+        : `VFB did not return transgene/expression-pattern rows for ${focusTerm.label || focusTerm.id}.`,
+      caution: 'Rows indicate expression patterns overlapping/in the focus term; suitability for a specific experiment may require inspecting expression specificity and stock availability.'
+    },
+    query_counts: rowsByQuery.map(result => ({
+      query_type: result.query_type,
+      count: result.count
+    })),
+    category_counts: categoryCounts,
+    top_tools: tools.slice(0, limit),
+    warnings,
+    next_actions: tools.length > 0
+      ? [
+          {
+            id: 'check_specificity',
+            label: 'Check expression specificity',
+            description: 'Inspect a returned expression pattern in VFB to see which cells/regions are labeled.'
+          },
+          {
+            id: 'find_stocks',
+            label: 'Find stocks for a concrete tool',
+            description: 'Resolve a specific driver/transgene ID and look up stock availability.'
+          }
+        ]
+      : [
+          {
+            id: 'broaden_focus',
+            label: 'Broaden focus',
+            description: 'Try the parent anatomy term or a broader neuron class.'
+          }
+        ]
+  })
+}
+
 function buildConnectivityInvestigationNextActions({ endpointChecks = [], attemptedQuery = {} } = {}) {
   const selections = endpointChecks.filter(check => check?.requires_selection)
   const actions = []
@@ -4542,6 +5420,23 @@ async function executeFunctionTool(name, args, context = {}) {
     return compareDownstreamTargetsTool(client, normalizedArgs)
   }
 
+  if (name === 'vfb_find_connectivity_partners') {
+    const client = await getMcpClientForContext('vfb', context)
+    repairConnectivityPartnerArgsFromUserMessage(normalizedArgs, context.userMessage || '')
+    return findConnectivityPartnersTool(client, normalizedArgs)
+  }
+
+  if (name === 'vfb_find_reciprocal_connectivity') {
+    const client = await getMcpClientForContext('vfb', context)
+    repairReciprocalConnectivityArgsFromUserMessage(normalizedArgs, context.userMessage || '')
+    return findReciprocalConnectivityTool(client, normalizedArgs)
+  }
+
+  if (name === 'vfb_find_genetic_tools') {
+    const client = await getMcpClientForContext('vfb', context)
+    return findGeneticToolsTool(client, normalizedArgs, context)
+  }
+
   const routing = MCP_TOOL_ROUTING[name]
   if (routing) {
     const client = routing.server === 'vfb'
@@ -4632,7 +5527,10 @@ async function executeFunctionTool(name, args, context = {}) {
     if (name === 'vfb_get_term_info' && hasNonEmptyToolValue(cleanArgs.id)) {
       const taxonomyRepair = maybeRepairPrimaryTermIdForTaxonomy(cleanArgs, context)
       if (!taxonomyRepair) {
-        await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
+        const phraseRepair = await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
+        if (!phraseRepair) {
+          maybeRepairPrimaryTermIdFromLastSearch(cleanArgs, context)
+        }
       }
     }
 
@@ -4641,7 +5539,10 @@ async function executeFunctionTool(name, args, context = {}) {
       if (hasNonEmptyToolValue(cleanArgs.id)) {
         const taxonomyRepair = maybeRepairPrimaryTermIdForTaxonomy(cleanArgs, context)
         if (!taxonomyRepair) {
-          await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
+          const phraseRepair = await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
+          if (!phraseRepair) {
+            maybeRepairPrimaryTermIdFromLastSearch(cleanArgs, context)
+          }
         }
       }
       const hasBatchQueries = Array.isArray(cleanArgs.queries) && cleanArgs.queries.some(query =>
@@ -5342,8 +6243,10 @@ TOOL SELECTION:
 - For taxonomy/count questions, first inspect vfb_get_term_info Queries[].count and preview_results. If a count is already present there, report it as the tool-reported count instead of running a large table solely to count rows.
 - For anatomy questions asking about associated functions, use VFB term metadata for structure and VFB/PubMed evidence for functions. Do not state functions from memory; if no tool output verifies a function, say it was not verified.
 - FlyBase entities: vfb_resolve_entity → vfb_find_stocks.
-- Split-GAL4 combinations: vfb_resolve_combination → vfb_find_combo_publications, but only when the user gives a concrete combination/line name. For broad "genetic tools for X" questions, use VFB term queries such as TransgeneExpressionHere or ExpressionOverlapsHere.
+- Split-GAL4 combinations: vfb_resolve_combination → vfb_find_combo_publications, but only when the user gives a concrete combination/line name. For broad "genetic tools for X" questions, use vfb_find_genetic_tools.
 - Connectivity between neuron classes: call vfb_query_connectivity directly with the user's full neuron class labels or FBbt IDs.
+- Ranked/filtered partners for one neuron class, such as "dopaminergic input to MBONs" or "which DAN types connect to which MBON types": use vfb_find_connectivity_partners. Set endpoint_type to the fixed class (e.g. "mushroom body output neuron"), direction to upstream for inputs, partner_filter to the source family (e.g. "dopaminergic neuron" or "DAN"), and include_partner_targets true when the user asks which source types connect to which target types.
+- Reciprocal/bidirectional/mutual connectivity between two neuron families, such as MBONs and DANs: use vfb_find_reciprocal_connectivity. Do not answer "none" from broad family-to-family vfb_query_connectivity alone.
 - Shared downstream targets/convergence between two or more source neuron classes: call vfb_compare_downstream_targets. If the source classes are named in parentheses, pass those exact labels as upstream_types. Use target_filter when the user names the target family, e.g. MBON/mushroom body output neuron. Do not replace this with repeated pairwise vfb_query_connectivity calls.
 - Large tool results may be returned as data_resource handles. Inspect/read/search those resources instead of re-running the original tool or guessing from a preview.
 - Documentation: search_reviewed_docs → get_reviewed_page.
@@ -5355,6 +6258,8 @@ CONNECTIVITY RULES:
 - For "converge", "common/shared downstream targets", or "receive input from both" questions, prefer vfb_compare_downstream_targets with upstream_types set to the compared sources. This tool resolves sources and intersects downstream target tables server-side.
 - "From X to Y" or "between X and Y": X = upstream (presynaptic), Y = downstream (postsynaptic).
 - If the tool returns requires_user_selection/investigation_mode, do not dead-stop. Summarize verified candidate endpoints, state that connectivity/weights are not yet verified, and offer concrete next investigation actions.
+- Do not use broad class-to-class vfb_query_connectivity to test a whole source family against a whole target family (for example dopaminergic neuron → MBON); use vfb_find_connectivity_partners or a returned class-connectivity table instead.
+- For reciprocal/bidirectional/mutual family questions, use vfb_find_reciprocal_connectivity and rank reciprocal_pairs by mutual_min_weight. If no reciprocal_pairs are returned, present the strongest one-way rows and suggest broadening per_partner_limit rather than claiming biological absence.
 - For direct class-to-class connectivity, when vfb_query_connectivity returns data successfully, present the results AND call create_basic_graph. For shared-target comparisons, answer the shared_count/top shared_targets first; a graph is optional supporting UI and must not replace the textual answer.
 
 PRESENTING CONNECTIVITY RESULTS:
@@ -5365,6 +6270,8 @@ PRESENTING CONNECTIVITY RESULTS:
 - State the weight threshold used (default: 5 synapses).
 - Briefly offer: switch class/individual view, adjust threshold, or filter datasets.
 - For shared-target comparisons, say "VFB found..." or "VFB returned..." instead of naming internal tool names or JSON fields. If evidence_summary says a source has no downstream rows, state that common targets were not verified from the returned class-level tables rather than claiming biological absence.
+- For ranked/filtered partner summaries, distinguish broad aggregate classes (for example "adult dopaminergic neuron") from specific named neuron types (for example PAM/PPL/DAN subtypes). Do not turn an empty broad direct query into "no biological connectivity" if class-connectivity partner rows were returned.
+- For reciprocal summaries, list source→target and target→source weights separately, and rank by mutual_min_weight unless the user asks for another ranking.
 
 GRAPHS:
 - Auto-generate a graph (create_basic_graph) when direct class-to-class connectivity returns non-empty data. Use 4-20 nodes, top connections by weight.
@@ -5376,6 +6283,7 @@ GRAPHS:
 TOOL PARAMETERS:
 - Use plain short-form IDs (e.g. FBbt_00048241). Never pass markdown links or IRIs as IDs.
 - For vfb_run_query, copy query_type exactly from the term's Queries[].query. Do not invent, rename, or substitute query names across terms.
+- If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature.
 - If vfb_search_terms includes response._selection_guidance, use its preferred_top_result unless the user clearly asked for an individual neuron instance or anatomy region.
 - If vfb_get_term_info returns term_mismatch, retry with a suggested_terms ID that matches the user symbol and requested entity type before answering.
 - If vfb_get_term_info includes _vfb_chat_scope_note, follow it and state the scope limitation in the answer.
@@ -5394,7 +6302,7 @@ FORMATTING:
 - Use markdown links with descriptive names for VFB references, not bare IDs.
 - Include thumbnail images from tool output using markdown image syntax.
 - Cite only publications returned by tools. Use author/year or title as link text.
-- Do not narrate internal tool/resource plumbing in final answers. Do not name internal tools such as vfb_compare_downstream_targets, read_data_resource, inspect_data_resource, or toolres_*; prefer "VFB returned..." or "VFB found...".`
+- Do not narrate internal tool/resource plumbing in final answers. Do not name internal tools such as vfb_compare_downstream_targets, vfb_find_connectivity_partners, vfb_find_reciprocal_connectivity, vfb_find_genetic_tools, read_data_resource, inspect_data_resource, or toolres_*; prefer "VFB returned..." or "VFB found...".`
 
 /**
  * Build a short, human-readable suffix from tool arguments so the status
@@ -5433,6 +6341,26 @@ function describeToolArgs(toolName, args = {}) {
       const sourceText = sources.length > 0 ? ` for ${sources.join(' vs ')}` : ''
       const filterText = filter ? ` (${filter})` : ''
       return `${sourceText}${filterText}`
+    }
+    case 'vfb_find_connectivity_partners': {
+      const endpoint = args.endpoint_type || ''
+      const direction = args.direction || 'upstream'
+      const filter = args.partner_filter || ''
+      const endpointText = endpoint ? ` for ${endpoint}` : ''
+      const filterText = filter ? ` (${filter} ${direction})` : ` (${direction})`
+      return `${endpointText}${filterText}`
+    }
+    case 'vfb_find_reciprocal_connectivity': {
+      const source = args.source_family || ''
+      const target = args.target_family || ''
+      if (source && target) return ` — ${source} ↔ ${target}`
+      if (source) return ` for ${source}`
+      if (target) return ` for ${target}`
+      return ''
+    }
+    case 'vfb_find_genetic_tools': {
+      const focus = args.focus || ''
+      return focus ? ` for "${focus}"` : ''
     }
     case 'vfb_resolve_entity': {
       const name = args.name || ''
@@ -5474,6 +6402,9 @@ function getStatusForTool(toolName, args) {
     vfb_search_terms: 'Searching VFB terms',
     vfb_query_connectivity: 'Comparing connectome datasets',
     vfb_compare_downstream_targets: 'Comparing shared downstream targets',
+    vfb_find_connectivity_partners: 'Finding connectivity partners',
+    vfb_find_reciprocal_connectivity: 'Finding reciprocal connectivity',
+    vfb_find_genetic_tools: 'Finding genetic tools',
     vfb_resolve_entity: 'Resolving entity identity',
     vfb_resolve_combination: 'Resolving split combination',
     vfb_find_stocks: 'Finding available stocks',
@@ -5516,8 +6447,8 @@ const TOOL_NAME_SET = new Set(TOOL_DEFINITIONS.map(tool => tool.name))
 const TOOL_DEFINITION_MAP = new Map(TOOL_DEFINITIONS.map(tool => [tool.name, tool]))
 
 const TOOL_RELAY_GROUPS = Object.freeze({
-  coreVfb: ['vfb_search_terms', 'vfb_get_term_info', 'vfb_run_query'],
-  connectivity: ['vfb_list_connectome_datasets', 'vfb_query_connectivity', 'vfb_compare_downstream_targets', 'create_basic_graph'],
+  coreVfb: ['vfb_search_terms', 'vfb_get_term_info', 'vfb_run_query', 'vfb_find_genetic_tools'],
+  connectivity: ['vfb_list_connectome_datasets', 'vfb_query_connectivity', 'vfb_compare_downstream_targets', 'vfb_find_connectivity_partners', 'vfb_find_reciprocal_connectivity', 'create_basic_graph'],
   dataResources: ['list_data_resources', 'inspect_data_resource', 'read_data_resource', 'search_data_resource'],
   flybase: ['vfb_resolve_entity', 'vfb_find_stocks', 'vfb_resolve_combination', 'vfb_find_combo_publications'],
   literature: ['search_pubmed', 'get_pubmed_article'],
@@ -5666,19 +6597,24 @@ TOOL ROUTING RECIPES:
 - Neuron type taxonomy/profile: vfb_search_terms for the class, prefer FBbt neuron class results over VFB individual instances, then vfb_get_term_info, then vfb_run_query using relevant available query types.
 - One term profile or data availability: vfb_search_terms -> vfb_get_term_info; then use available Queries[] such as ListAllAvailableImages, SimilarMorphologyTo, PaintedDomains, AlignedDatasets, or AllDatasets only if listed.
 - Ranked inputs/outputs for one neuron class: vfb_search_terms -> vfb_get_term_info -> vfb_run_query using available upstream/downstream class connectivity query names from Queries[].
+- Ranked/filtered partners for one neuron class: use vfb_find_connectivity_partners. For "dopaminergic input to MBONs" set endpoint_type="mushroom body output neuron", direction="upstream", partner_filter="dopaminergic neuron"; set include_partner_targets=true when the user asks "which source types connect to which target types".
+- Reciprocal/bidirectional/mutual connectivity between two neuron families: use vfb_find_reciprocal_connectivity. For MBON-DAN reciprocity set source_family="mushroom body output neuron", target_family="dopaminergic neuron"; rank reciprocal_pairs by mutual_min_weight in the answer.
 - Direct class-to-class or cross-dataset connectivity: use vfb_query_connectivity. For Hemibrain vs FAFB comparisons, first call vfb_list_connectome_datasets, then compare by excluding dataset symbols in separate vfb_query_connectivity calls. Never use "all" or "any" as a vfb_query_connectivity endpoint; for one-sided input/output rankings use vfb_run_query with the endpoint term's available upstream/downstream query type.
 - Shared downstream targets/convergence: use vfb_compare_downstream_targets with upstream_types set to the source neuron classes. If the source classes are named in parentheses, pass those exact labels. If the user names a target family (for example MBONs), pass it as target_filter. Do not run many pairwise vfb_query_connectivity calls to find common targets.
 - Large results: when a tool result contains data_resource: true, call inspect_data_resource for available paths/fields, then read_data_resource or search_data_resource in small chunks. Choose fields relevant to the original user question. Do not page sequentially through the whole table, and do not re-run the original tool just to recover clipped data.
 - If a tool returns a recoverable argument error, correct the arguments and retry. Do not report a stale argument error if a later tool call returned useful data.
 - If vfb_get_term_info returns term_mismatch, retry the suggested matching ID and ignore the mismatched requested_id.
 - If vfb_get_term_info includes _vfb_chat_scope_note, follow it and state the scope limitation in the final answer.
-- Genetic tools, GAL4, split-GAL4, drivers, or stocks: for broad anatomy questions such as "tools to label mushroom body neurons", use the anatomy/neuron term and available Queries[] such as TransgeneExpressionHere or ExpressionOverlapsHere. Use vfb_resolve_combination only when the user gives a concrete split-GAL4 combination name (for example SS04495), and vfb_find_stocks only after you have a concrete FlyBase feature ID.
+- Genetic tools, GAL4, split-GAL4, drivers, or stocks: for broad anatomy questions such as "tools to label mushroom body neurons", call vfb_find_genetic_tools with focus set to the anatomy/neuron term. Use vfb_resolve_combination only when the user gives a concrete split-GAL4 combination name (for example SS04495), and vfb_find_stocks only after you have a concrete FlyBase feature ID.
 - Publications: prefer VFB/FlyBase-linked publication tools when a driver or combination is involved; otherwise use search_pubmed/get_pubmed_article. Cite only publications actually returned by tools.
 - If the tools do not verify a specific number, identifier, connection, driver, or publication, say it is not verified instead of filling it from memory.
 
 FINAL ANSWER STYLE:
-- Do not narrate internal tool/resource plumbing. Do not name internal tools such as vfb_compare_downstream_targets, read_data_resource, inspect_data_resource, or toolres_*; prefer "VFB returned..." or "VFB found...".
+- Do not narrate internal tool/resource plumbing. Do not name internal tools such as vfb_compare_downstream_targets, vfb_find_connectivity_partners, vfb_find_reciprocal_connectivity, vfb_find_genetic_tools, read_data_resource, inspect_data_resource, or toolres_*; prefer "VFB returned..." or "VFB found...".
 - For shared-target comparisons, follow evidence_summary.answer_hint. If one source returned no downstream rows, say common targets were not verified from the returned class-level tables rather than claiming biological absence.
+- For vfb_find_connectivity_partners, follow evidence_summary.answer_hint. Distinguish aggregate partner rows from specific neuron-type rows, and use partner_target_breakdown when present for "which types connect to which target types".
+- For vfb_find_reciprocal_connectivity, follow evidence_summary.answer_hint. If reciprocal_pairs are present, list the specific pairs with both source_to_target_weight and target_to_source_weight; if absent, show strongest one-way evidence and a concrete next step.
+- For vfb_find_genetic_tools, answer from top_tools/query_counts and mention that the rows are expression patterns/tools overlapping the focus term; do not claim stock availability unless stock tools were run.
 - When using data_resource stage_counts, tag_counts, or total_matches, describe the scope exactly, for example "among the returned SubclassesOf rows, 926 are tagged Adult" rather than implying a broader ontology guarantee.
 
 AVAILABLE TOOL SCHEMAS (JSON):
@@ -6220,6 +7156,41 @@ function hasSharedDownstreamComparisonRequest(message = '') {
     /\b(receive|receives|receiving)\b[\s\S]{0,80}\binput\b[\s\S]{0,40}\bfrom both\b/i.test(text)
 }
 
+function hasReciprocalConnectivityRequest(message = '') {
+  const text = String(message || '')
+  const normalized = normalizeEndpointSearchText(text)
+  if (!hasConnectivityIntent(text)) return false
+
+  const asksReciprocal = /\b(reciprocal|bidirectional|bi directional|both directions?|mutual|feedback)\b/.test(normalized)
+  const asksPairsOrRanking = /\b(pair|pairs|rank|strongest|which|what|connect|connections?)\b/.test(normalized)
+  const hasTwoKnownFamilies = /\b(mbon|mbons|mushroom body output neuron)/.test(normalized) &&
+    /\b(dan|dans|dopaminergic|dopamine neuron)/.test(normalized)
+
+  return asksReciprocal && asksPairsOrRanking && hasTwoKnownFamilies
+}
+
+function hasBroadGeneticToolRequest(message = '') {
+  const text = String(message || '')
+  return /\b(genetic tools?|drivers?|gal4|split[- ]?gal4|expression patterns?|transgene(?:s|tic)?|label(?:s|ing)?)\b/i.test(text) &&
+    /\b(label|target|image|visuali[sz]e|tools?|available|commonly used|for|in)\b/i.test(text) &&
+    !/\b(FBgn\d+|FBco\d+|FBst\d+|FBti\d+|FBal\d+|SS\d{4,}|MB\d{3,}[A-Z]?)\b/i.test(text)
+}
+
+function hasFilteredConnectivityPartnerRequest(message = '') {
+  const text = String(message || '')
+  const normalized = normalizeEndpointSearchText(text)
+  if (!hasConnectivityIntent(text)) return false
+  if (hasSharedDownstreamComparisonRequest(text) || hasReciprocalConnectivityRequest(text) || hasDirectionalConnectivityRequest(text)) return false
+
+  const asksForPartnerTypes = /\b(which|what|describe|rank|strongest|main)\b/.test(normalized) &&
+    /\b(input|inputs|upstream|output|outputs|downstream|connect|connects|connected|connections)\b/.test(normalized) &&
+    /\b(type|types|class|classes|partners?|sources?|targets?)\b/.test(normalized)
+  const hasBroadFilterFamily = /\b(dan|dans|dopaminergic|dopamine|sensory|cholinergic|gabaergic|glutamatergic|serotonergic|kenyon|mbon|projection neuron)\b/.test(normalized)
+  const hasEndpointFamily = /\b(mbon|mushroom body output neuron|mushroom body|fan shaped body|lateral horn|central complex|dopaminergic|dan|kenyon)\b/.test(normalized)
+
+  return asksForPartnerTypes && hasBroadFilterFamily && hasEndpointFamily
+}
+
 function cleanComparisonSourceLabel(value = '') {
   return String(value || '')
     .replace(/^[\s"'`([{<]+/, '')
@@ -6288,6 +7259,59 @@ function inferSharedTargetFilterFromUserMessage(message = '') {
   const text = String(message || '')
   if (/\bmbons?\b/i.test(text) || /\bmushroom body output neurons?\b/i.test(text)) return 'MBON'
   return ''
+}
+
+function repairConnectivityPartnerArgsFromUserMessage(cleanArgs = {}, userMessage = '') {
+  const text = String(userMessage || '')
+  let repaired = false
+
+  const endpointId = extractCanonicalVfbTermId(cleanArgs.endpoint_type || '')
+  const endpointIdWasUserSupplied = endpointId && new RegExp(`\\b${escapeRegexForPattern(endpointId)}\\b`, 'i').test(text)
+  if ((/\bmbons?\b/i.test(text) || /\bmushroom body output neurons?\b/i.test(text)) && !endpointIdWasUserSupplied) {
+    cleanArgs.endpoint_type = 'mushroom body output neuron'
+    repaired = true
+  }
+
+  if ((/\bdans?\b/i.test(text) || /\bdopaminergic\b/i.test(text)) && !cleanArgs.partner_filter) {
+    cleanArgs.partner_filter = 'dopaminergic neuron'
+    repaired = true
+  }
+
+  if (/\b(input|inputs|upstream|presynaptic)\b/i.test(text) && cleanArgs.direction !== 'upstream') {
+    cleanArgs.direction = 'upstream'
+    repaired = true
+  } else if (/\b(output|outputs|downstream|postsynaptic|targets?)\b/i.test(text) && !/\binput|inputs|upstream|presynaptic\b/i.test(text) && cleanArgs.direction !== 'downstream') {
+    cleanArgs.direction = 'downstream'
+    repaired = true
+  }
+
+  if (/\bwhich\b[\s\S]{0,80}\btypes?\b[\s\S]{0,80}\bconnect/i.test(text) && cleanArgs.include_partner_targets !== true) {
+    cleanArgs.include_partner_targets = true
+    repaired = true
+  }
+
+  return repaired
+}
+
+function repairReciprocalConnectivityArgsFromUserMessage(cleanArgs = {}, userMessage = '') {
+  const text = String(userMessage || '')
+  let repaired = false
+  const sourceId = extractCanonicalVfbTermId(cleanArgs.source_family || '')
+  const targetId = extractCanonicalVfbTermId(cleanArgs.target_family || '')
+  const sourceIdWasUserSupplied = sourceId && new RegExp(`\\b${escapeRegexForPattern(sourceId)}\\b`, 'i').test(text)
+  const targetIdWasUserSupplied = targetId && new RegExp(`\\b${escapeRegexForPattern(targetId)}\\b`, 'i').test(text)
+
+  if ((/\bmbons?\b/i.test(text) || /\bmushroom body output neurons?\b/i.test(text)) && !sourceIdWasUserSupplied) {
+    cleanArgs.source_family = 'mushroom body output neuron'
+    repaired = true
+  }
+
+  if ((/\bdans?\b/i.test(text) || /\bdopaminergic\b/i.test(text)) && !targetIdWasUserSupplied) {
+    cleanArgs.target_family = 'dopaminergic neuron'
+    repaired = true
+  }
+
+  return repaired
 }
 
 function repairCompareDownstreamArgsFromUserMessage(cleanArgs = {}, userMessage = '') {
@@ -6456,6 +7480,7 @@ You must now call the smallest relevant set of tools before answering:
 - Term/anatomy/profile questions: vfb_search_terms -> vfb_get_term_info, then vfb_run_query only with exact Queries[].query values from vfb_get_term_info when needed.
 - Direct connectivity between two neuron classes: vfb_query_connectivity with the user's endpoint labels or IDs.
 - Shared/common downstream targets across source neuron classes: vfb_compare_downstream_targets with those sources as upstream_types.
+- Reciprocal/bidirectional/mutual family connectivity: vfb_find_reciprocal_connectivity with the two neuron families.
 - Publications: use the publication tools, then cite only returned records.
 
 Do not claim that you used VFB, databases, tools, or publications unless their output is later provided in TOOL_EVIDENCE_JSON. If no suitable tool can be called, the final answer must say it is unverified general knowledge.
@@ -6520,6 +7545,9 @@ function buildToolPolicyCorrectionMessage({
   connectivityIntent = false,
   requireConnectivityComparison = false,
   requireSharedDownstreamComparison = false,
+  requireConnectivityPartnerSearch = false,
+  requireReciprocalConnectivitySearch = false,
+  requireGeneticToolsSearch = false,
   missingRunQueryExecution = false,
   requestedQueryTypes = [],
   hasCanonicalIdInUserMessage = false
@@ -6530,7 +7558,7 @@ function buildToolPolicyCorrectionMessage({
   const policyBullets = [
     '- Choose the smallest set of tools that best answers the user request.',
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
-    '- Use more specialized tools (for example vfb_query_connectivity, vfb_compare_downstream_targets, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
+    '- Use more specialized tools (for example vfb_query_connectivity, vfb_compare_downstream_targets, vfb_find_connectivity_partners, vfb_find_reciprocal_connectivity, vfb_find_genetic_tools, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
     '- When vfb_query_connectivity direct class-to-class data is returned, call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding. For vfb_compare_downstream_targets, answer the shared targets first; graphing is optional supporting UI.',
     '- For directional connectivity graphs, keep graph groups coarse and reusable (usually source-side, target-side, and optional intermediate), not one unique group per node.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
@@ -6566,6 +7594,23 @@ function buildToolPolicyCorrectionMessage({
     if (inferredSharedSources.length >= 2) {
       policyBullets.push(`- Detected compared source labels in the user request: ${inferredSharedSources.join(' vs ')}. Pass exactly these labels as upstream_types instead of inventing IDs.`)
     }
+  }
+
+  if (requireConnectivityPartnerSearch) {
+    policyBullets.push('- This request asks for ranked/filtered connectivity partners around one endpoint class; call vfb_find_connectivity_partners instead of broad vfb_query_connectivity.')
+    policyBullets.push('- For input questions use direction="upstream"; for output/target questions use direction="downstream". Use partner_filter for named source/target families such as "dopaminergic neuron" or "DAN".')
+    policyBullets.push('- If the user asks which source types connect to which target types, set include_partner_targets=true.')
+  }
+
+  if (requireReciprocalConnectivitySearch) {
+    policyBullets.push('- This request asks for reciprocal/bidirectional/mutual connectivity between two neuron families; call vfb_find_reciprocal_connectivity.')
+    policyBullets.push('- For MBON-DAN reciprocity, use source_family="mushroom body output neuron" and target_family="dopaminergic neuron".')
+    policyBullets.push('- Do not use broad vfb_query_connectivity in both directions as the only evidence, because family-to-family queries may be empty while class-connectivity breakdowns contain specific reciprocal pairs.')
+  }
+
+  if (requireGeneticToolsSearch) {
+    policyBullets.push('- This request asks for broad genetic tools/drivers/expression patterns for an anatomy or neuron class; call vfb_find_genetic_tools.')
+    policyBullets.push('- Set focus to the biological term the user wants to label, for example "mushroom body". Do not use vfb_resolve_entity or vfb_find_stocks until the user chooses a concrete driver/transgene.')
   }
 
   if (missingRunQueryExecution) {
@@ -7181,6 +8226,9 @@ async function processResponseStream({
   const connectivityIntent = hasConnectivityIntent(userMessage)
   const directionalConnectivityRequested = hasDirectionalConnectivityRequest(userMessage)
   const sharedDownstreamComparisonRequested = hasSharedDownstreamComparisonRequest(userMessage)
+  const reciprocalConnectivityRequested = hasReciprocalConnectivityRequest(userMessage)
+  const connectivityPartnerSearchRequested = hasFilteredConnectivityPartnerRequest(userMessage)
+  const geneticToolsSearchRequested = hasBroadGeneticToolRequest(userMessage)
   const collectedGraphSpecs = []
   let currentResponse = apiResponse
   let latestResponseId = null
@@ -7267,8 +8315,14 @@ async function processResponseStream({
       const hasRunQueryPreparationCall = requestedToolCalls.some(toolCall => RUN_QUERY_PREPARATION_TOOL_NAMES.has(toolCall.name))
       const hasConnectivityComparisonCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_query_connectivity')
       const hasSharedDownstreamComparisonCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_compare_downstream_targets')
+      const hasConnectivityPartnerSearchCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_find_connectivity_partners')
+      const hasReciprocalConnectivityCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_find_reciprocal_connectivity')
+      const hasGeneticToolsSearchCall = requestedToolCalls.some(toolCall => toolCall.name === 'vfb_find_genetic_tools')
       const connectivityAlreadyAttempted = (toolUsage.vfb_query_connectivity || 0) > 0
       const sharedDownstreamAlreadyAttempted = (toolUsage.vfb_compare_downstream_targets || 0) > 0
+      const connectivityPartnerSearchAlreadyAttempted = (toolUsage.vfb_find_connectivity_partners || 0) > 0
+      const reciprocalConnectivityAlreadyAttempted = (toolUsage.vfb_find_reciprocal_connectivity || 0) > 0
+      const geneticToolsSearchAlreadyAttempted = (toolUsage.vfb_find_genetic_tools || 0) > 0
       const vfbToolAlreadyAttempted = Object.keys(toolUsage).some(toolName => toolName.startsWith('vfb_'))
       const requireVfbFirstPass = isLikelyConcreteVfbDataQuestion(userMessage) && !isPublicationOnlyQuestion(userMessage)
       const shouldCorrectToolChoice = toolPolicyCorrections < maxToolPolicyCorrections && (
@@ -7276,7 +8330,10 @@ async function processResponseStream({
         (explicitRunQueryRequested && !hasVfbToolCall) ||
         (explicitRunQueryRequested && !hasVfbRunQueryToolCall && !hasRunQueryPreparationCall) ||
         (sharedDownstreamComparisonRequested && !hasSharedDownstreamComparisonCall && !sharedDownstreamAlreadyAttempted) ||
-        (directionalConnectivityRequested && !hasConnectivityComparisonCall && !connectivityAlreadyAttempted) ||
+        (connectivityPartnerSearchRequested && !hasConnectivityPartnerSearchCall && !connectivityPartnerSearchAlreadyAttempted) ||
+        (reciprocalConnectivityRequested && !hasReciprocalConnectivityCall && !reciprocalConnectivityAlreadyAttempted) ||
+        (geneticToolsSearchRequested && !hasGeneticToolsSearchCall && !geneticToolsSearchAlreadyAttempted) ||
+        (directionalConnectivityRequested && !reciprocalConnectivityRequested && !hasConnectivityComparisonCall && !connectivityAlreadyAttempted) ||
         (requestedQueryTypes.length > 0 && hasConnectivityComparisonCall && !hasVfbRunQueryToolCall)
       )
 
@@ -7296,6 +8353,9 @@ async function processResponseStream({
             connectivityIntent,
             requireConnectivityComparison: directionalConnectivityRequested,
             requireSharedDownstreamComparison: sharedDownstreamComparisonRequested,
+            requireConnectivityPartnerSearch: connectivityPartnerSearchRequested,
+            requireReciprocalConnectivitySearch: reciprocalConnectivityRequested,
+            requireGeneticToolsSearch: geneticToolsSearchRequested,
             requestedQueryTypes,
             hasCanonicalIdInUserMessage
           })
@@ -7532,6 +8592,106 @@ async function processResponseStream({
       continue
     }
 
+    if (geneticToolsSearchRequested && (toolUsage.vfb_find_genetic_tools || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring genetic-tool search workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireGeneticToolsSearch: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor genetic-tool search flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'genetic_tool_search_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (connectivityPartnerSearchRequested && (toolUsage.vfb_find_connectivity_partners || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring connectivity-partner workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireConnectivityPartnerSearch: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor connectivity-partner flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'connectivity_partner_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
     if (explicitRunQueryRequested && (toolUsage.vfb_run_query || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
       sendEvent('status', { message: 'Honoring requested vfb_run_query workflow', phase: 'llm' })
 
@@ -7634,7 +8794,57 @@ async function processResponseStream({
       continue
     }
 
-    if (directionalConnectivityRequested && (toolUsage.vfb_query_connectivity || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+    if (reciprocalConnectivityRequested && (toolUsage.vfb_find_reciprocal_connectivity || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
+      sendEvent('status', { message: 'Honoring reciprocal connectivity workflow', phase: 'llm' })
+
+      if (textAccumulator.trim()) {
+        accumulatedItems.push({ role: 'assistant', content: textAccumulator.trim() })
+      }
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildToolPolicyCorrectionMessage({
+          userMessage,
+          explicitRunQueryRequested,
+          connectivityIntent,
+          requireReciprocalConnectivitySearch: true,
+          requestedQueryTypes,
+          hasCanonicalIdInUserMessage
+        })
+      })
+
+      const correctionResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (!correctionResponse.ok) {
+        const correctionErrorText = await correctionResponse.text()
+        return {
+          ok: false,
+          responseId: latestResponseId,
+          toolUsage,
+          toolRounds,
+          errorMessage: `Failed to honor reciprocal connectivity flow. ${sanitizeApiError(correctionResponse.status, correctionErrorText)}`,
+          errorCategory: 'reciprocal_connectivity_enforcement_failed',
+          errorStatus: correctionResponse.status
+        }
+      }
+
+      toolPolicyCorrections += 1
+      currentResponse = correctionResponse
+      continue
+    }
+
+    if (directionalConnectivityRequested && !reciprocalConnectivityRequested && (toolUsage.vfb_query_connectivity || 0) === 0 && toolPolicyCorrections < maxToolPolicyCorrections) {
       sendEvent('status', { message: 'Honoring directional connectivity workflow', phase: 'llm' })
 
       if (textAccumulator.trim()) {
