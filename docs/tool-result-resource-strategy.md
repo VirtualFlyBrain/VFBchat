@@ -33,9 +33,20 @@ A tool result is stored as a resource when either:
 - it contains a collection with at least
   `DATA_RESOURCE_COLLECTION_ROW_TRIGGER` rows.
 
-Small outputs are still relayed inline. Very large relay payloads retain the
-existing fallback evidence-compression pass, but resource handles should avoid
-most raw clipping.
+`DATA_RESOURCE_INLINE_MAX_CHARS` defaults to `80000`, which is deliberately
+above twice the current cached medulla term-info payload size (about 24.8k
+minified / 36.8k pretty-printed). Basic term metadata should therefore reach the
+LLM intact. The default can be tuned with `VFB_DATA_RESOURCE_INLINE_MAX_CHARS`.
+
+Small outputs are still relayed inline. Inline relay truncation and fallback
+evidence compression are aligned with the same threshold by default:
+
+- `VFB_TOOL_OUTPUT_TRUNCATE_CHARS` defaults to `DATA_RESOURCE_INLINE_MAX_CHARS`
+- `VFB_TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS` defaults to
+  `DATA_RESOURCE_INLINE_MAX_CHARS * 2`
+
+Very large relay payloads retain the fallback evidence-compression pass, but
+resource handles should avoid most raw clipping.
 
 ## Reading Resources
 
