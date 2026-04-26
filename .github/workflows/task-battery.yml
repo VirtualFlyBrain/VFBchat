@@ -7,6 +7,14 @@ on:
         description: Repetitions per task
         required: true
         default: '1'
+      concurrency:
+        description: Number of questions to run in parallel
+        required: true
+        default: '4'
+      timeout_ms:
+        description: Per-question timeout in milliseconds
+        required: true
+        default: '240000'
       limit:
         description: Optional number of tasks to run
         required: false
@@ -54,6 +62,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout VFBchat
@@ -99,6 +108,7 @@ jobs:
         id: task_battery
         if: steps.creds.outputs.available == 'true'
         continue-on-error: true
+        timeout-minutes: 80
         working-directory: VFBchat
         env:
           ELM_API_KEY: ${{ secrets.ELM_API_KEY }}
@@ -109,6 +119,8 @@ jobs:
           APPROVED_ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
           RATE_LIMIT_PER_IP: '10000'
           TASK_BATTERY_REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
+          TASK_BATTERY_CONCURRENCY: ${{ github.event.inputs.concurrency || '4' }}
+          TASK_BATTERY_TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '240000' }}
           TASK_BATTERY_LIMIT: ${{ github.event.inputs.limit || '' }}
           TASK_BATTERY_IDS: ${{ github.event.inputs.ids || '' }}
         run: |

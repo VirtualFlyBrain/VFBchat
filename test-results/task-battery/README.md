@@ -8,10 +8,10 @@ Local quick run:
 npm run benchmark:task-battery -- --limit 1
 ```
 
-Full local run, using the vendored question snapshot:
+Full local run, using the vendored question snapshot and four parallel requests:
 
 ```sh
-npm run benchmark:task-battery
+npm run benchmark:task-battery -- --concurrency 4 --timeout-ms 240000
 ```
 
 Run directly from a sibling paper checkout when you want the latest paper version:
@@ -27,6 +27,8 @@ VFBCHAT_BENCHMARK_BASE_URL=https://chat.virtualflybrain.org npm run benchmark:ta
 ```
 
 The runner writes a timestamped JSON file plus `latest.json`. It records questions, final answers, request IDs, response IDs, graph/image counts, status messages, and timing. It does not write API keys or environment variable values.
+
+The runner writes checkpoint results after each completed request, so partial JSON is preserved when later questions fail. In CI the default is four parallel questions with a four-minute per-question hard timeout and an 80-minute benchmark-step timeout.
 
 GitHub Actions uses repository secrets/variables for model access:
 

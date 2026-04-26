@@ -44,13 +44,14 @@ function printHelp() {
   npm run benchmark:task-battery -- [options]
 
 Options:
-  --task-file <path>          Markdown task battery. Defaults to TASK_BATTERY_FILE or ../vfb-paper/task_battery.md.
+  --task-file <path>          Markdown task battery or JSON task list. Defaults to TASK_BATTERY_FILE or local snapshot.
   --base-url <url>            Existing VFBchat server. If omitted, the runner starts a local server.
   --start-server              Start a local server even when --base-url is supplied.
   --no-start-server           Use --base-url without starting a server.
   --server-command <dev|start> Server command for local runs. Default: dev.
   --port <number>             Local server port. Default: 3210.
   --repetitions <number>      Repetitions per question. Default: 1.
+  --concurrency <number>      Number of questions to run in parallel. Default: 1.
   --limit <number>            Limit number of selected tasks.
   --ids <csv>                 Comma-separated task IDs, e.g. T1.1,T3.4.
   --tier <number>             Run a single tier, e.g. 1.
@@ -319,12 +320,24 @@ async function readSseResponse(response) {
 
 async function runWithTimeout(work, timeoutMs) {
   const abortController = new AbortController()
-  const timeout = setTimeout(() => abortController.abort(), timeoutMs)
+  let timeout = null
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      abortController.abort()
+      const error = new Error(`Timed out after ${timeoutMs} ms`)
+      error.name = 'TimeoutError'
+      reject(error)
+    }, timeoutMs)
+  })
 
   try {
-    return await work(abortController.signal)
+    return await Promise.race([
+      work(abortController.signal),
+      timeoutPromise
+    ])
   } finally {
     clearTimeout(timeout)
+    abortController.abort()
   }
 }
 
@@ -393,6 +406,23 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
   }, timeoutMs)
 }
 
+function buildAttempts(tasks, repetitions) {
+  const attempts = []
+
+  tasks.forEach((task, taskIndex) => {
+    for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+      attempts.push({
+        task,
+        taskIndex,
+        repetition,
+        attemptIndex: attempts.length
+      })
+    }
+  })
+
+  return attempts
+}
+
 function summariseResults(results) {
   const ok = results.filter(result => result.ok).length
   const errors = results.length - ok
@@ -433,6 +463,76 @@ async function writeResults(payload, options, runId) {
   return { outputFile, latestFile }
 }
 
+async function writeCheckpoint(payload, options, runId) {
+  payload.summary = summariseResults(payload.results)
+  await writeResults(payload, options, runId)
+}
+
+async function runAttemptsWithConcurrency({
+  attempts,
+  baseUrl,
+  timeoutMs,
+  runId,
+  concurrency,
+  payload,
+  options
+}) {
+  let nextIndex = 0
+  let completed = 0
+  let checkpointWrite = Promise.resolve()
+
+  async function runOne(workerId) {
+    while (true) {
+      const attempt = attempts[nextIndex]
+      nextIndex += 1
+
+      if (!attempt) return
+
+      const label = `${attempt.task.id} rep ${attempt.repetition}`
+      console.log(`[${completed + 1}/${attempts.length}] worker ${workerId}: ${label} ...`)
+
+      try {
+        const result = await askQuestion(baseUrl, attempt.task, attempt.repetition, timeoutMs, runId)
+        payload.results.push({
+          attempt_index: attempt.attemptIndex,
+          task_index: attempt.taskIndex,
+          ...result
+        })
+        completed += 1
+        console.log(`[${completed}/${attempts.length}] ${label}: ${result.ok ? 'ok' : 'error'} (${result.duration_ms} ms)`)
+      } catch (error) {
+        payload.results.push({
+          attempt_index: attempt.attemptIndex,
+          task_index: attempt.taskIndex,
+          task_id: attempt.task.id,
+          tier: attempt.task.tier,
+          title: attempt.task.title,
+          question: attempt.task.question,
+          repetition: attempt.repetition,
+          ok: false,
+          duration_ms: null,
+          error: error?.name === 'AbortError'
+            ? `Timed out after ${timeoutMs} ms`
+            : error?.name === 'TimeoutError'
+              ? error.message
+              : error?.message || 'Unknown error'
+        })
+        completed += 1
+        console.log(`[${completed}/${attempts.length}] ${label}: error`)
+      }
+
+      payload.results.sort((a, b) => a.attempt_index - b.attempt_index)
+      checkpointWrite = checkpointWrite.then(() => writeCheckpoint(payload, options, runId))
+      await checkpointWrite
+    }
+  }
+
+  const workerCount = Math.min(concurrency, attempts.length)
+  await Promise.all(
+    Array.from({ length: workerCount }, (_, index) => runOne(index + 1))
+  )
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -448,6 +548,7 @@ async function main() {
   const tasks = await loadTasksFromFile(taskFile)
   const selectedTasks = selectTasks(tasks, options)
   const repetitions = normalizeInteger(envOrOption(options, 'repetitions', 'TASK_BATTERY_REPETITIONS', '1'), 1, 1, 10)
+  const concurrency = normalizeInteger(envOrOption(options, 'concurrency', 'TASK_BATTERY_CONCURRENCY', '1'), 1, 1, 16)
   const timeoutMs = normalizeInteger(envOrOption(options, 'timeoutMs', 'TASK_BATTERY_TIMEOUT_MS', '300000'), 300000, 30000, 1800000)
   const startedAt = new Date()
   const runId = `task-battery-${timestampForFile(startedAt)}`
@@ -482,6 +583,7 @@ async function main() {
       started_server: shouldStartServer,
       server_command: shouldStartServer ? serverCommand : null,
       repetitions,
+      concurrency,
       timeout_ms: timeoutMs
     },
     prompt: {
@@ -497,34 +599,18 @@ async function main() {
       await waitForServer(baseUrl, 90000, server)
     }
 
-    console.log(`Running ${selectedTasks.length} task(s) x ${repetitions} repetition(s) against ${baseUrl}`)
+    const attempts = buildAttempts(selectedTasks, repetitions)
+    console.log(`Running ${attempts.length} attempt(s) (${selectedTasks.length} task(s) x ${repetitions} repetition(s)) against ${baseUrl} with concurrency ${concurrency}`)
 
-    for (const task of selectedTasks) {
-      for (let repetition = 1; repetition <= repetitions; repetition += 1) {
-        const label = `${task.id} rep ${repetition}/${repetitions}`
-        process.stdout.write(`${label} ... `)
-
-        try {
-          const result = await askQuestion(baseUrl, task, repetition, timeoutMs, runId)
-          payload.results.push(result)
-          console.log(result.ok ? `ok (${result.duration_ms} ms)` : `error (${result.duration_ms} ms)`)
-        } catch (error) {
-          payload.results.push({
-            task_id: task.id,
-            tier: task.tier,
-            title: task.title,
-            question: task.question,
-            repetition,
-            ok: false,
-            duration_ms: null,
-            error: error?.name === 'AbortError'
-              ? `Timed out after ${timeoutMs} ms`
-              : error?.message || 'Unknown error'
-          })
-          console.log('error')
-        }
-      }
-    }
+    await runAttemptsWithConcurrency({
+      attempts,
+      baseUrl,
+      timeoutMs,
+      runId,
+      concurrency,
+      payload,
+      options
+    })
   } finally {
     stopServer(server)
   }
