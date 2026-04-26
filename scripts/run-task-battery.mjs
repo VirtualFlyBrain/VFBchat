@@ -134,12 +134,21 @@ function parseTaskListJson(rawJson) {
     const title = String(task.title || '').trim()
     const question = String(task.question || '').trim()
     const tier = Number.parseInt(task.tier ?? id.match(/^T(\d+)/)?.[1] ?? '', 10)
+    const requiresGraph = Boolean(task.requires_graph || task.requiresGraph)
+    const minGraphs = normalizeInteger(task.min_graphs ?? task.minGraphs ?? 1, 1, 1, 20)
 
     if (!id || !Number.isFinite(tier) || !title || !question) {
       throw new Error(`Invalid task JSON entry at index ${index}. Required fields: id, tier, title, question.`)
     }
 
-    return { id, tier, title, question }
+    return {
+      id,
+      tier,
+      title,
+      question,
+      requires_graph: requiresGraph,
+      min_graphs: requiresGraph ? minGraphs : 0
+    }
   })
 }
 
@@ -442,6 +451,10 @@ function classifyResultQuality(result = {}) {
     investigation_plan_answer: Boolean(result.ok && investigationPlan),
     not_verified_or_no_results_answer: Boolean(result.ok && NOT_VERIFIED_REGEX.test(response)),
     graph_failure_mentioned: Boolean(GRAPH_FAILURE_REGEX.test(`${response}\n${statusText}`)),
+    missing_required_graph: Boolean(
+      result.requires_graph &&
+      Number(result.graphs_count || 0) < normalizeInteger(result.min_graphs || 1, 1, 1, 20)
+    ),
     used_data_resource: /\b(inspecting stored tool data|reading stored tool data)\b/i.test(statusText),
     response_chars: response.length,
     status_count: Array.isArray(result.status_messages) ? result.status_messages.length : 0
@@ -483,6 +496,8 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
         tier: task.tier,
         title: task.title,
         question: task.question,
+        requires_graph: Boolean(task.requires_graph),
+        min_graphs: task.requires_graph ? normalizeInteger(task.min_graphs || 1, 1, 1, 20) : 0,
         repetition,
         ok: false,
         duration_ms: durationMs,
@@ -496,11 +511,15 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
       return result
     }
 
+    const minGraphs = task.requires_graph ? normalizeInteger(task.min_graphs || 1, 1, 1, 20) : 0
+    const graphs = Array.isArray(parsed.result?.graphs) ? parsed.result.graphs : []
     const result = {
       task_id: task.id,
       tier: task.tier,
       title: task.title,
       question: task.question,
+      requires_graph: Boolean(task.requires_graph),
+      min_graphs: minGraphs,
       repetition,
       ok: true,
       duration_ms: durationMs,
@@ -509,8 +528,13 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
       request_id: parsed.result?.requestId || null,
       response_id: parsed.result?.responseId || null,
       images_count: Array.isArray(parsed.result?.images) ? parsed.result.images.length : 0,
-      graphs_count: Array.isArray(parsed.result?.graphs) ? parsed.result.graphs.length : 0,
-      response: parsed.result?.response || ''
+      graphs_count: graphs.length,
+      response: parsed.result?.response || '',
+      ...(graphs.length > 0 ? { graphs } : {})
+    }
+    if (result.requires_graph && result.graphs_count < minGraphs) {
+      result.ok = false
+      result.error = `Expected at least ${minGraphs} graph(s), received ${result.graphs_count}.`
     }
     result.quality_flags = classifyResultQuality(result)
     return result
@@ -545,6 +569,7 @@ function summariseResults(results) {
     'investigation_plan_answer',
     'not_verified_or_no_results_answer',
     'graph_failure_mentioned',
+    'missing_required_graph',
     'used_data_resource'
   ]
   const quality = Object.fromEntries(
@@ -639,6 +664,8 @@ async function runAttemptsWithConcurrency({
           tier: attempt.task.tier,
           title: attempt.task.title,
           question: attempt.task.question,
+          requires_graph: Boolean(attempt.task.requires_graph),
+          min_graphs: attempt.task.requires_graph ? normalizeInteger(attempt.task.min_graphs || 1, 1, 1, 20) : 0,
           repetition: attempt.repetition,
           ok: false,
           duration_ms: null,

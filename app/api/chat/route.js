@@ -453,6 +453,178 @@ function extractGraphSpecsFromToolOutputs(toolOutputs = []) {
   return graphs
 }
 
+const GRAPH_OUTPUT_REQUEST_REGEX = /\b(?:graph|graph form|graph view|diagram|network|visuali[sz]e|visualisation|visualization)\b/i
+const BROAD_REGION_GRAPH_TERMS_REGEX = /\b(?:medulla|lobula(?:\s+plate)?|optic lobe|mushroom body|calyx|antennal lobe|glomerulus|lateral horn|central complex|fan-shaped body|ellipsoid body|protocerebral bridge|subesophageal zone|sez|brain region)\b/i
+const CONNECTIVITY_INTENT_REGEX = /\b(?:connect|connectivity|input|inputs|output|outputs|upstream|downstream|presynaptic|postsynaptic|synaptic|class summar(?:ised|ized)|summari[sz]ed connectivity)\b/i
+const BROAD_REGION_GRAPH_REGION_PATTERNS = [
+  { pattern: /\bsubesophageal zone\b|\bsez\b/i, region: 'subesophageal zone' },
+  { pattern: /\bmushroom body\b|\bcalyx\b/i, region: 'mushroom body' },
+  { pattern: /\bantennal lobe\b/i, region: 'antennal lobe' },
+  { pattern: /\blateral horn\b/i, region: 'lateral horn' },
+  { pattern: /\bcentral complex\b/i, region: 'central complex' },
+  { pattern: /\bfan-shaped body\b/i, region: 'fan-shaped body' },
+  { pattern: /\bellipsoid body\b/i, region: 'ellipsoid body' },
+  { pattern: /\bprotocerebral bridge\b/i, region: 'protocerebral bridge' },
+  { pattern: /\blobula plate\b/i, region: 'lobula plate' },
+  { pattern: /\blobula\b/i, region: 'lobula' },
+  { pattern: /\boptic lobe\b/i, region: 'optic lobe' },
+  { pattern: /\bmedulla\b/i, region: 'medulla' }
+]
+
+function hasGraphOutputRequest(message = '') {
+  return GRAPH_OUTPUT_REQUEST_REGEX.test(String(message || ''))
+}
+
+function hasBroadRegionConnectivityGraphRequest(message = '') {
+  const text = String(message || '')
+  return hasGraphOutputRequest(text) &&
+    CONNECTIVITY_INTENT_REGEX.test(text) &&
+    BROAD_REGION_GRAPH_TERMS_REGEX.test(text)
+}
+
+function inferBroadRegionGraphRegion(message = '', toolState = {}) {
+  const text = String(message || '')
+  for (const { pattern, region } of BROAD_REGION_GRAPH_REGION_PATTERNS) {
+    if (pattern.test(text)) return region
+  }
+
+  const lastTermInfo = toolState?.lastTermInfo
+  return stripMarkdownLinkText(lastTermInfo?.name || lastTermInfo?.id || '').trim()
+}
+
+function hasEmptyBasicGraphArguments(args = {}) {
+  const nodes = Array.isArray(args?.nodes) ? args.nodes : []
+  const edges = Array.isArray(args?.edges) ? args.edges : []
+  return nodes.length === 0 || edges.length === 0
+}
+
+function graphTitleLabel(value = '') {
+  const label = stripMarkdownLinkText(value || '').trim()
+  if (!label) return 'Region'
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`
+}
+
+function getRegionSummaryRows(regionSummary = {}, queryType = '') {
+  const summaries = Array.isArray(regionSummary?.focus_query_summaries)
+    ? regionSummary.focus_query_summaries
+    : []
+  const summary = summaries.find(entry => entry?.query_type === queryType)
+  return Array.isArray(summary?.preview_rows) ? summary.preview_rows : []
+}
+
+function makeGraphNodeFromEvidenceRow(row = {}, fallbackId = '', group = '') {
+  const rawId = row.id || row.short_form || row.label || row.name || fallbackId
+  const id = extractCanonicalVfbTermId(rawId) || String(rawId || fallbackId).trim()
+  if (!id) return null
+
+  const label = stripMarkdownLinkText(row.label || row.name || row.symbol || id).trim() || id
+  return {
+    id,
+    label,
+    group,
+    size: 1.15
+  }
+}
+
+function buildRegionConnectivityPreviewGraph(regionSummary = {}) {
+  const focusRegion = regionSummary?.focus_region || {}
+  const regionName = stripMarkdownLinkText(
+    focusRegion.name ||
+    focusRegion.symbol ||
+    regionSummary?.query?.resolved_region ||
+    regionSummary?.query?.region ||
+    'region'
+  ).trim() || 'region'
+  const regionId = extractCanonicalVfbTermId(focusRegion.id || '') ||
+    `region:${regionName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'focus'}`
+
+  const presynapticRows = getRegionSummaryRows(regionSummary, 'NeuronsPresynapticHere').slice(0, 6)
+  const postsynapticRows = getRegionSummaryRows(regionSummary, 'NeuronsPostsynapticHere').slice(0, 6)
+  if (presynapticRows.length === 0 && postsynapticRows.length === 0) return null
+
+  const nodesById = new Map()
+  const edges = []
+  const edgeKeys = new Set()
+
+  const addNode = (node) => {
+    if (!node?.id) return null
+    const existing = nodesById.get(node.id)
+    if (existing) {
+      if (existing.group !== node.group && node.id !== regionId) {
+        existing.group = `${regionName} pre/post preview`
+      }
+      return existing
+    }
+    nodesById.set(node.id, node)
+    return node
+  }
+
+  const addEdge = (edge) => {
+    if (!edge?.source || !edge?.target || edge.source === edge.target) return
+    const key = `${edge.source}->${edge.target}:${edge.label || ''}`
+    if (edgeKeys.has(key)) return
+    edgeKeys.add(key)
+    edges.push(edge)
+  }
+
+  addNode({
+    id: regionId,
+    label: regionName,
+    group: 'queried region',
+    size: 2.4
+  })
+
+  presynapticRows.forEach((row, index) => {
+    const node = addNode(makeGraphNodeFromEvidenceRow(
+      row,
+      `presynaptic-${index + 1}`,
+      `${regionName} presynaptic preview`
+    ))
+    if (!node) return
+    addEdge({
+      source: node.id,
+      target: regionId,
+      label: `presynaptic sites in ${regionName}`
+    })
+  })
+
+  postsynapticRows.forEach((row, index) => {
+    const node = addNode(makeGraphNodeFromEvidenceRow(
+      row,
+      `postsynaptic-${index + 1}`,
+      `${regionName} postsynaptic preview`
+    ))
+    if (!node) return
+    addEdge({
+      source: regionId,
+      target: node.id,
+      label: `postsynaptic sites in ${regionName}`
+    })
+  })
+
+  return normalizeGraphSpec({
+    title: `${graphTitleLabel(regionName)} region connectivity preview`,
+    directed: true,
+    layout: 'radial',
+    nodes: Array.from(nodesById.values()),
+    edges
+  })
+}
+
+function extractRegionConnectivityGraphSpecsFromToolOutputs(toolOutputs = [], userMessage = '') {
+  if (!hasGraphOutputRequest(userMessage)) return []
+
+  const graphs = []
+  for (const output of toolOutputs) {
+    if (output?.name !== 'vfb_summarize_region_connections') continue
+    const parsed = parseJsonPayload(output.output)
+    const graph = buildRegionConnectivityPreviewGraph(parsed)
+    if (graph) graphs.push(graph)
+  }
+
+  return dedupeGraphSpecs(graphs)
+}
+
 function dedupeGraphSpecs(graphs = []) {
   const deduped = []
   const seen = new Set()
@@ -634,6 +806,7 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bthe tool suggested\b/gi, 'VFB suggested')
     .replace(/\bThe tool also suggests\b/gi, 'VFB also suggests')
     .replace(/\bThe tool returned\b/gi, 'VFB returned')
+    .replace(/\bThe tool also returned\b/gi, 'VFB also returned')
     .replace(/\bThe tool provides\b/gi, 'VFB provides')
     .replace(/\bthe tools did not provide\b/gi, 'VFB evidence did not include')
     .replace(/\bUnfortunately,\s*/gi, '')
@@ -712,6 +885,7 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bBased on VFB,\s*VFB has\b/gi, 'VFB has')
     .replace(/\bThe information provided by VFB for the mushroom body could also shed light on its role in memory formation and how temperature information might be integrated into this process\. However, the output for this tool is not provided in the given TOOL_EVIDENCE_JSON, so we cannot draw conclusions from it at this time\.\s*/gi, '')
     .replace(/\bThe evidence summary from VFB states that[\s\S]*?individual neurons\.\s*/gi, '')
+    .replace(/\bHere is a possible graph representation of [^:\n]+:\s*/gi, '')
     .replace(/\bThe evidence summary states that\b/gi, 'VFB evidence supports that')
     .replace(/\bThe evidence summary states\b/gi, 'VFB evidence states')
     .replace(/\bThis information comes from VFB, specifically the VFB query\.\s*/gi, 'This information comes from VFB. ')
@@ -743,13 +917,15 @@ function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRo
   const { cleanedText, graphs: leakedToolCallGraphs } = stripLeakedToolCallJson(responseText)
   const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, outboundAllowList)
   const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
+  const toolGraphSpecs = Array.isArray(graphSpecs) ? graphSpecs : []
   const userSafeText = sanitizeInternalToolMentions(textWithoutGraphs)
     .replace(/\bcreate_basic_graph(?:\s+tool)?\b/gi, 'graph view')
     .replace(/`?graph view`?\s+tool outputs?/gi, 'the graph view')
   const scopedUserSafeText = ensureRegionSurveyConnectomicsScope(userSafeText, toolUsage)
   const linkedResponseText = linkifyFollowUpQueryItems(scopedUserSafeText)
   const images = extractImagesFromResponseText(linkedResponseText)
-  const graphs = dedupeGraphSpecs([...(Array.isArray(graphSpecs) ? graphSpecs : []), ...leakedToolCallGraphs, ...inlineGraphs])
+  const supplementalGraphs = toolGraphSpecs.length > 0 ? [] : [...leakedToolCallGraphs, ...inlineGraphs]
+  const graphs = dedupeGraphSpecs([...toolGraphSpecs, ...supplementalGraphs])
   console.log(`[VFBchat] Final result: ${graphs.length} graph(s) (${graphSpecs.length} from tools, ${leakedToolCallGraphs.length} from leaked tool calls, ${inlineGraphs.length} inline)`)
 
   return {
@@ -8957,7 +9133,10 @@ PRESENTING CONNECTIVITY RESULTS:
 GRAPHS:
 - Auto-generate a graph (create_basic_graph) when direct class-to-class connectivity returns non-empty data. Use 4-20 nodes, top connections by weight.
 - For shared-target comparisons, only create a graph after summarizing the shared targets; include the two source classes and the top shared targets, not the full table.
+- For broad region graph requests, use the vfb_summarize_region_connections preview rows to build a conservative graph with one central region node and presynaptic/postsynaptic preview neuron nodes. Label edges as presynaptic or postsynaptic sites in that region.
+- Do not use vfb_run_query class-connectivity query types or vfb_query_connectivity for whole brain-region graph requests; broad anatomy regions are not neuron-class connectivity endpoints.
 - Never generate a graph when there are no results. Every node and edge must come from tool output.
+- Never call create_basic_graph with empty nodes or empty edges.
 - Use meaningful "group" fields: neurotransmitter type, brain region, or cell class. Keep groups coarse (2-4 groups), not one per neuron.
 - Do not mention the internal tool name create_basic_graph in final answers; say "graph" or "graph view".
 
@@ -10512,6 +10691,7 @@ function buildToolPolicyCorrectionMessage({
     '- For VFB query-type questions, prefer vfb_get_term_info + vfb_run_query as the first pass because vfb_run_query is typically cached and fast.',
     '- Use more specialized tools (for example vfb_query_connectivity, vfb_compare_downstream_targets, vfb_find_connectivity_partners, vfb_find_reciprocal_connectivity, vfb_find_genetic_tools, vfb_get_neurotransmitter_profile, vfb_summarize_neuron_taxonomy, vfb_summarize_region_connections, vfb_compare_region_organization, vfb_trace_containment_chain, vfb_get_region_neuron_count, vfb_find_pathway_evidence, vfb_compare_dataset_connectivity, vfb_summarize_experimental_circuit, vfb_summarize_neuron_profile, vfb_resolve_entity, vfb_find_stocks, vfb_resolve_combination, vfb_find_combo_publications) when deeper refinement is needed.',
     '- When vfb_query_connectivity direct class-to-class data is returned, call create_basic_graph to visualise the connections as a node/edge graph with meaningful group labels for colour-coding. For vfb_compare_downstream_targets, answer the shared targets first; graphing is optional supporting UI.',
+    '- For broad region graph requests, use vfb_summarize_region_connections first and only graph rows that were returned by VFB. Do not use vfb_run_query class-connectivity query types, vfb_query_connectivity broad endpoints, or empty create_basic_graph calls for whole regions.',
     '- For directional connectivity graphs, keep graph groups coarse and reusable (usually source-side, target-side, and optional intermediate), not one unique group per node.',
     '- Prefer direct data tools over documentation search when the question asks for concrete VFB data.',
     '- If existing tool outputs already answer the question, provide the final answer instead of requesting more tools.'
@@ -11557,6 +11737,52 @@ async function processResponseStream({
           'search_data_resource'
         ]
 
+        if (hasBroadRegionConnectivityGraphRequest(userMessage)) {
+          const attemptedQueryType = String(attemptedArgs?.query_type || '').trim()
+          if (toolName === 'vfb_run_query' && /connectivity/i.test(attemptedQueryType)) {
+            return {
+              reason: 'The user requested a graph for a whole brain region; class-connectivity query types require concrete neuron-class endpoints and often return empty rows for broad anatomy.',
+              instruction: 'Call vfb_summarize_region_connections with the region phrase or FBbt ID, then answer from those VFB preview rows. Do not mention skipped tools.',
+              answer_hint: 'Use the region summary evidence and graph view preview instead of inventing class-connectivity edges for the whole region.'
+            }
+          }
+
+          if (toolName === 'vfb_query_connectivity') {
+            return {
+              reason: 'Whole brain regions are not valid direct class-to-class connectivity endpoints for a graph request.',
+              instruction: 'Use vfb_summarize_region_connections for a region-level graph preview, or ask for concrete neuron-class endpoints for weighted connectivity.',
+              answer_hint: 'For the current region-level request, provide the VFB preview graph and explain that exact weighted edges need selected neuron classes.'
+            }
+          }
+
+          if (toolName === 'create_basic_graph') {
+            return {
+              reason: collectedGraphSpecs.length > 0
+                ? 'A region-preview graph has already been derived from returned VFB evidence.'
+                : 'A broad-region graph must be derived from vfb_summarize_region_connections preview rows, not invented graph arguments.',
+              instruction: collectedGraphSpecs.length > 0
+                ? 'Use the existing graph view and answer from the returned VFB evidence. Do not mention skipped tools or graph-tool internals.'
+                : 'Call vfb_summarize_region_connections with the region first. Do not create a graph until VFB has returned preview rows.',
+              answer_hint: collectedGraphSpecs.length > 0
+                ? 'Tell the user that the graph view shows the returned VFB preview nodes and summarize the region-level evidence.'
+                : 'Use the region summary evidence to build or describe the graph; exact weighted edges require concrete neuron classes.'
+            }
+          }
+        }
+
+        if (
+          toolName === 'create_basic_graph' &&
+          hasEmptyBasicGraphArguments(attemptedArgs) &&
+          hasGraphOutputRequest(userMessage) &&
+          collectedGraphSpecs.length > 0
+        ) {
+          return {
+            reason: 'A graph has already been derived from returned VFB evidence; an empty graph request would only create an invalid UI payload.',
+            instruction: 'Use the existing graph view and answer from the returned VFB evidence. Do not mention skipped tools or graph-tool internals.',
+            answer_hint: 'Tell the user that the graph view shows the returned VFB preview nodes and summarize the region-level evidence.'
+          }
+        }
+
         if (
           hasRegionDataAvailabilitySurveyRequest(userMessage) &&
           (toolUsage.vfb_summarize_region_connections || 0) > 0 &&
@@ -11973,6 +12199,53 @@ async function processResponseStream({
         }
       }
 
+      const shouldAutoSummarizeRegionGraph =
+        hasBroadRegionConnectivityGraphRequest(userMessage) &&
+        collectedGraphSpecs.length === 0 &&
+        !toolOutputs.some(toolOutput => toolOutput.name === 'vfb_summarize_region_connections') &&
+        (toolUsage.vfb_summarize_region_connections || 0) === 0
+
+      if (shouldAutoSummarizeRegionGraph) {
+        const region = inferBroadRegionGraphRegion(userMessage, toolState)
+        if (region) {
+          const autoArgs = { region }
+          const status = getStatusForTool('vfb_summarize_region_connections', autoArgs)
+          sendEvent('status', status)
+          toolUsage.vfb_summarize_region_connections = (toolUsage.vfb_summarize_region_connections || 0) + 1
+          console.log('[VFBchat] Auto tool call: vfb_summarize_region_connections', JSON.stringify(autoArgs))
+
+          try {
+            const output = await executeFunctionTool('vfb_summarize_region_connections', autoArgs, { userMessage, mcpClients, dataResourceStore, toolState })
+            console.log('[VFBchat] Tool result: vfb_summarize_region_connections', typeof output === 'string' ? output.slice(0, 500) : JSON.stringify(output).slice(0, 500))
+            const dataResource = storeToolOutputAsDataResource({
+              store: dataResourceStore,
+              name: 'vfb_summarize_region_connections',
+              args: autoArgs,
+              output
+            })
+
+            if (dataResource) {
+              console.log(`[VFBchat] Stored tool result resource: ${dataResource.id} (${dataResource.rawText.length} chars)`)
+            }
+
+            toolOutputs.push({
+              name: 'vfb_summarize_region_connections',
+              arguments: autoArgs,
+              output,
+              ...(dataResource ? { relayOutput: buildDataResourceRelayOutput(dataResource) } : {})
+            })
+          } catch (error) {
+            console.error('[VFBchat] Tool error: vfb_summarize_region_connections', error.message)
+            sendEvent('status', { message: status.message, phase: status.phase, error: true })
+            toolOutputs.push({
+              name: 'vfb_summarize_region_connections',
+              arguments: autoArgs,
+              output: JSON.stringify({ error: error.message })
+            })
+          }
+        }
+      }
+
       // Check if a connectivity query in this round returned empty results.
       // If so, suppress any graphs from this round — they are likely hallucinated.
       const connectivityOutputs = toolOutputs.filter(t => t.name === 'vfb_query_connectivity')
@@ -11995,9 +12268,12 @@ async function processResponseStream({
       }
       if (!connectivityReturnedEmpty) {
         const graphSpecsFromTools = extractGraphSpecsFromToolOutputs(toolOutputs)
-        if (graphSpecsFromTools.length > 0) {
-          collectedGraphSpecs.push(...graphSpecsFromTools)
-          console.log(`[VFBchat] Collected ${graphSpecsFromTools.length} graph spec(s), total: ${collectedGraphSpecs.length}`)
+        const regionPreviewGraphSpecs = extractRegionConnectivityGraphSpecsFromToolOutputs(toolOutputs, userMessage)
+        const graphSpecsThisRound = dedupeGraphSpecs([...graphSpecsFromTools, ...regionPreviewGraphSpecs])
+        if (graphSpecsThisRound.length > 0) {
+          collectedGraphSpecs.push(...graphSpecsThisRound)
+          collectedGraphSpecs.splice(0, collectedGraphSpecs.length, ...dedupeGraphSpecs(collectedGraphSpecs))
+          console.log(`[VFBchat] Collected ${graphSpecsThisRound.length} graph spec(s), total: ${collectedGraphSpecs.length}`)
         }
       } else if (graphToolOutputs.length > 0) {
         console.log(`[VFBchat] Suppressed ${graphToolOutputs.length} graph(s) — connectivity query returned empty results`)
