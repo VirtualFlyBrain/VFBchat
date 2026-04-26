@@ -57,7 +57,7 @@ permissions:
 
 concurrency:
   group: task-battery-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   benchmark:
@@ -117,6 +117,7 @@ jobs:
           APPROVED_ELM_BASE_URL: ${{ secrets.ELM_BASE_URL || vars.ELM_BASE_URL || 'https://elm.edina.ac.uk/api/v1' }}
           ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
           APPROVED_ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
+          VFB_MCP_URL: ${{ secrets.VFB_MCP_URL || vars.VFB_MCP_URL || 'https://vfb3-mcp-preview.virtualflybrain.org/' }}
           RATE_LIMIT_PER_IP: '10000'
           TASK_BATTERY_REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
           TASK_BATTERY_CONCURRENCY: ${{ github.event.inputs.concurrency || '4' }}

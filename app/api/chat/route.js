@@ -688,37 +688,67 @@ async function finalizeGovernanceEvent({
 
 // --- MCP client management (lazy initialization) ---
 
-let vfbMcpClient = null
-let biorxivMcpClient = null
-
 const DEFAULT_VFB_MCP_URL = 'https://vfb3-mcp-preview.virtualflybrain.org/'
 const VFB_MCP_URL = (process.env.VFB_MCP_URL || '').trim() || DEFAULT_VFB_MCP_URL
 const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 
-async function getVfbMcpClient() {
-  if (vfbMcpClient) return vfbMcpClient
+function getMcpClientConfig(server) {
+  if (server === 'vfb') {
+    return {
+      url: VFB_MCP_URL,
+      name: 'vfb-chat-client',
+      version: '3.2.3'
+    }
+  }
 
-  const transport = new StreamableHTTPClientTransport(new URL(VFB_MCP_URL))
+  if (server === 'biorxiv') {
+    return {
+      url: BIORXIV_MCP_URL,
+      name: 'vfb-chat-biorxiv',
+      version: '3.2.3'
+    }
+  }
+
+  throw new Error(`Unknown MCP server: ${server}`)
+}
+
+async function createMcpClient(server) {
+  const config = getMcpClientConfig(server)
+  const transport = new StreamableHTTPClientTransport(new URL(config.url))
   const client = new Client(
-    { name: 'vfb-chat-client', version: '3.2.3' },
+    { name: config.name, version: config.version },
     { capabilities: {} }
   )
   await client.connect(transport)
-  vfbMcpClient = client
   return client
 }
 
-async function getBiorxivMcpClient() {
-  if (biorxivMcpClient) return biorxivMcpClient
+async function getMcpClientForContext(server, context = {}) {
+  if (context.mcpClients instanceof Map) {
+    if (context.mcpClients.has(server)) return context.mcpClients.get(server)
 
-  const transport = new StreamableHTTPClientTransport(new URL(BIORXIV_MCP_URL))
-  const client = new Client(
-    { name: 'vfb-chat-biorxiv', version: '3.2.3' },
-    { capabilities: {} }
-  )
-  await client.connect(transport)
-  biorxivMcpClient = client
-  return client
+    const client = await createMcpClient(server)
+    context.mcpClients.set(server, client)
+    return client
+  }
+
+  return createMcpClient(server)
+}
+
+async function closeMcpClient(client) {
+  if (!client || typeof client.close !== 'function') return
+  try {
+    await client.close()
+  } catch {
+    // Nothing useful to do if the remote side already closed the session.
+  }
+}
+
+async function closeMcpClients(mcpClients) {
+  if (!(mcpClients instanceof Map)) return
+  const clients = Array.from(mcpClients.values())
+  mcpClients.clear()
+  await Promise.allSettled(clients.map(closeMcpClient))
 }
 
 function getToolConfig() {
@@ -2242,8 +2272,8 @@ async function executeFunctionTool(name, args, context = {}) {
   const routing = MCP_TOOL_ROUTING[name]
   if (routing) {
     const client = routing.server === 'vfb'
-      ? await getVfbMcpClient()
-      : await getBiorxivMcpClient()
+      ? await getMcpClientForContext('vfb', context)
+      : await getMcpClientForContext('biorxiv', context)
 
     const cleanArgs = { ...normalizedArgs }
 
@@ -2295,18 +2325,18 @@ async function executeFunctionTool(name, args, context = {}) {
         cleanArgs.exclude_dbs = []
       }
 
-      const endpointChecks = await Promise.all([
-        assessConnectivityEndpointForNeuronClass({
+      const endpointChecks = [
+        await assessConnectivityEndpointForNeuronClass({
           client,
           side: 'upstream',
           rawValue: cleanArgs.upstream_type
         }),
-        assessConnectivityEndpointForNeuronClass({
+        await assessConnectivityEndpointForNeuronClass({
           client,
           side: 'downstream',
           rawValue: cleanArgs.downstream_type
         })
-      ])
+      ]
 
       const upstreamCheck = endpointChecks.find(check => check.side === 'upstream')
       const downstreamCheck = endpointChecks.find(check => check.side === 'downstream')
@@ -3679,7 +3709,9 @@ async function processResponseStream({
   let latestResponseId = null
   let toolRounds = 0
   let toolPolicyCorrections = 0
+  const mcpClients = new Map()
 
+  try {
   for (let round = 0; round < maxToolRounds; round++) {
     const { textAccumulator, functionCalls, responseId, failed, errorMessage } = await readResponseStream(currentResponse, sendEvent)
     if (responseId) latestResponseId = responseId
@@ -3816,29 +3848,30 @@ async function processResponseStream({
         }
       }
 
-      const toolOutputs = await Promise.all(requestedToolCalls.map(async (toolCall) => {
+      const toolOutputs = []
+      for (const toolCall of requestedToolCalls) {
         toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
         console.log(`[VFBchat] Tool call: ${toolCall.name}`, JSON.stringify(toolCall.arguments))
 
         try {
-          const output = await executeFunctionTool(toolCall.name, toolCall.arguments, { userMessage })
+          const output = await executeFunctionTool(toolCall.name, toolCall.arguments, { userMessage, mcpClients })
           console.log(`[VFBchat] Tool result: ${toolCall.name}`, typeof output === 'string' ? output.slice(0, 500) : JSON.stringify(output).slice(0, 500))
-          return {
+          toolOutputs.push({
             name: toolCall.name,
             arguments: toolCall.arguments,
             output
-          }
+          })
         } catch (error) {
           console.error(`[VFBchat] Tool error: ${toolCall.name}`, error.message)
           const errorStatus = getStatusForTool(toolCall.name, toolCall.arguments)
           sendEvent('status', { message: errorStatus.message, phase: errorStatus.phase, error: true })
-          return {
+          toolOutputs.push({
             name: toolCall.name,
             arguments: toolCall.arguments,
             output: JSON.stringify({ error: error.message })
-          }
+          })
         }
-      }))
+      }
 
       // Check if a connectivity query in this round returned empty results.
       // If so, suppress any graphs from this round — they are likely hallucinated.
@@ -4165,6 +4198,9 @@ async function processResponseStream({
       maxToolRounds
     }),
     errorCategory: 'tool_round_limit_exceeded'
+  }
+  } finally {
+    await closeMcpClients(mcpClients)
   }
 }
 

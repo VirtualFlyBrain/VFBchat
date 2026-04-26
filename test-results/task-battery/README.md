@@ -35,5 +35,6 @@ GitHub Actions uses repository secrets/variables for model access:
 - `ELM_API_KEY` as a secret.
 - `ELM_BASE_URL` as a repository variable or secret, defaulting to the EDINA ELM endpoint when unset.
 - `ELM_MODEL` as a repository variable or secret, defaulting to `meta-llama/Llama-3.3-70B-Instruct` when unset.
+- `VFB_MCP_URL` as an optional repository variable or secret, defaulting to `https://vfb3-mcp-preview.virtualflybrain.org/`.
 
 When credentials are available, CI can commit generated JSON results back to this folder so prompt/tool-routing changes have visible before/after artefacts.
