@@ -402,6 +402,7 @@ const TOOL_STATUS_MESSAGE_REGEX = /\b(searching vfb|looking up term|running vfb|
 const BENCHMARK_FACTUAL_QUESTION_REGEX = /\b(drosophila|fruit fly|vfb|virtual fly brain|flybase|fbbt_|vfb_|neuron|neurons|brain|medulla|lobula|mushroom body|central complex|ellipsoid body|fan-shaped body|antennal lobe|glomerulus|lateral horn|subesophageal|sez|connectivity|connectome|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast|morphology|gal4|split-gal4|driver|stock|expression|gene|lineage|cell type|dopaminergic|serotonergic|cholinergic|gabaergic|glutamatergic|mbon|dan|projection neuron|olfactory|visual system|descending neuron|giant fiber)\b/i
 const TOOL_CLAIM_REGEX = /\b(vfb_[a-z_]+|tool output|tool result|tool call|query returned|queried|i used|i ran|according to (?:vfb|virtual fly brain)|virtual fly brain|vfb database|database result)\b/i
 const DISAMBIGUATION_REGEX = /\b(connectivity endpoint is broader|not a neuron class|reply with one class id|candidate .* neuron classes|requires_user_selection|choose one .* neuron class|pick which|select which)\b/i
+const INVESTIGATION_PLAN_REGEX = /\b(verified so far|not yet verified|recommended next step|other safe options|investigation starting point|candidate endpoint)\b/i
 const NOT_VERIFIED_REGEX = /\b(not verified|unverified|could not verify|couldn't verify|unable to verify|cannot verify|no results|no matching|did not return|didn't return|failed|timed out|timeout)\b/i
 const GRAPH_FAILURE_REGEX = /\b(create_basic_graph|invalid graph spec|graph(?:s)? (?:could not|cannot|failed|unavailable)|unable to (?:build|create|generate) (?:a )?graph)\b/i
 
@@ -431,12 +432,14 @@ function classifyResultQuality(result = {}) {
   const hasToolStatus = resultHasToolStatus(result)
   const factualQuestion = BENCHMARK_FACTUAL_QUESTION_REGEX.test(question)
   const answerLike = responseWordCount(response) >= 12 && !looksLikeClarificationOnly(response)
+  const investigationPlan = INVESTIGATION_PLAN_REGEX.test(response)
 
   return {
     has_tool_status: hasToolStatus,
     no_tool_factual_answer: Boolean(result.ok && factualQuestion && answerLike && !hasToolStatus),
     tool_claim_without_tool: Boolean(result.ok && !hasToolStatus && TOOL_CLAIM_REGEX.test(response)),
-    disambiguation_only_answer: Boolean(result.ok && DISAMBIGUATION_REGEX.test(response)),
+    disambiguation_only_answer: Boolean(result.ok && DISAMBIGUATION_REGEX.test(response) && !investigationPlan),
+    investigation_plan_answer: Boolean(result.ok && investigationPlan),
     not_verified_or_no_results_answer: Boolean(result.ok && NOT_VERIFIED_REGEX.test(response)),
     graph_failure_mentioned: Boolean(GRAPH_FAILURE_REGEX.test(`${response}\n${statusText}`)),
     used_data_resource: /\b(inspecting stored tool data|reading stored tool data)\b/i.test(statusText),
@@ -539,6 +542,7 @@ function summariseResults(results) {
     'no_tool_factual_answer',
     'tool_claim_without_tool',
     'disambiguation_only_answer',
+    'investigation_plan_answer',
     'not_verified_or_no_results_answer',
     'graph_failure_mentioned',
     'used_data_resource'
