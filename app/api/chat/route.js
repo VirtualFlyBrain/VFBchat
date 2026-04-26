@@ -808,7 +808,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_run_query',
-    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only query types returned by vfb_get_term_info.',
+    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only exact query_type values returned by vfb_get_term_info for the same ID; aliases like DownstreamClassConnectivity are invalid.',
     parameters: {
       type: 'object',
       properties: {
@@ -819,7 +819,7 @@ function getToolConfig() {
           ],
           description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
         },
-        query_type: { type: 'string', description: 'A query type returned by vfb_get_term_info for that term' },
+        query_type: { type: 'string', description: 'Exact Queries[].query value returned by vfb_get_term_info for that term, e.g. SubclassesOf or ref_downstream_class_connectivity_query' },
         queries: {
           type: 'array',
           description: 'Optional mixed batch input: each item has {id, query_type}. If provided, id/query_type are ignored.',
@@ -827,7 +827,7 @@ function getToolConfig() {
             type: 'object',
             properties: {
               id: { type: 'string', description: 'Plain VFB ID (e.g. FBbt_00003748) — not a markdown link or IRI' },
-              query_type: { type: 'string', description: 'Query type for this VFB ID' }
+              query_type: { type: 'string', description: 'Exact Queries[].query value for this VFB ID' }
             },
             required: ['id', 'query_type']
           }
@@ -902,7 +902,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_query_connectivity',
-    description: 'Live comparative connectomics query between two non-empty neuron class endpoints across datasets. Can be slow. Returns results from one or more connectome datasets. When group_by_class is true (default), weights are class-level aggregates; when false, results show individual neuron-to-neuron pairs. Do not use this with a blank endpoint; for one-sided ranked inputs/outputs, use vfb_get_term_info then vfb_run_query with an available upstream/downstream query type.',
+    description: 'Live comparative connectomics query between two non-empty neuron class endpoints across datasets. Can be slow. Returns results from one or more connectome datasets. When group_by_class is true (default), weights are class-level aggregates; when false, results show individual neuron-to-neuron pairs. Do not use this with a blank endpoint or broad anatomy-only endpoint; for one-sided ranked inputs/outputs, use vfb_get_term_info then vfb_run_query with an available upstream/downstream query type.',
     parameters: {
       type: 'object',
       properties: {
@@ -2914,6 +2914,7 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     if (name === 'vfb_run_query') {
+      normalizeVfbRunQueryArgs(cleanArgs)
       const hasBatchQueries = Array.isArray(cleanArgs.queries) && cleanArgs.queries.some(query =>
         hasNonEmptyToolValue(query?.id) && hasNonEmptyToolValue(query?.query_type)
       )
@@ -2924,6 +2925,9 @@ async function executeFunctionTool(name, args, context = {}) {
           'Call vfb_get_term_info first, then use a query_type listed in that term\'s Queries[].'
         )
       }
+
+      const queryValidationError = await validateVfbRunQueryTypes({ client, cleanArgs })
+      if (queryValidationError) return queryValidationError
     }
 
     // Normalize connectivity defaults so class-level summaries are used unless explicitly overridden.
@@ -3309,6 +3313,116 @@ const VFB_QUERY_SHORT_NAME_MAP = new Map(
   VFB_QUERY_SHORT_NAMES.map(entry => [entry.name.toLowerCase(), entry.name])
 )
 
+const VFB_RUN_QUERY_ALIAS_MAP = new Map([
+  ['downstreamclassconnectivity', 'ref_downstream_class_connectivity_query'],
+  ['downstreamclassconnectivityquery', 'ref_downstream_class_connectivity_query'],
+  ['classdownstreamconnectivity', 'ref_downstream_class_connectivity_query'],
+  ['downstreamconnectivity', 'ref_downstream_class_connectivity_query'],
+  ['upstreamclassconnectivity', 'ref_upstream_class_connectivity_query'],
+  ['upstreamclassconnectivityquery', 'ref_upstream_class_connectivity_query'],
+  ['classupstreamconnectivity', 'ref_upstream_class_connectivity_query'],
+  ['upstreamconnectivity', 'ref_upstream_class_connectivity_query'],
+  ['neuronneuronconnectivity', 'ref_neuron_neuron_connectivity_query'],
+  ['neuronneuronconnectivityquery', 'ref_neuron_neuron_connectivity_query'],
+  ['neuronconnectivity', 'ref_neuron_neuron_connectivity_query'],
+  ['neuronregionconnectivity', 'ref_neuron_region_connectivity_query'],
+  ['neuronregionconnectivityquery', 'ref_neuron_region_connectivity_query'],
+  ['regionconnectivity', 'ref_neuron_region_connectivity_query'],
+  ['connectivityperregion', 'ref_neuron_region_connectivity_query']
+])
+
+function normalizeVfbRunQueryType(value = '') {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const exactStaticMatch = VFB_QUERY_SHORT_NAME_MAP.get(text.toLowerCase())
+  if (exactStaticMatch) return exactStaticMatch
+
+  const aliasKey = text.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return VFB_RUN_QUERY_ALIAS_MAP.get(aliasKey) || text
+}
+
+function normalizeVfbRunQueryArgs(cleanArgs = {}) {
+  if (typeof cleanArgs.query_type === 'string') {
+    cleanArgs.query_type = normalizeVfbRunQueryType(cleanArgs.query_type)
+  }
+
+  if (Array.isArray(cleanArgs.queries)) {
+    cleanArgs.queries = cleanArgs.queries.map(query => ({
+      ...query,
+      ...(typeof query?.query_type === 'string'
+        ? { query_type: normalizeVfbRunQueryType(query.query_type) }
+        : {})
+    }))
+  }
+
+  return cleanArgs
+}
+
+async function getAvailableVfbQueryTypesForTerm(client, termId = '') {
+  const safeId = sanitizeVfbId(termId)
+  if (!safeId) return []
+
+  try {
+    const termInfoText = await callVfbToolTextWithFallback(client, 'get_term_info', { id: safeId })
+    return extractQueryNamesFromTermInfoPayload(termInfoText)
+  } catch {
+    return []
+  }
+}
+
+async function validateVfbRunQueryTypes({ client, cleanArgs = {} }) {
+  const candidates = []
+
+  if (Array.isArray(cleanArgs.queries)) {
+    for (const query of cleanArgs.queries) {
+      if (!hasNonEmptyToolValue(query?.id) || !hasNonEmptyToolValue(query?.query_type)) continue
+      candidates.push({
+        id: sanitizeVfbId(query.id),
+        query_type: normalizeVfbRunQueryType(query.query_type)
+      })
+    }
+  } else if (hasNonEmptyToolValue(cleanArgs.id) && hasNonEmptyToolValue(cleanArgs.query_type)) {
+    const ids = Array.isArray(cleanArgs.id) ? cleanArgs.id : [cleanArgs.id]
+    for (const id of ids) {
+      candidates.push({
+        id: sanitizeVfbId(id),
+        query_type: normalizeVfbRunQueryType(cleanArgs.query_type)
+      })
+    }
+  }
+
+  const invalidQueries = []
+  const availableById = new Map()
+
+  for (const candidate of candidates) {
+    if (!candidate.id || !candidate.query_type) continue
+
+    if (!availableById.has(candidate.id)) {
+      availableById.set(candidate.id, await getAvailableVfbQueryTypesForTerm(client, candidate.id))
+    }
+
+    const availableQueryTypes = availableById.get(candidate.id) || []
+    if (availableQueryTypes.length > 0 && !availableQueryTypes.includes(candidate.query_type)) {
+      invalidQueries.push({
+        id: candidate.id,
+        query_type: candidate.query_type,
+        available_query_types: availableQueryTypes
+      })
+    }
+  }
+
+  if (invalidQueries.length === 0) return null
+
+  return JSON.stringify({
+    error: 'vfb_run_query query_type is not listed in vfb_get_term_info for one or more terms.',
+    tool: 'vfb_run_query',
+    recoverable: true,
+    invalid_queries: invalidQueries,
+    instruction: 'Retry only with an exact query_type from available_query_types for that same term. Do not invent aliases such as DownstreamClassConnectivity. For direct class-to-class connectivity, use vfb_query_connectivity instead.'
+  })
+}
+
 const VFB_QUERY_SHORT_NAME_REGEX = new RegExp(
   `\\b(?:${VFB_QUERY_SHORT_NAMES.map(entry => escapeRegexForPattern(entry.name)).join('|')})\\b`,
   'gi'
@@ -3392,6 +3506,7 @@ NO HALLUCINATION — THIS IS THE MOST IMPORTANT RULE:
 ${VFB_QUERY_LINK_SKILL}
 
 TOOL SELECTION:
+- For concrete factual questions about VFB/Drosophila anatomy, neurons, genes, images, drivers, publications, or connectivity, call tools before giving a final answer. If tools cannot be used, explicitly label the answer as unverified general knowledge and avoid database/tool provenance claims.
 - Prefer VFB data tools over PubMed/bioRxiv for anatomy, neurons, connectivity, gene expression questions. Only use literature tools when the user asks about publications.
 - VFB terms/anatomy/genes: vfb_search_terms → vfb_get_term_info → vfb_run_query (cached, fast).
 - FlyBase entities: vfb_resolve_entity → vfb_find_stocks.
@@ -3423,6 +3538,7 @@ GRAPHS:
 
 TOOL PARAMETERS:
 - Use plain short-form IDs (e.g. FBbt_00048241). Never pass markdown links or IRIs as IDs.
+- For vfb_run_query, copy query_type exactly from the term's Queries[].query. Do not invent aliases such as DownstreamClassConnectivity, UpstreamClassConnectivity, or NeuronConnectivity.
 - If resolver returns SYNONYM/BROAD match or multiple candidates, confirm with the user first.
 - When data_resource: true appears, call inspect_data_resource to see paths/fields, then read_data_resource or search_data_resource for only the relevant rows/fields. Prefer fields over whole rows for large data.
 
@@ -3625,12 +3741,14 @@ function buildToolRelaySystemPrompt() {
 - When you are ready to answer the user, return a normal assistant response (not JSON).
 
 TOOL ROUTING RECIPES:
+- Concrete factual VFB/Drosophila data questions require tool evidence before the final answer. If you have not received TOOL_EVIDENCE_JSON, emit tool_calls JSON instead of answering from memory.
 - Anatomy subdivisions or containment: vfb_search_terms with exclude_types ["deprecated"], rows <= 10, minimize_results true; then vfb_get_term_info on the best ID; then vfb_run_query only with query_type values listed in Queries[] for that term (often PartsOf, ComponentsOf, SubclassesOf, or NeuronsPartHere).
 - Neuron type taxonomy: vfb_search_terms for the class, vfb_get_term_info, then vfb_run_query using SubclassesOf when available.
 - One term profile or data availability: vfb_search_terms -> vfb_get_term_info; then use available Queries[] such as ListAllAvailableImages, SimilarMorphologyTo, PaintedDomains, AlignedDatasets, or AllDatasets only if listed.
 - Ranked inputs/outputs for one neuron class: vfb_search_terms -> vfb_get_term_info -> vfb_run_query using available upstream/downstream class connectivity query names from Queries[].
 - Direct class-to-class or cross-dataset connectivity: use vfb_query_connectivity. For Hemibrain vs FAFB comparisons, first call vfb_list_connectome_datasets, then compare by excluding dataset symbols in separate vfb_query_connectivity calls.
 - Large results: when a tool result contains data_resource: true, call inspect_data_resource for available paths/fields, then read_data_resource or search_data_resource in small chunks. Choose fields relevant to the original user question. Do not re-run the original tool just to recover clipped data.
+- If a tool returns a recoverable argument error, correct the arguments and retry. Do not report a stale argument error if a later tool call returned useful data.
 - Genetic tools, GAL4, split-GAL4, drivers, or stocks: search VFB terms with driver/line names and filter/boost split or has_image when useful; use vfb_resolve_combination for split-GAL4 names; use vfb_find_stocks for FlyBase feature IDs; use vfb_find_combo_publications for resolved FBco IDs.
 - Publications: prefer VFB/FlyBase-linked publication tools when a driver or combination is involved; otherwise use search_pubmed/get_pubmed_article. Cite only publications actually returned by tools.
 - If the tools do not verify a specific number, identifier, connection, driver, or publication, say it is not verified instead of filling it from memory.
@@ -4016,7 +4134,9 @@ function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
     if (selections.length === 0) continue
 
     const lines = []
-    lines.push('I need neuron class inputs before I can run `vfb_query_connectivity`.')
+    lines.push('The connectivity endpoint is broader than a neuron class, so I cannot run a single class-to-class `vfb_query_connectivity` query yet.')
+    lines.push('')
+    lines.push('What VFB resolved so far:')
 
     for (const selection of selections) {
       const side = String(selection.side || '').toLowerCase()
@@ -4039,7 +4159,7 @@ function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
 
       const candidates = Array.isArray(selection.candidates) ? selection.candidates : []
       if (candidates.length > 0) {
-        lines.push(`Choose one ${sideLabel} neuron class:`)
+        lines.push(`Candidate ${sideLabel} neuron classes already retrieved from VFB:`)
         for (const candidate of candidates) {
           const candidateId = extractCanonicalVfbTermId(candidate.id || '')
           if (!candidateId) continue
@@ -4061,7 +4181,7 @@ function buildConnectivitySelectionResponseFromToolOutputs(toolOutputs = []) {
     }
 
     lines.push('')
-    lines.push('Reply with one class ID for each required side, and I will run the connectivity query.')
+    lines.push('These candidates are possible endpoints only; they are not verified synaptic connections or weights. Reply with one class ID for each required side, or narrow the broad region to a neuron class, and I will run the connectivity query.')
 
     return lines.join('\n')
   }
@@ -4158,6 +4278,67 @@ function extractDirectionalConnectivityEndpoints(message = '') {
   }
 
   return null
+}
+
+function isLikelyConcreteVfbDataQuestion(message = '') {
+  const text = String(message || '').toLowerCase()
+  if (!text.trim()) return false
+
+  if (/\b(hi|hello|thanks|thank you|what can you do|who are you|help)\b/i.test(text) && text.length < 80) {
+    return false
+  }
+
+  return /\b(drosophila|fruit fly|vfb|virtual fly brain|flybase|fbbt_|vfb_|neuron|neurons|neural|brain|medulla|lobula|mushroom body|central complex|ellipsoid body|fan-shaped body|antennal lobe|glomerulus|lateral horn|subesophageal|sez|connectivity|connectome|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast|morphology|gal4|split-gal4|driver|stock|expression|gene|lineage|cell type|cell class|dopaminergic|serotonergic|cholinergic|gabaergic|glutamatergic|mbon|dan|projection neuron|olfactory|visual system|descending neuron|giant fiber)\b/i.test(text)
+}
+
+function isClarificationOrRefusalResponse(text = '') {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return true
+
+  return /^(?:could you|can you|please provide|please clarify|which|what exactly|i need you to|i need more|i can't help with|i can only help with|sorry,)/i.test(trimmed)
+}
+
+function responseClaimsToolOrDatabaseEvidence(text = '') {
+  return /\b(vfb_[a-z_]+|tool output|tool result|tool call|query returned|queried|i used|i ran|according to (?:vfb|virtual fly brain)|virtual fly brain|vfb database|database result)\b/i.test(String(text || ''))
+}
+
+function shouldForceVfbToolGrounding({
+  userMessage = '',
+  responseText = '',
+  toolRounds = 0
+} = {}) {
+  if (toolRounds > 0) return false
+  if (!isLikelyConcreteVfbDataQuestion(userMessage)) return false
+  if (isClarificationOrRefusalResponse(responseText)) return false
+
+  const trimmed = String(responseText || '').trim()
+  if (!trimmed) return false
+
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length
+  if (wordCount < 12 && !responseClaimsToolOrDatabaseEvidence(trimmed)) return false
+
+  return true
+}
+
+function buildGroundingCorrectionMessage({ userMessage = '', previousResponse = '' }) {
+  return `TOOL_GROUNDING_CORRECTION:
+The original user request was:
+"${userMessage}"
+
+Your previous response appears to answer a concrete VFB/Drosophila data question without any executed tool output in this turn. Discard unsupported factual claims from that draft.
+
+You must now call the smallest relevant set of tools before answering:
+- Term/anatomy/profile questions: vfb_search_terms -> vfb_get_term_info, then vfb_run_query only with exact Queries[].query values from vfb_get_term_info when needed.
+- Direct connectivity between two neuron classes: vfb_query_connectivity with the user's endpoint labels or IDs.
+- Publications: use the publication tools, then cite only returned records.
+
+Do not claim that you used VFB, databases, tools, or publications unless their output is later provided in TOOL_EVIDENCE_JSON. If no suitable tool can be called, the final answer must say it is unverified general knowledge.
+
+Previous unsupported draft, for context only:
+${previousResponse.slice(0, 4000)}
+
+Return JSON only using the tool relay format:
+{"tool_calls":[{"name":"tool_name","arguments":{}}]}`
 }
 
 function buildToolPolicyCorrectionMessage({
@@ -4765,6 +4946,7 @@ async function processResponseStream({
   let latestResponseId = null
   let toolRounds = 0
   let toolPolicyCorrections = 0
+  let groundingCorrections = 0
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
 
@@ -5237,6 +5419,41 @@ async function processResponseStream({
         toolRounds,
         errorMessage: 'The AI returned an invalid tool-call payload. Please try again.',
         errorCategory: 'invalid_tool_call_payload'
+      }
+    }
+
+    if (groundingCorrections < 1 && shouldForceVfbToolGrounding({
+      userMessage,
+      responseText: trimmedResponseText,
+      toolRounds
+    })) {
+      sendEvent('status', { message: 'Grounding answer with VFB data', phase: 'llm' })
+
+      accumulatedItems.push({
+        role: 'user',
+        content: buildGroundingCorrectionMessage({
+          userMessage,
+          previousResponse: trimmedResponseText
+        })
+      })
+
+      const groundingResponse = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        },
+        body: JSON.stringify(createChatCompletionsRequestBody({
+          apiModel,
+          conversationInput: [...conversationInput, ...accumulatedItems],
+          allowToolRelay: true
+        }))
+      })
+
+      if (groundingResponse.ok) {
+        groundingCorrections += 1
+        currentResponse = groundingResponse
+        continue
       }
     }
 

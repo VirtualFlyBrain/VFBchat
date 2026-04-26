@@ -398,6 +398,53 @@ async function runWithTimeout(work, timeoutMs) {
   }
 }
 
+const TOOL_STATUS_MESSAGE_REGEX = /\b(searching vfb|looking up term|running vfb|comparing connectome|resolving entity|resolving split|finding available stocks|searching combination|listing connectome|searching publications|searching preprints|searching reviewed|reading approved|inspecting stored tool data|reading stored tool data|preparing graph view)\b/i
+const BENCHMARK_FACTUAL_QUESTION_REGEX = /\b(drosophila|fruit fly|vfb|virtual fly brain|flybase|fbbt_|vfb_|neuron|neurons|brain|medulla|lobula|mushroom body|central complex|ellipsoid body|fan-shaped body|antennal lobe|glomerulus|lateral horn|subesophageal|sez|connectivity|connectome|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast|morphology|gal4|split-gal4|driver|stock|expression|gene|lineage|cell type|dopaminergic|serotonergic|cholinergic|gabaergic|glutamatergic|mbon|dan|projection neuron|olfactory|visual system|descending neuron|giant fiber)\b/i
+const TOOL_CLAIM_REGEX = /\b(vfb_[a-z_]+|tool output|tool result|tool call|query returned|queried|i used|i ran|according to (?:vfb|virtual fly brain)|virtual fly brain|vfb database|database result)\b/i
+const DISAMBIGUATION_REGEX = /\b(connectivity endpoint is broader|not a neuron class|reply with one class id|candidate .* neuron classes|requires_user_selection|choose one .* neuron class|pick which|select which)\b/i
+const NOT_VERIFIED_REGEX = /\b(not verified|unverified|could not verify|couldn't verify|unable to verify|cannot verify|no results|no matching|did not return|didn't return|failed|timed out|timeout)\b/i
+const GRAPH_FAILURE_REGEX = /\b(create_basic_graph|invalid graph spec|graph(?:s)? (?:could not|cannot|failed|unavailable)|unable to (?:build|create|generate) (?:a )?graph)\b/i
+
+function resultHasToolStatus(result = {}) {
+  const statuses = Array.isArray(result.status_messages) ? result.status_messages : []
+  return statuses.some(status => {
+    const phase = String(status?.phase || '').toLowerCase()
+    if (phase && phase !== 'llm') return true
+    return TOOL_STATUS_MESSAGE_REGEX.test(String(status?.message || ''))
+  })
+}
+
+function responseWordCount(text = '') {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length
+}
+
+function looksLikeClarificationOnly(text = '') {
+  return /^(?:could you|can you|please clarify|please provide|which|what exactly|i need more|i can't help|sorry,)/i.test(String(text || '').trim())
+}
+
+function classifyResultQuality(result = {}) {
+  const response = String(result.response || result.error || '')
+  const question = String(result.question || '')
+  const statusText = (Array.isArray(result.status_messages) ? result.status_messages : [])
+    .map(status => `${status?.phase || ''}:${status?.message || ''}`)
+    .join('\n')
+  const hasToolStatus = resultHasToolStatus(result)
+  const factualQuestion = BENCHMARK_FACTUAL_QUESTION_REGEX.test(question)
+  const answerLike = responseWordCount(response) >= 12 && !looksLikeClarificationOnly(response)
+
+  return {
+    has_tool_status: hasToolStatus,
+    no_tool_factual_answer: Boolean(result.ok && factualQuestion && answerLike && !hasToolStatus),
+    tool_claim_without_tool: Boolean(result.ok && !hasToolStatus && TOOL_CLAIM_REGEX.test(response)),
+    disambiguation_only_answer: Boolean(result.ok && DISAMBIGUATION_REGEX.test(response)),
+    not_verified_or_no_results_answer: Boolean(result.ok && NOT_VERIFIED_REGEX.test(response)),
+    graph_failure_mentioned: Boolean(GRAPH_FAILURE_REGEX.test(`${response}\n${statusText}`)),
+    used_data_resource: /\b(inspecting stored tool data|reading stored tool data)\b/i.test(statusText),
+    response_chars: response.length,
+    status_count: Array.isArray(result.status_messages) ? result.status_messages.length : 0
+  }
+}
+
 async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
   const startedAt = Date.now()
   const chatUrl = new URL('/api/chat', baseUrl)
@@ -428,7 +475,7 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
     const durationMs = Date.now() - startedAt
 
     if (!parsed.ok) {
-      return {
+      const result = {
         task_id: task.id,
         tier: task.tier,
         title: task.title,
@@ -442,9 +489,11 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
         request_id: parsed.error?.requestId || null,
         response_id: parsed.error?.responseId || null
       }
+      result.quality_flags = classifyResultQuality(result)
+      return result
     }
 
-    return {
+    const result = {
       task_id: task.id,
       tier: task.tier,
       title: task.title,
@@ -460,6 +509,8 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
       graphs_count: Array.isArray(parsed.result?.graphs) ? parsed.result.graphs.length : 0,
       response: parsed.result?.response || ''
     }
+    result.quality_flags = classifyResultQuality(result)
+    return result
   }, timeoutMs)
 }
 
@@ -484,6 +535,17 @@ function summariseResults(results) {
   const ok = results.filter(result => result.ok).length
   const errors = results.length - ok
   const byTier = {}
+  const qualityFlagNames = [
+    'no_tool_factual_answer',
+    'tool_claim_without_tool',
+    'disambiguation_only_answer',
+    'not_verified_or_no_results_answer',
+    'graph_failure_mentioned',
+    'used_data_resource'
+  ]
+  const quality = Object.fromEntries(
+    qualityFlagNames.map(flagName => [flagName, { count: 0, task_ids: [] }])
+  )
 
   for (const result of results) {
     const key = `T${result.tier}`
@@ -491,6 +553,13 @@ function summariseResults(results) {
     byTier[key].total += 1
     if (result.ok) byTier[key].ok += 1
     else byTier[key].errors += 1
+
+    const flags = result.quality_flags || classifyResultQuality(result)
+    for (const flagName of qualityFlagNames) {
+      if (!flags[flagName]) continue
+      quality[flagName].count += 1
+      quality[flagName].task_ids.push(result.task_id)
+    }
   }
 
   return {
@@ -498,6 +567,7 @@ function summariseResults(results) {
     ok,
     errors,
     by_tier: byTier,
+    quality,
     mean_duration_ms: results.length
       ? Math.round(results.reduce((sum, result) => sum + (result.duration_ms || 0), 0) / results.length)
       : 0
@@ -558,7 +628,7 @@ async function runAttemptsWithConcurrency({
         completed += 1
         console.log(`[${completed}/${attempts.length}] ${label}: ${result.ok ? 'ok' : 'error'} (${result.duration_ms} ms)`)
       } catch (error) {
-        payload.results.push({
+        const result = {
           attempt_index: attempt.attemptIndex,
           task_index: attempt.taskIndex,
           task_id: attempt.task.id,
@@ -573,7 +643,9 @@ async function runAttemptsWithConcurrency({
             : error?.name === 'TimeoutError'
               ? error.message
               : error?.message || 'Unknown error'
-        })
+        }
+        result.quality_flags = classifyResultQuality(result)
+        payload.results.push(result)
         completed += 1
         console.log(`[${completed}/${attempts.length}] ${label}: error`)
       }
