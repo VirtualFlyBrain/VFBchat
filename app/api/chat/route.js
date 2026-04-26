@@ -1887,6 +1887,97 @@ function choosePrimaryCollectionPath(collections = [], parsedPayload = null) {
     .sort((a, b) => b.count - a.count)[0]?.path || ''
 }
 
+function findTermInfoRecordForOverview(parsedPayload) {
+  if (!parsedPayload || typeof parsedPayload !== 'object') return null
+
+  if (
+    parsedPayload.Id ||
+    parsedPayload.Name ||
+    parsedPayload.Meta ||
+    Array.isArray(parsedPayload.SuperTypes) ||
+    Array.isArray(parsedPayload.Queries)
+  ) {
+    return parsedPayload
+  }
+
+  for (const value of Object.values(parsedPayload)) {
+    if (!value || typeof value !== 'object') continue
+    if (
+      value.Id ||
+      value.Name ||
+      value.Meta ||
+      Array.isArray(value.SuperTypes) ||
+      Array.isArray(value.Queries)
+    ) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function countNestedImageEntries(value) {
+  if (!value || typeof value !== 'object') return 0
+  if (Array.isArray(value)) return value.length
+
+  return Object.values(value).reduce((sum, nestedValue) => {
+    if (Array.isArray(nestedValue)) return sum + nestedValue.length
+    if (nestedValue && typeof nestedValue === 'object') return sum + countNestedImageEntries(nestedValue)
+    return sum
+  }, 0)
+}
+
+function buildTermInfoKeyFieldsForOverview(parsedPayload) {
+  const record = findTermInfoRecordForOverview(parsedPayload)
+  if (!record) return null
+
+  const keyFields = {}
+  for (const key of ['Name', 'Id', 'SuperTypes', 'Tags']) {
+    if (record[key] !== undefined) keyFields[key] = compactDataValue(record[key])
+  }
+
+  if (record.Meta && typeof record.Meta === 'object') {
+    keyFields.Meta = {}
+    for (const key of ['Name', 'Symbol', 'Description', 'Comment', 'Types', 'Relationships']) {
+      if (record.Meta[key] !== undefined) keyFields.Meta[key] = compactDataValue(record.Meta[key])
+    }
+  }
+
+  if (Array.isArray(record.Queries)) {
+    keyFields.query_count = record.Queries.length
+    keyFields.Queries = record.Queries.slice(0, 25).map(query => ({
+      query: query?.query,
+      label: query?.label || query?.description
+    })).filter(query => query.query || query.label)
+  }
+
+  if (record.Images && typeof record.Images === 'object') {
+    keyFields.image_template_count = Object.keys(record.Images).length
+    keyFields.image_entry_count = countNestedImageEntries(record.Images)
+  }
+
+  if (record.Examples && typeof record.Examples === 'object') {
+    keyFields.example_template_count = Object.keys(record.Examples).length
+  }
+
+  if (Array.isArray(record.Publications)) {
+    keyFields.publication_count = record.Publications.length
+    keyFields.Publications = record.Publications.slice(0, 10).map(publication => compactDataValue(publication))
+  }
+
+  return keyFields
+}
+
+function buildDataResourceKeyFields({ name, parsedPayload }) {
+  if (!parsedPayload || typeof parsedPayload !== 'object') return undefined
+
+  if (name === 'vfb_get_term_info') {
+    return buildTermInfoKeyFieldsForOverview(parsedPayload) || undefined
+  }
+
+  return undefined
+}
+
 function buildDataResourceOverview({ id, name, args, rawText, parsedPayload }) {
   const isJson = parsedPayload !== null && parsedPayload !== undefined
   const collections = isJson ? collectJsonCollections(parsedPayload).slice(0, 12) : []
@@ -1894,6 +1985,7 @@ function buildDataResourceOverview({ id, name, args, rawText, parsedPayload }) {
   const topLevelKeys = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
     ? Object.keys(parsedPayload).slice(0, DATA_RESOURCE_MAX_FIELDS)
     : []
+  const keyFields = buildDataResourceKeyFields({ name, parsedPayload })
 
   return {
     resource_id: id,
@@ -1903,6 +1995,7 @@ function buildDataResourceOverview({ id, name, args, rawText, parsedPayload }) {
     output_chars: rawText.length,
     top_level_type: Array.isArray(parsedPayload) ? 'array' : parsedPayload && typeof parsedPayload === 'object' ? 'object' : 'text',
     top_level_keys: topLevelKeys,
+    key_fields: keyFields,
     primary_path: primaryPath,
     collections,
     text_preview: isJson ? undefined : rawText.slice(0, 800)
