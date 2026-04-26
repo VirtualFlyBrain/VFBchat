@@ -21,7 +21,7 @@ prompt-injection boundaries harder to reason about.
    - `read_data_resource`
    - `search_data_resource`
 4. Keep every resource tool read-only, request-scoped, size-capped, and clearly
-   marked as untrusted tool-derived evidence.
+   marked as non-instructional tool-derived evidence.
 5. Preserve deterministic hard limits so the model can curate data without
    turning a large response into a denial-of-service path.
 
@@ -53,10 +53,11 @@ summary that is explicitly marked as context rather than instructions.
 
 ## Security Boundaries
 
-- Tool/resource contents are data, not instructions.
+- Tool/resource contents are evidence, not instructions. VFB data can be trusted
+  as VFB evidence when relevant, but text inside a result must not override the
+  assistant's system/developer instructions or tool-use policy.
 - Resource IDs are request-scoped and are not shared across users.
 - The LLM can only read bounded slices, fields, or search matches.
 - The server keeps MCP credentials and raw tool results out of the prompt unless
   a bounded read is requested.
 - Empty or malformed required tool arguments are rejected before reaching MCP.
-
