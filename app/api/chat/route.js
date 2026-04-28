@@ -9056,6 +9056,8 @@ function buildVfbQueryLinkSkill() {
 - URL-encode TERM_ID and QUERY_SHORT_NAME independently before concatenating.
 - Only use query names returned by vfb_get_term_info for that specific term.
 - In term-info JSON, read short names from Queries[].query and user-facing descriptions from Queries[].label.
+- If Queries[].count is present and equals 0, do not construct or offer a query-result link for that query.
+- If Queries[].count is missing, use preview_results to decide whether a query link is useful; avoid links for queries with no preview rows.
 - Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
 - When you answer with query findings, include matching query-result links when useful.
 - Example templates:
