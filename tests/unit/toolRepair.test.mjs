@@ -56,6 +56,16 @@ test('buildRepairMessages: includes tool, schema, question, evidence', () => {
   assert.match(m[1].content, /PARAMETER SCHEMA/)
 })
 
+test('buildRepairMessages: instructs name-for-region, id-only-from-evidence', () => {
+  const m = buildRepairMessages({
+    toolCall: { name: 'vfb_summarize_region_connections', arguments: {} },
+    params: { type: 'object', properties: { region: { type: 'string' } }, required: ['region'] },
+    userQuestion: 'What regions does the antennal lobe connect to?'
+  })
+  assert.match(m[0].content, /natural-language term/)
+  assert.match(m[0].content, /never invent ids/)
+})
+
 test('mergeRepairedArgs: non-empty repaired values win, empties ignored', () => {
   assert.deepEqual(mergeRepairedArgs({ id: '' }, { id: 'FBbt_1' }), { id: 'FBbt_1' })
   assert.deepEqual(mergeRepairedArgs({ id: 'X', rows: 10 }, { id: '' }), { id: 'X', rows: 10 })
