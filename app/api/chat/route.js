@@ -22,6 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
+import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
 import {
   getConfiguredApiBaseUrl,
   getConfiguredApiKey,
@@ -9404,6 +9405,18 @@ function buildRepairEvidenceContext(conversationInput = []) {
   return texts.join('\n---\n').slice(-4000)
 }
 
+// Replace investigation-mode tool outputs with a compact "answer now" directive
+// so the weak model stops re-issuing broad-endpoint connectivity queries and
+// answers from the gathered evidence. Mutates toolOutputs in place. Gated by the
+// caller on VFB_STRUCTURED_TOOLCALLS.
+function annotateInvestigationModeOutputs(toolOutputs = []) {
+  for (const item of toolOutputs) {
+    const parsed = parseToolOutputPayload(item?.output)
+    if (!isInvestigationOutput(parsed)) continue
+    item.output = JSON.stringify(buildInvestigationDirective(parsed))
+  }
+}
+
 async function repairToolCallArguments({ toolCall, userMessage, conversationInput, apiBaseUrl, apiKey, apiModel }) {
   try {
     const params = TOOL_PARAMS_BY_NAME.get(toolCall.name)
@@ -12358,6 +12371,10 @@ async function processResponseStream({
           outboundAllowList,
           graphSpecs: collectedGraphSpecs
         })
+      }
+
+      if (VFB_STRUCTURED_TOOLCALLS) {
+        annotateInvestigationModeOutputs(toolOutputs)
       }
 
       if (textAccumulator.trim()) {
