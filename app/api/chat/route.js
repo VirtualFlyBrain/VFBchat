@@ -1075,6 +1075,13 @@ const DEFAULT_VFB_MCP_URL = 'https://vfb3-mcp-preview.virtualflybrain.org/'
 const VFB_MCP_URL = (process.env.VFB_MCP_URL || '').trim() || DEFAULT_VFB_MCP_URL
 const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 
+// Allow slow VFB MCP calls to complete rather than failing. The MCP SDK default
+// request timeout is 60s, which the backend can exceed on heavier composite
+// queries (region connections, neuron counts), causing the model to give up.
+// Prefer waiting for real data over a fast failure. Default 5 minutes.
+const VFB_MCP_CALL_TIMEOUT_MS = normalizeInteger(process.env.VFB_MCP_CALL_TIMEOUT_MS, 300000, 10000, 600000)
+const VFB_MCP_CALL_OPTIONS = { timeout: VFB_MCP_CALL_TIMEOUT_MS, maxTotalTimeout: VFB_MCP_CALL_TIMEOUT_MS }
+
 function getMcpClientConfig(server) {
   if (server === 'vfb') {
     return {
@@ -3289,7 +3296,7 @@ function searchDataResourceTool(store, args = {}) {
 
 const VFB_CACHED_TERM_INFO_URL = 'https://v3-cached.virtualflybrain.org/get_term_info'
 const VFB_CACHED_RUN_QUERY_URL = 'https://v3-cached.virtualflybrain.org/run_query'
-const VFB_CACHED_TERM_INFO_TIMEOUT_MS = 12000
+const VFB_CACHED_TERM_INFO_TIMEOUT_MS = normalizeInteger(process.env.VFB_CACHED_TERM_INFO_TIMEOUT_MS, 60000, 5000, 300000)
 
 function isRetryableMcpError(error) {
   const message = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
@@ -4668,7 +4675,7 @@ function getReadableTermName(termRecord, fallback = '') {
 
 async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
   try {
-    const result = await client.callTool({ name: toolName, arguments: toolArguments })
+    const result = await client.callTool({ name: toolName, arguments: toolArguments }, undefined, VFB_MCP_CALL_OPTIONS)
     if (result?.content) {
       const texts = result.content
         .filter(item => item.type === 'text')
@@ -6441,7 +6448,7 @@ function normalizeDatasetScopeName(value = '') {
 
 async function getConnectomeDatasetListEvidence(client) {
   try {
-    const result = await client.callTool({ name: 'list_connectome_datasets', arguments: {} })
+    const result = await client.callTool({ name: 'list_connectome_datasets', arguments: {} }, undefined, VFB_MCP_CALL_OPTIONS)
     const text = result?.content
       ?.filter(item => item.type === 'text')
       ?.map(item => item.text)
@@ -8515,7 +8522,7 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     try {
-      const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs })
+      const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs }, undefined, VFB_MCP_CALL_OPTIONS)
       if (result?.content) {
         const texts = result.content
           .filter(item => item.type === 'text')
@@ -8596,7 +8603,7 @@ async function executeFunctionTool(name, args, context = {}) {
           const termInfoResult = await client.callTool({
             name: 'get_term_info',
             arguments: { id: cleanArgs.id }
-          })
+          }, undefined, VFB_MCP_CALL_OPTIONS)
           const termInfoText = termInfoResult?.content
             ?.filter(item => item.type === 'text')
             ?.map(item => item.text)
