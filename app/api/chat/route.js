@@ -20,6 +20,8 @@ import {
 } from '../../../lib/policy.js'
 import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
+import { callStructured } from '../../../lib/elmClient.mjs'
+import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import {
   getConfiguredApiBaseUrl,
   getConfiguredApiKey,
@@ -9382,6 +9384,50 @@ const TOOL_DEFINITIONS = getToolConfig()
 const TOOL_NAME_SET = new Set(TOOL_DEFINITIONS.map(tool => tool.name))
 const TOOL_DEFINITION_MAP = new Map(TOOL_DEFINITIONS.map(tool => [tool.name, tool]))
 
+// Experimental: constrained tool-call argument repair. When enabled, a tool call
+// that is missing required arguments is repaired via a guided_json decode using
+// the gathered evidence, instead of bouncing a text instruction the weak model
+// tends to ignore. Default off; toggle with VFB_STRUCTURED_TOOLCALLS=1 to A/B
+// against the task battery. See lib/toolRepair.mjs and the design report §9.
+const VFB_STRUCTURED_TOOLCALLS = /^(1|true|on|yes)$/i.test((process.env.VFB_STRUCTURED_TOOLCALLS || '').trim())
+const TOOL_PARAMS_BY_NAME = new Map(
+  TOOL_DEFINITIONS.filter(tool => tool.parameters).map(tool => [tool.name, tool.parameters])
+)
+
+function buildRepairEvidenceContext(conversationInput = []) {
+  if (!Array.isArray(conversationInput)) return ''
+  const texts = []
+  for (let i = conversationInput.length - 1; i >= 0 && texts.length < 3; i--) {
+    const content = conversationInput[i]?.content
+    if (typeof content === 'string' && content.trim()) texts.unshift(content)
+  }
+  return texts.join('\n---\n').slice(-4000)
+}
+
+async function repairToolCallArguments({ toolCall, userMessage, conversationInput, apiBaseUrl, apiKey, apiModel }) {
+  try {
+    const params = TOOL_PARAMS_BY_NAME.get(toolCall.name)
+    if (!params) return null
+    const messages = buildRepairMessages({
+      toolCall,
+      params,
+      userQuestion: userMessage,
+      evidenceContext: buildRepairEvidenceContext(conversationInput)
+    })
+    const res = await callStructured({
+      baseUrl: apiBaseUrl, apiKey, model: apiModel,
+      messages, schema: params, schemaName: `${toolCall.name}_args`,
+      useGuidedJson: true, maxAttempts: 2, temperature: 0, timeoutMs: 60000
+    })
+    if (!res.ok || !res.value) return null
+    const merged = mergeRepairedArgs(toolCall.arguments, res.value)
+    const stillMissing = getMissingRequiredArgs({ name: toolCall.name, arguments: merged }, TOOL_PARAMS_BY_NAME)
+    return stillMissing.length ? null : merged
+  } catch {
+    return null
+  }
+}
+
 const TOOL_RELAY_GROUPS = Object.freeze({
   coreVfb: ['vfb_search_terms', 'vfb_get_term_info', 'vfb_run_query', 'vfb_find_genetic_tools', 'vfb_get_neurotransmitter_profile', 'vfb_summarize_region_connections', 'vfb_compare_region_organization', 'vfb_trace_containment_chain', 'vfb_get_region_neuron_count', 'vfb_summarize_neuron_taxonomy', 'vfb_summarize_experimental_circuit', 'vfb_summarize_neuron_profile'],
   connectivity: ['vfb_list_connectome_datasets', 'vfb_query_connectivity', 'vfb_compare_downstream_targets', 'vfb_find_connectivity_partners', 'vfb_find_reciprocal_connectivity', 'vfb_find_pathway_evidence', 'vfb_compare_dataset_connectivity', 'create_basic_graph'],
@@ -11968,6 +12014,19 @@ async function processResponseStream({
             output
           })
           continue
+        }
+
+        if (VFB_STRUCTURED_TOOLCALLS) {
+          const missingArgs = getMissingRequiredArgs(toolCall, TOOL_PARAMS_BY_NAME)
+          if (missingArgs.length) {
+            const repaired = await repairToolCallArguments({
+              toolCall, userMessage, conversationInput, apiBaseUrl, apiKey, apiModel
+            })
+            if (repaired) {
+              console.log(`[VFBchat] Repaired ${toolCall.name} args via constrained decoding (${missingArgs.join(', ')})`)
+              toolCall.arguments = repaired
+            }
+          }
         }
 
         toolUsage[toolCall.name] = (toolUsage[toolCall.name] || 0) + 1
