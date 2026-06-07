@@ -17,7 +17,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
-RUN_UNIT=1; RUN_PROBE=1; RUN_BATTERY=0
+RUN_UNIT=1; RUN_PROBE=1; RUN_BATTERY=0; RUN_GRADE=0
 BATTERY_ARGS=()
 ONLY=0
 
@@ -26,11 +26,12 @@ while [[ $# -gt 0 ]]; do
     --unit)    ONLY=1; RUN_UNIT=1; RUN_PROBE=0; RUN_BATTERY=0; shift ;;
     --probe)   ONLY=1; RUN_UNIT=0; RUN_PROBE=1; RUN_BATTERY=0; shift ;;
     --battery) RUN_BATTERY=1; shift ;;
+    --grade)   ONLY=1; RUN_UNIT=0; RUN_PROBE=0; RUN_GRADE=1; shift ;;  # grade latest battery run
     *)         BATTERY_ARGS+=("$1"); shift ;;
   esac
 done
-# --battery without an --only flag keeps unit+probe on too, unless an --only was given.
-if [[ $RUN_BATTERY -eq 1 && $ONLY -eq 0 ]]; then RUN_UNIT=1; RUN_PROBE=1; fi
+# --battery without an --only flag keeps unit+probe on too, and auto-grades after.
+if [[ $RUN_BATTERY -eq 1 && $ONLY -eq 0 ]]; then RUN_UNIT=1; RUN_PROBE=1; RUN_GRADE=1; fi
 
 FAIL=0
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
@@ -52,6 +53,12 @@ if [[ $RUN_BATTERY -eq 1 ]]; then
   section "Task battery (starts a local server, calls ELM)"
   npm run benchmark:task-battery -- "${BATTERY_ARGS[@]}"
   mark $? "task battery"
+fi
+
+if [[ $RUN_GRADE -eq 1 ]]; then
+  section "Grade latest battery run (LLM-as-judge)"
+  node scripts/grade-battery.mjs
+  mark $? "battery grading"
 fi
 
 section "Summary"
