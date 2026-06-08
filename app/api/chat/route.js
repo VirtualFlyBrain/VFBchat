@@ -1894,21 +1894,37 @@ function getToolConfig() {
 
 const NCBI_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
 
+// NCBI E-utilities require identification, and an API key raises the rate limit
+// from 3/s to 10/s and exempts the (shared) server IP from the blocking that
+// otherwise returns empty results. Set NCBI_API_KEY (and optionally NCBI_EMAIL)
+// in the deployment. Without these, PubMed search silently returns nothing.
+const NCBI_API_KEY = (process.env.NCBI_API_KEY || '').trim()
+const NCBI_EMAIL = (process.env.NCBI_EMAIL || 'vfb@virtualflybrain.org').trim()
+function ncbiAuth() {
+  const params = new URLSearchParams({ tool: 'vfbchat', email: NCBI_EMAIL })
+  if (NCBI_API_KEY) params.set('api_key', NCBI_API_KEY)
+  return params.toString()
+}
+
 async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
   maxResults = Math.min(Math.max(1, maxResults || 5), 20)
   const sortParam = sort === 'date' ? 'date' : 'relevance'
 
-  const searchUrl = `${NCBI_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=${sortParam}&retmode=json`
+  const searchUrl = `${NCBI_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=${sortParam}&retmode=json&${ncbiAuth()}`
   const searchRes = await fetch(searchUrl)
   if (!searchRes.ok) throw new Error(`PubMed search failed: ${searchRes.status}`)
   const searchData = await searchRes.json()
   const pmids = searchData.esearchresult?.idlist || []
 
   if (pmids.length === 0) {
-    return JSON.stringify({ results: [], total_found: searchData.esearchresult?.count || 0 })
+    return JSON.stringify({
+      results: [],
+      total_found: parseInt(searchData.esearchresult?.count || 0, 10),
+      note: 'PubMed returned no results for this exact query. This does NOT mean no literature exists on the topic — it usually means the query was too specific or the service was unavailable. Do not tell the user the topic is unstudied; either broaden the query (fewer/looser terms) and retry, or say a literature search returned nothing for that phrasing.'
+    })
   }
 
-  const summaryUrl = `${NCBI_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json`
+  const summaryUrl = `${NCBI_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json&${ncbiAuth()}`
   const summaryRes = await fetch(summaryUrl)
   if (!summaryRes.ok) throw new Error(`PubMed summary fetch failed: ${summaryRes.status}`)
   const summaryData = await summaryRes.json()
@@ -1935,7 +1951,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
 }
 
 async function getPubmedArticle(pmid) {
-  const fetchUrl = `${NCBI_BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}&retmode=xml`
+  const fetchUrl = `${NCBI_BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}&retmode=xml&${ncbiAuth()}`
   const fetchRes = await fetch(fetchUrl)
   if (!fetchRes.ok) throw new Error(`PubMed fetch failed: ${fetchRes.status}`)
   const xmlText = await fetchRes.text()
@@ -5278,6 +5294,7 @@ async function compareDownstreamTargetsTool(client, args = {}) {
       return {
         id: target.id,
         label: target.label,
+        aggregate_class: isLikelyAggregateConnectivityPartner(target) || undefined,
         source_count: target.sources.length,
         compared_source_count: resolvedSources.length,
         present_in_all_sources: resolvedSources.length > 0 && target.sources.length === resolvedSources.length,
@@ -5287,6 +5304,8 @@ async function compareDownstreamTargetsTool(client, args = {}) {
       }
     })
     .sort((a, b) => {
+      // Demote generic neuron superclasses (every neuron converges on them) below specific target types.
+      if (Boolean(a.aggregate_class) !== Boolean(b.aggregate_class)) return a.aggregate_class ? 1 : -1
       if (a.present_in_all_sources !== b.present_in_all_sources) return a.present_in_all_sources ? -1 : 1
       if (a.source_count !== b.source_count) return b.source_count - a.source_count
       if (a.summed_total_weight !== b.summed_total_weight) return b.summed_total_weight - a.summed_total_weight
@@ -5397,10 +5416,20 @@ async function compareDownstreamTargetsTool(client, args = {}) {
   })
 }
 
+// High-level neuron superclasses that every neuron rolls up into. They
+// accumulate the largest aggregate connectivity weights and would otherwise
+// dominate the ranked partners, so they are flagged as aggregate (not specific
+// partner types). Matches only the pure superclass labels, anchored, so
+// specific types like "mushroom body output neuron" are NOT flagged.
+const GENERIC_NEURON_SUPERCLASS_RE = /^(adult |larval |embryonic |juvenile )?(cns |central nervous system |central brain |peripheral nervous system |nervous system |brain |supr?aesophageal ganglion |sub[o]?esophageal ganglion |gnathal ganglion )?(neuron|interneuron|cns neuron)$/
+
 function isLikelyAggregateConnectivityPartner(summary = {}, partnerFilter = '') {
   const label = normalizeEndpointSearchText(summary.label || '')
   const filter = normalizeEndpointSearchText(partnerFilter)
   if (!label) return false
+
+  // Generic abstract neuron superclasses are always aggregate, regardless of filter.
+  if (GENERIC_NEURON_SUPERCLASS_RE.test(label)) return true
 
   if (filter.includes('dopaminergic') || /\bdans?\b/.test(filter)) {
     return label === 'adult dopaminergic neuron' ||
@@ -5408,7 +5437,7 @@ function isLikelyAggregateConnectivityPartner(summary = {}, partnerFilter = '') 
       label === 'mushroom body dopaminergic neuron'
   }
 
-  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic)\s+neuron\b/.test(label)
+  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic|octopaminergic|tyraminergic)\s+neuron\b/.test(label)
 }
 
 async function findConnectivityPartnersTool(client, args = {}) {
@@ -5641,7 +5670,7 @@ async function findConnectivityPartnersTool(client, args = {}) {
       ...(Number.isFinite(Number(partner.connected_n)) ? { connected_n: Number(partner.connected_n) } : {}),
       ...(Number.isFinite(Number(partner.total_n)) ? { total_n: Number(partner.total_n) } : {})
     })),
-    top_partners: topPartners.map(partner => ({
+    top_partners: [...specificPartners, ...aggregatePartners].map(partner => ({
       id: partner.id,
       label: partner.label,
       aggregate_class: isLikelyAggregateConnectivityPartner(partner, partnerFilter) || undefined,
