@@ -5437,7 +5437,7 @@ function isLikelyAggregateConnectivityPartner(summary = {}, partnerFilter = '') 
       label === 'mushroom body dopaminergic neuron'
   }
 
-  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic|octopaminergic|tyraminergic)\s+neuron\b/.test(label)
+  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic|octopaminergic|tyraminergic|aminergic|monoaminergic)\s+neuron\b/.test(label)
 }
 
 async function findConnectivityPartnersTool(client, args = {}) {
@@ -5508,9 +5508,15 @@ async function findConnectivityPartnersTool(client, args = {}) {
   }
   partnerRows.sort(compareConnectivityRowStrength)
 
-  const topPartners = partnerRows.slice(0, limit)
-  const aggregatePartners = topPartners.filter(partner => isLikelyAggregateConnectivityPartner(partner, partnerFilter))
-  const specificPartners = topPartners.filter(partner => !isLikelyAggregateConnectivityPartner(partner, partnerFilter))
+  // Split BEFORE limiting. Generic neuron superclasses ("neuron", "CNS neuron", …)
+  // aggregate every partner's weight and so fill the top of the ranking; slicing
+  // first would leave no specific partners. Take the top specific partners from
+  // the full list, then keep a few aggregate classes for context.
+  const specificPartnersAll = partnerRows.filter(partner => !isLikelyAggregateConnectivityPartner(partner, partnerFilter))
+  const aggregatePartnersAll = partnerRows.filter(partner => isLikelyAggregateConnectivityPartner(partner, partnerFilter))
+  const specificPartners = specificPartnersAll.slice(0, limit)
+  const aggregatePartners = aggregatePartnersAll.slice(0, Math.min(3, limit))
+  const topPartners = [...specificPartners, ...aggregatePartners]
 
   const partnerTargetBreakdown = []
   if (includePartnerTargets && topPartners.length > 0) {
