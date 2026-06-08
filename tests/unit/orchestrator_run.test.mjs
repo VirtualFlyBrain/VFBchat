@@ -135,6 +135,32 @@ test('term-info Description/Relationships answers function → no literature', a
   assert.ok(!deps.calls.tools.some(t => t.name === 'get_pubmed_article'), 'no paper fetch')
 })
 
+test('large result: question-aware map-reduce finds an answer past the first chunk', async () => {
+  // Result is > MAX_EXTRACT_CHARS; the answer sits after ~7000 chars of padding,
+  // so a blind first-chunk truncation would miss it. The map step must read each
+  // chunk given the question and still find it.
+  const bigResult = { padding: 'x'.repeat(7000), tail: 'ANSWER_MARKER the medulla has 10 layers M1-M10' }
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '', terms_to_resolve: [],
+    steps: [{ id: 's1', tool: 'vfb_query_connectivity', answers: ['how many medulla layers'] }]
+  }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // extractor only "answers" for the chunk that actually contains the marker
+      extract: (messages) => /ANSWER_MARKER/.test(messages[1].content)
+        ? { ok: true, value: { relevant: true, answered: true, claim: 'medulla has 10 layers', verbatim: 'M1-M10' } }
+        : { ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } }
+    },
+    tools: { vfb_query_connectivity: () => bigResult }
+  })
+  const r = await runHarness('How many layers does the medulla have?', deps)
+  assert.equal(r.ledger.plan[0].status, 'satisfied', 'late-chunk answer should satisfy the step')
+  assert.ok(r.ledger.evidence.some(e => /10 layers/.test(e.claim)))
+  // proves more than one extract call happened (chunked)
+  assert.ok(deps.calls.structured.filter(s => s === 'extract').length >= 2)
+})
+
 test('fast-path definitional question skips the planner call', async () => {
   const deps = makeDeps({ plan: null })
   const r = await runHarness('What is the mushroom body?', deps)
