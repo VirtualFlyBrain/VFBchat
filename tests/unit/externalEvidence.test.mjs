@@ -90,11 +90,23 @@ test('planRetrieval: VFB answered + no external ask → skip (escalation only)',
   assert.deepEqual(r, { documentation: false, literature: false, reasons: ['vfb-sufficient'] })
 })
 
-test('planRetrieval: function gap → literature escalation', () => {
-  const r = planRetrieval({ question: 'What is the function of PPL1?', vfbAnswered: false, vfbHasData: true, hasRefs: true })
-  assert.equal(r.literature, true)
+test('planRetrieval: function question WITH VFB data → no literature (VFB-first)', () => {
+  // VFB term-info Description usually answers function; do not escalate to papers.
+  const r = planRetrieval({ question: 'What is the function of PPL1?', vfbAnswered: true, vfbHasData: true, hasRefs: true })
+  assert.equal(r.literature, false)
   assert.equal(r.documentation, false)
-  assert.ok(r.reasons.includes('lit-gap'))
+})
+
+test('planRetrieval: function question with NO usable VFB data → literature last resort', () => {
+  const r = planRetrieval({ question: 'What is the function of PPL1?', vfbAnswered: false, vfbHasData: false, hasRefs: true })
+  assert.equal(r.literature, true)
+  assert.ok(r.reasons.includes('vfb-empty-fallback'))
+})
+
+test('planRetrieval: explicit "more detail" with VFB data → literature', () => {
+  const r = planRetrieval({ question: 'tell me more detail about PPL1 function', vfbAnswered: true, vfbHasData: true })
+  assert.equal(r.literature, true)
+  assert.ok(r.reasons.includes('wants-more-detail'))
 })
 
 test('planRetrieval: how-to question → documentation', () => {

@@ -109,6 +109,32 @@ test('VFB-empty function question → literature fallback adds literature eviden
   assert.ok(deps.calls.tools.some(t => t.name === 'get_pubmed_article'))
 })
 
+test('term-info Description/Relationships answers function → no literature', async () => {
+  const PPL1_DESC = 'A dopaminergic neuron whose cell body is located in a cluster of approximately 12 cell bodies in the cortex of the posterior inferior lateral protocerebrum of the adult brain, immediately lateral to the mushroom body calyx. Members project to various parts of the mushroom body (Mao and Davis, 2009).'
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '', terms_to_resolve: ['PPL1'],
+    steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['function/anatomy of PPL1'] }]
+  }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // any VFB extract (not a paper) answers from the Description
+      extract: (messages) => /PAPER \(/.test(messages[1].content)
+        ? { ok: true, value: { relevant: true, answered: true, claim: 'paper claim', verbatim: 'x' } }
+        : { ok: true, value: { relevant: true, answered: true, claim: 'PPL1 is a dopaminergic MB neuron', verbatim: 'dopaminergic neuron' } },
+      repair: (tool) => ({ ok: true, value: tool === 'vfb_get_term_info' ? { id: 'FBbt_00047509' } : {} })
+    },
+    tools: {
+      vfb_get_term_info: () => ({ Meta: { Description: PPL1_DESC, Relationships: ['capable of: dopaminergic signalling'] }, Publications: [{ PubMed: '19although', microref: 'Mao 2009' }] })
+    }
+  })
+  const r = await runHarness('What is the function of PPL1?', deps)
+  const sources = r.ledger.evidence.map(e => e.source)
+  assert.ok(sources.includes('vfb'), 'should have VFB evidence from term-info')
+  assert.ok(!sources.includes('literature'), 'must NOT escalate to literature when VFB answered')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'get_pubmed_article'), 'no paper fetch')
+})
+
 test('fast-path definitional question skips the planner call', async () => {
   const deps = makeDeps({ plan: null })
   const r = await runHarness('What is the mushroom body?', deps)
