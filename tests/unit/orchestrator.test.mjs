@@ -110,8 +110,9 @@ test('buildPlannerMessages: includes question + catalogue, instructs not to answ
 test('detectFastPath: definitional lookup yes; tool-specific / multi-step no', () => {
   assert.ok(detectFastPath('What is the mushroom body?'))
   assert.ok(detectFastPath('What are the subdivisions of the central complex?'))
-  // needs a specific tool (neurotransmitter profile), not the generic fast path
+  // needs a specific tool / role, not the generic fast path
   assert.equal(detectFastPath('What neurotransmitter do Kenyon cells use?'), null)
+  assert.equal(detectFastPath('What is the function of PPL1?'), null)
   assert.equal(detectFastPath('What connects the antennal lobe to the lateral horn?'), null)
   assert.equal(detectFastPath('Trace a pathway from ORNs to the lateral horn'), null)
 })
