@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { extractPublicationRefs, hasPublicationRefs, bestRefUrl } from '../../lib/literatureRefs.mjs'
 import {
   EXTRACT_SCHEMA, buildDocExtractMessages, buildLiteratureExtractMessages,
-  buildEvidenceRow, needsDocumentation, needsLiterature
+  buildEvidenceRow, needsDocumentation, needsLiterature, planRetrieval
 } from '../../lib/externalEvidence.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
 
@@ -83,4 +83,33 @@ test('needsLiterature: function/evidence yes; refs+detail yes; plain lookup no',
   assert.equal(needsLiterature('what is its role in memory'), true)
   assert.equal(needsLiterature('tell me more detail', true), true)
   assert.equal(needsLiterature('what is the mushroom body', false), false)
+})
+
+test('planRetrieval: VFB answered + no external ask → skip (escalation only)', () => {
+  const r = planRetrieval({ question: 'What is the function of PPL1?', vfbAnswered: true, vfbHasData: true })
+  assert.deepEqual(r, { documentation: false, literature: false, reasons: ['vfb-sufficient'] })
+})
+
+test('planRetrieval: function gap → literature escalation', () => {
+  const r = planRetrieval({ question: 'What is the function of PPL1?', vfbAnswered: false, vfbHasData: true, hasRefs: true })
+  assert.equal(r.literature, true)
+  assert.equal(r.documentation, false)
+  assert.ok(r.reasons.includes('lit-gap'))
+})
+
+test('planRetrieval: how-to question → documentation', () => {
+  const r = planRetrieval({ question: 'How do I download VFB images?', vfbAnswered: false })
+  assert.equal(r.documentation, true)
+})
+
+test('planRetrieval: explicit paper request always escalates literature', () => {
+  const r = planRetrieval({ question: 'show me the papers on this', vfbAnswered: true, vfbHasData: true })
+  assert.equal(r.literature, true)
+  assert.ok(r.reasons.includes('explicit-literature'))
+})
+
+test('planRetrieval: VFB empty → literature fallback (do not dead-stop)', () => {
+  const r = planRetrieval({ question: 'What connects to the antennal lobe?', vfbAnswered: false, vfbHasData: false })
+  assert.equal(r.literature, true)
+  assert.ok(r.reasons.includes('vfb-empty-fallback'))
 })
