@@ -5,7 +5,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText, unwrapTermInfo } from '../../lib/termInfoDigest.mjs'
+import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText, unwrapTermInfo, parseReplacedBy, isDeprecatedRecord } from '../../lib/termInfoDigest.mjs'
 
 // Trimmed mushroom-body-shaped fixture (mirrors the live MCP payload).
 const MB = {
@@ -66,6 +66,34 @@ test('unwrapTermInfo handles the multi-id MCP batch-keyed and array formats', ()
   assert.equal(unwrapTermInfo({ response: { docs: [] } }), null)             // not term-info
   // the digest builds correctly from a keyed payload
   assert.equal(termInfoToDigestText({ FBbt_00007053: rec }).startsWith('adult lateral horn'), true)
+})
+
+test('parseReplacedBy reads replacement from field variants and Relationships', () => {
+  // string markdown field
+  assert.deepEqual(parseReplacedBy({ replaced_by: '[adult lateral horn](FBbt_00007053)' }), { label: 'adult lateral horn', id: 'FBbt_00007053' })
+  // bare id string
+  assert.deepEqual(parseReplacedBy({ replacedBy: 'FBbt_00007053' }), { label: '', id: 'FBbt_00007053' })
+  // object form
+  assert.deepEqual(parseReplacedBy({ replaced_by: { id: 'FBbt_00007053', label: 'adult lateral horn' } }), { label: 'adult lateral horn', id: 'FBbt_00007053' })
+  // IAO_0100001 inside Meta.Relationships
+  assert.deepEqual(
+    parseReplacedBy({ Meta: { Relationships: '[term replaced by](IAO_0100001): [adult lateral horn](FBbt_00007053)' } }),
+    { label: 'adult lateral horn', id: 'FBbt_00007053' }
+  )
+  // a live term with ordinary relationships yields no replacement
+  assert.equal(parseReplacedBy({ Meta: { Relationships: '[continuous with](RO_0002150): [adult lateral horn](FBbt_00007053)' } }), null)
+  assert.equal(parseReplacedBy({}), null)
+})
+
+test('isDeprecatedRecord flags obsolete records, not live ones', () => {
+  assert.equal(isDeprecatedRecord({ SuperTypes: ['Class', 'Deprecated'] }), true)
+  assert.equal(isDeprecatedRecord({ Meta: { Description: 'This term is obsolete.' } }), true)
+  assert.equal(isDeprecatedRecord({ replaced_by: 'FBbt_00007053' }), true)
+  // a normal live record (the FBbt_00007647 shape) is not flagged
+  assert.equal(isDeprecatedRecord({
+    SuperTypes: ['Entity', 'Class', 'Adult', 'Anatomy', 'Nervous_system'],
+    Meta: { Description: 'The region of the adult brain cell body rind that overlies the lateral horn.', Relationships: '[continuous with](RO_0002150): [adult lateral horn](FBbt_00007053)' }
+  }), false)
 })
 
 test('digest name uses the full canonical label, not a short symbol', () => {

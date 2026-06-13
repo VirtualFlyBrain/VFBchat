@@ -8175,7 +8175,11 @@ async function executeFunctionTool(name, args, context = {}) {
       }
     }
 
-    if (name === 'vfb_get_term_info' && hasNonEmptyToolValue(cleanArgs.id)) {
+    // Primary-id repair only applies to ids the weak model invented in the legacy
+    // tool-calling loop. Harness calls carry an authoritative pickBestTermId id,
+    // so skip repair for them — running it can rewrite a correct id to a
+    // deprecated one (e.g. FBbt_00007053 -> FBbt_00007647).
+    if (name === 'vfb_get_term_info' && !context.fromHarness && hasNonEmptyToolValue(cleanArgs.id)) {
       const taxonomyRepair = maybeRepairPrimaryTermIdForTaxonomy(cleanArgs, context)
       if (!taxonomyRepair) {
         const phraseRepair = await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
@@ -8187,7 +8191,7 @@ async function executeFunctionTool(name, args, context = {}) {
 
     if (name === 'vfb_run_query') {
       normalizeVfbRunQueryArgs(cleanArgs)
-      if (hasNonEmptyToolValue(cleanArgs.id)) {
+      if (!context.fromHarness && hasNonEmptyToolValue(cleanArgs.id)) {
         const taxonomyRepair = maybeRepairPrimaryTermIdForTaxonomy(cleanArgs, context)
         if (!taxonomyRepair) {
           const phraseRepair = await repairPrimaryTermIdFromUserPhrase({ client, cleanArgs, context })
@@ -10522,7 +10526,13 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     lastTermInfo: null,
     lastTermSearch: null
   }
-  const ctx = { userMessage, mcpClients, dataResourceStore, toolState }
+  // fromHarness marks every tool call as harness-originated. The role-loop
+  // harness resolves term ids authoritatively via pickBestTermId (VFB search),
+  // so the legacy primary-id "repair" heuristics — which existed to correct ids
+  // the weak model invented in the old tool-calling loop — must NOT run: they
+  // second-guess an already-correct id and can land on a deprecated term (e.g.
+  // rewriting adult lateral horn FBbt_00007053 -> obsolete FBbt_00007647).
+  const ctx = { userMessage, mcpClients, dataResourceStore, toolState, fromHarness: true }
   let responseId = null
 
   try {
@@ -10571,10 +10581,20 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // report pages with a hover tooltip — restores inline term links without the
     // model writing ids into the prose — then turn quoted query counts into links
     // that open that query's data in VFB.
-    const answerText = linkifyCounts(
+    const answerBody = linkifyCounts(
       linkifyKnownTerms(rawAnswer, live.termLinks || []),
       live.countLinks || []
     )
+    // If a term the user asked for is deprecated and VFB redirected it to a
+    // current term, prepend a short note so the user knows they were pointed at
+    // the replacement (the replacement label is linkified inline below).
+    const supersededNotes = (live.terms || [])
+      .filter(t => t && t.superseded && t.superseded.fromId)
+      .map(t => `${t.superseded.fromLabel || t.superseded.fromId} (${t.superseded.fromId}) is deprecated in VFB; showing its current replacement, ${t.label}.`)
+    const dedupNotes = [...new Set(supersededNotes)]
+    const answerText = dedupNotes.length
+      ? `_Note: ${dedupNotes.join(' ')}_\n\n${answerBody}`
+      : answerBody
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,

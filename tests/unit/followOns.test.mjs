@@ -30,7 +30,7 @@ test('buildFollowOns derives ask chips from real queries + an open-in-VFB chip +
   assert.equal(terms[0].id, 'FBbt_00005801')
   assert.equal(terms[0].label, 'mushroom body')
   // source links to the term report (provenance for "(vfb)")
-  assert.deepEqual(sources, [{ label: 'mushroom body', url: 'https://www.virtualflybrain.org/reports/FBbt_00005801', id: 'FBbt_00005801' }])
+  assert.deepEqual(sources, [{ label: 'mushroom body', url: 'https://www.virtualflybrain.org/reports/FBbt_00005801', id: 'FBbt_00005801', superseded: null }])
   // ask chip from the highest-count query, with a clear title and a runnable query
   const ask = chips.find(c => c.kind === 'ask')
   assert.match(ask.query, /input to mushroom body/)
@@ -42,6 +42,17 @@ test('buildFollowOns derives ask chips from real queries + an open-in-VFB chip +
   assert.match(vfb.title, /new tab/)
   // zero-count query (Images) produced no ask chip
   assert.ok(!chips.some(c => c.kind === 'ask' && /image/i.test(c.query || '')))
+})
+
+test('buildFollowOns carries a superseded note from a deprecated->replacement redirect', () => {
+  const ledger = ledgerWith({
+    name: 'adult lateral horn', id: 'FBbt_00007053', label: 'adult lateral horn',
+    digest: { name: 'adult lateral horn', queries: [] },
+    superseded: { fromId: 'FBbt_00099999', fromLabel: 'old lateral horn' }
+  })
+  const { terms, sources } = buildFollowOns(ledger)
+  assert.deepEqual(terms[0].superseded, { fromId: 'FBbt_00099999', fromLabel: 'old lateral horn' })
+  assert.deepEqual(sources[0].superseded, { fromId: 'FBbt_00099999', fromLabel: 'old lateral horn' })
 })
 
 test('stripMarkdown turns "[label](url)" into plain "label"', () => {
