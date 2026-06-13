@@ -168,3 +168,72 @@ test('fast-path definitional question skips the planner call', async () => {
   assert.equal(r.answer, 'FINAL ANSWER')
   assert.ok(deps.calls.tools.some(t => t.name === 'vfb_search_terms'))
 })
+
+test('broaden ladder: a failing connectivity tool is recovered from the term digest', async () => {
+  const MEDULLA = {
+    Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' },
+    Queries: [{ query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in medulla', count: 120,
+      preview_results: { rows: [{ label: '[Tm1](FBbt_1)' }, { label: '[Tm2](FBbt_2)' }] } }]
+  }
+  const plan = {
+    intent: 'region_connections', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'],
+    steps: [{ id: 's1', tool: 'vfb_query_connectivity', answers: ['what connects in the medulla'] }]
+  }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // answer only when shown the digest (Available VFB data); never for an error blob
+      extract: (messages) => /Available VFB data/.test(messages[1].content)
+        ? { ok: true, value: { relevant: true, answered: true, claim: 'medulla has 120 presynaptic neuron types', verbatim: 'Tm1, Tm2' } }
+        : { ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } },
+      repair: () => ({ ok: true, value: { upstream_type: 'medulla' } })
+    },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => MEDULLA,
+      vfb_query_connectivity: () => ({ error: 'anatomical regions are not accepted' })
+    }
+  })
+  const r = await runHarness('What does the medulla connect to?', deps)
+  assert.equal(r.ledger.plan[0].status, 'satisfied', 'step should be satisfied via the digest fallback')
+  assert.ok(r.ledger.evidence.some(e => e.via === 'digest'), 'evidence should be tagged as recovered via digest')
+})
+
+test('region "inputs" question: term-info Queries digest reaches the extractor with counts', async () => {
+  // P0 regression: "main input neurons to X" must be answerable from the
+  // term-info NeuronsPresynapticHere preview (count + examples), not dead-end.
+  const TERM_INFO = {
+    Name: 'mushroom body', Id: 'FBbt_00005801',
+    Meta: { Description: 'A neuropil ...' },
+    Queries: [{ query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in mushroom body', count: 367,
+      preview_results: { rows: [{ label: '[Li38](FBbt_20011419)' }, { label: '[Li39](FBbt_20011420)' }] } }]
+  }
+  const plan = {
+    intent: 'region_connections', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['mushroom body'],
+    steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['main input neurons to the mushroom body'] }]
+  }
+  let sawDigest = false
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // only "answer" when the extractor is shown the digest with the 367 count
+      extract: (messages) => {
+        if (/Neurons with presynaptic terminals in mushroom body: 367/.test(messages[1].content)) {
+          sawDigest = true
+          return { ok: true, value: { relevant: true, answered: true, claim: '367 neurons provide input', verbatim: 'Li38, Li39' } }
+        }
+        return { ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } }
+      },
+      repair: () => ({ ok: true, value: { id: 'FBbt_00005801' } })
+    },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00005801', label: 'mushroom body' }] } }),
+      vfb_get_term_info: () => TERM_INFO
+    }
+  })
+  const r = await runHarness('What are the main input neurons to the mushroom body?', deps)
+  assert.ok(sawDigest, 'extractor must see the digest with the 367 count')
+  assert.ok(r.ledger.evidence.some(e => /input/.test(e.claim)), 'should have VFB evidence, not dead-end')
+})

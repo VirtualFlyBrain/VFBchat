@@ -10600,11 +10600,17 @@ async function requestNoToolFallbackResponse({
 // Stream a tool-free synthesis completion, emitting `delta` events so the answer
 // types out in the UI, and return the full text. Captures the upstream response id.
 async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId }) {
-  const res = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-    body: JSON.stringify({ model, messages, stream: true })
-  })
+  let res
+  try {
+    res = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+      body: JSON.stringify({ model, messages, stream: true })
+    })
+  } catch {
+    // Network failure reaching ELM — degrade rather than crash the request.
+    return ''
+  }
 
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => '')
@@ -10704,8 +10710,14 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       }
     }
 
+    // Guard against an empty synthesis (e.g. ELM unreachable mid-request): never
+    // emit a blank answer — say plainly what happened instead of crashing.
+    const answerText = (typeof live.answer === 'string' && live.answer.trim())
+      ? live.answer
+      : 'I could not complete the answer just now (the language service did not respond). Please try again in a moment.'
+
     const built = buildSuccessfulTextResult({
-      responseText: live.answer,
+      responseText: answerText,
       responseId,
       toolUsage: live.toolUsage,
       toolRounds: live.toolRounds,
