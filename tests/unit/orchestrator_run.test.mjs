@@ -199,6 +199,14 @@ test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase n
   assert.equal(pickBestTermId(search, 'lateral horn neurons'), 'FBbt_00007053')
   // SINGULAR "lateral horn neuron" = the class
   assert.equal(pickBestTermId(search, 'lateral horn neuron'), 'FBbt_00048293')
+  // STAGE-QUALIFIED PLURAL "adult lateral horn neurons" matches the named class
+  // "adult lateral horn neuron" once singularised -> the class wins over the
+  // region rule (the user asked about the neuron type, not the region).
+  assert.equal(pickBestTermId(search, 'adult lateral horn neurons'), 'FBbt_00048293')
+  // and the singular stage-qualified form is the same class
+  assert.equal(pickBestTermId(search, 'adult lateral horn neuron'), 'FBbt_00048293')
+  // while the stage-qualified region itself still resolves to the region
+  assert.equal(pickBestTermId(search, 'adult lateral horn'), 'FBbt_00007053')
 })
 
 test('plural cell phrase with no matching region resolves to the cell class', () => {
