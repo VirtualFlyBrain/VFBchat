@@ -55,6 +55,17 @@ test('buildTermInfoDigest extracts description, queries (count+examples), pubs',
   assert.equal(d.publications[0].pmid, '20011144')
 })
 
+test('digest name uses the full canonical label, not a short symbol', () => {
+  // VFB sometimes returns a short symbol in Name (e.g. "LHN"); the displayed
+  // label must be the full term so it matches the resolved id.
+  const d = buildTermInfoDigest({
+    Name: 'LHN', Id: 'FBbt_00048293',
+    Meta: { Name: '[adult lateral horn neuron](FBbt_00048293)', Description: 'x' },
+    Queries: []
+  })
+  assert.equal(d.name, 'adult lateral horn neuron')
+})
+
 test('digestToText renders the available-data block with counts (answers "inputs to X")', () => {
   const text = termInfoToDigestText(MB)
   assert.match(text, /Available VFB data/)
