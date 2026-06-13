@@ -112,8 +112,11 @@ test('buildCountLinks + linkifyCounts turn quoted counts into VFB query links', 
   ] } } } }
   const counts = buildCountLinks(ledger)
   assert.equal(counts[0].count, 226524) // largest first
+  // query links RUN the query in the v2 browser and carry a quote-free title
+  assert.equal(counts[0].url, 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003748,ImagesNeurons')
+  assert.ok(!/"/.test(counts[0].title), 'title must not contain double quotes')
   const out = linkifyCounts('There are 226,524 images and 471 neurons; also 999 unrelated.', counts)
-  assert.match(out, /\[226,524\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003748 "View "Images of neurons with some part in medulla" in VFB"\)/)
+  assert.match(out, /\[226,524\]\(https:\/\/v2\.virtualflybrain\.org\/org\.geppetto\.frontend\/geppetto\?q=FBbt_00003748,ImagesNeurons "Run in VFB: [^"]*"\)/)
   assert.match(out, /\[471\]\(/)
   // a number that is not a known count is left alone
   assert.match(out, /also 999 unrelated/)
