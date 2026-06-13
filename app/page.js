@@ -624,6 +624,7 @@ export default function Home() {
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
+  const streamingMsgIdRef = useRef(null) // id of the assistant bubble being streamed
   const initialSendFired = useRef(false) // prevent double-send from StrictMode
 
   // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
@@ -877,6 +878,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const decoder = new TextDecoder()
       let buffer = ''
       let currentEvent = ''
+      streamingMsgIdRef.current = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -902,18 +904,43 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 })
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
+              } else if (currentEvent === 'delta') {
+                // Stream synthesis tokens into a single live assistant bubble.
+                const chunk = data.text || ''
+                if (!chunk) { /* nothing to append */ }
+                else if (streamingMsgIdRef.current == null) {
+                  const msg = { id: ++msgIdRef.current, role: 'assistant', content: chunk, streaming: true }
+                  streamingMsgIdRef.current = msg.id
+                  setMessages(prev => [...prev, msg])
+                  setThinkingSteps(prev => prev.map(s => ({ ...s, done: true })))
+                } else {
+                  const id = streamingMsgIdRef.current
+                  setMessages(prev => prev.map(m => m.id === id ? { ...m, content: m.content + chunk } : m))
+                }
               } else if (currentEvent === 'result') {
-                setMessages(prev => [...prev, makeMsg('assistant', data.response, {
+                // Finalise: replace the streamed bubble (linkified, with images/graphs)
+                // or, if nothing streamed, append a fresh assistant message.
+                const finalMsg = makeMsg('assistant', data.response, {
                   images: data.images,
                   graphs: data.graphs,
                   requestId: data.requestId,
                   responseId: data.responseId
-                })])
+                })
+                const streamId = streamingMsgIdRef.current
+                if (streamId != null) {
+                  setMessages(prev => prev.map(m => m.id === streamId
+                    ? { ...finalMsg, id: streamId }
+                    : m))
+                } else {
+                  setMessages(prev => [...prev, finalMsg])
+                }
+                streamingMsgIdRef.current = null
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
                 fetchRateInfo()
                 return
               } else if (currentEvent === 'error') {
+                streamingMsgIdRef.current = null
                 setMessages(prev => [...prev, makeMsg('assistant', data.message, {
                   requestId: data.requestId,
                   responseId: data.responseId
