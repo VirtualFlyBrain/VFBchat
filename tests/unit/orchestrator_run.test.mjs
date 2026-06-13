@@ -204,6 +204,9 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(synthMessages, 'synth ran')
   assert.match(synthMessages[1].content, /AVAILABLE VFB DATA/)
   assert.match(synthMessages[1].content, /Neurons with presynaptic terminals in medulla \(262\)/)
+  // the synthesiser must NOT be given the resolved id — a weak model writes ids
+  // and mislinks. Linking is done deterministically by the backend registry.
+  assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
 test('broaden ladder: a failing connectivity tool is recovered from the term digest', async () => {
