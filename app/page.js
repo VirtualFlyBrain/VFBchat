@@ -552,10 +552,11 @@ const ChatMessage = memo(function ChatMessage({
                   <tbody>
                     {(tbl.rows || []).map((r, ri) => (
                       <tr key={ri} style={{ borderTop: ri ? '1px solid #1a1a1a' : 'none' }}>
-                        <td style={{ width: '56px', padding: '4px 8px', verticalAlign: 'middle' }}>
+                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
                           {r.thumbnail ? (
                             <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`}>
-                              <img src={r.thumbnail} alt={r.name} style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: '3px', border: '1px solid #333' }} />
+                              {/* Constrain HEIGHT only — the whole image shows, not a square crop. */}
+                              <img src={r.thumbnail} alt={r.name} style={{ maxHeight: '48px', borderRadius: '3px', border: '1px solid #333', display: 'block' }} />
                             </a>
                           ) : null}
                         </td>
@@ -590,12 +591,11 @@ const ChatMessage = memo(function ChatMessage({
                 src={img.thumbnail}
                 alt={img.label}
                 style={{
-                  width: '80px',
-                  height: '80px',
-                  objectFit: 'cover',
+                  maxHeight: '80px',
                   border: '1px solid #444',
                   borderRadius: '4px',
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  display: 'block'
                 }}
                 title={img.label}
               />
