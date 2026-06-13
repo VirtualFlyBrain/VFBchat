@@ -236,6 +236,25 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
+test('term-info returned for the WRONG id is discarded (no poisoned digest)', async () => {
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['lateral horn'], steps: []
+  }
+  const deps = makeDeps({
+    plan,
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00007053', label: 'adult lateral horn', facets_annotation: ['Anatomy', 'Synaptic_neuropil'] }] } }),
+      // VFB returns a DIFFERENT term's info (the cell-body-rind, FBbt_00007647)
+      vfb_get_term_info: () => ({ Name: 'cell body rind of adult lateral horn', Id: 'FBbt_00007647', Meta: { Name: '[cell body rind of adult lateral horn](FBbt_00007647)', Description: 'x' }, Queries: [{ query: 'NeuronsPartHere', label: 'wrong', count: 9, preview_results: { rows: [] } }] })
+    }
+  })
+  const r = await runHarness('Tell me about the lateral horn', deps)
+  const t = r.ledger.terms['lateral horn']
+  assert.equal(t.id, 'FBbt_00007053', 'id from the search is kept')
+  assert.equal(t.digest, null, 'mismatched term-info digest is discarded')
+})
+
 test('broaden ladder: a failing connectivity tool is recovered from the term digest', async () => {
   const MEDULLA = {
     Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' },
