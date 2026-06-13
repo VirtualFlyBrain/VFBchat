@@ -1040,7 +1040,10 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
       return await client.callTool({ name, arguments: args }, undefined, VFB_MCP_CALL_OPTIONS)
     } catch (error) {
       lastError = error
-      if (attempt >= retries || !isTransientMcpError(error)) throw error
+      const transient = isTransientMcpError(error)
+      // Detailed failure report to stdout (container log) for every failed call.
+      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | args=${JSON.stringify(args).slice(0, 300)} | error=${error?.message || error}`)
+      if (attempt >= retries || !transient) throw error
       const wait = 1000 * (attempt + 1) + Math.floor(Math.random() * 2000) // ~1-3s, growing
       await new Promise(resolve => setTimeout(resolve, wait))
     }
