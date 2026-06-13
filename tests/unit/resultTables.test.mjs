@@ -62,6 +62,15 @@ test('buildTables still surfaces a table when the question names the query (expr
   assert.match(tables[0].title, /Expression patterns/)
 })
 
+test('buildTables: a genetic-tools question surfaces the expression table, not neuron/image', () => {
+  // "neurons" lexically matches the neuron query, but the intent is drivers — the
+  // expression/transgene table must win and the neuron table must be dropped.
+  const tables = buildTables(ledgerWithRows(), 'What genetic tools / GAL4 lines label mushroom body neurons?')
+  assert.ok(tables.length >= 1)
+  assert.match(tables[0].title, /Expression patterns/)
+  assert.ok(!tables.some(t => /Neurons with some part/.test(t.title)), 'neuron list must be suppressed for a tools question')
+})
+
 test('isListQuestion distinguishes list/image questions from definitional ones', () => {
   assert.equal(isListQuestion('What neurons are in the lateral horn?'), true)
   assert.equal(isListQuestion('Show me images of the medulla'), true)

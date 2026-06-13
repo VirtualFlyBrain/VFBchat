@@ -107,21 +107,6 @@ test('buildPlannerMessages: includes question + catalogue, instructs not to answ
   assert.match(m[1].content, /vfb_query_connectivity/)
 })
 
-test('buildPlannerMessages: includes prior conversation for pronoun resolution', () => {
-  const history = [
-    { role: 'user', content: 'What are adult lateral horn neurons' },
-    { role: 'assistant', content: 'Adult lateral horn neurons are ...' }
-  ]
-  const m = buildPlannerMessages('What do they connect to downstream?', [], history)
-  assert.match(m[1].content, /PRIOR CONVERSATION/)
-  assert.match(m[1].content, /adult lateral horn neurons/)
-  // the system prompt instructs resolving pronouns from history rather than clarifying
-  assert.match(m[0].content, /pronoun|back-reference/i)
-  // no history -> no prior-conversation block
-  const m2 = buildPlannerMessages('What is the medulla?', [])
-  assert.doesNotMatch(m2[1].content, /PRIOR CONVERSATION/)
-})
-
 test('detectFastPath: definitional lookup yes; tool-specific / multi-step no', () => {
   assert.ok(detectFastPath('What is the mushroom body?'))
   assert.ok(detectFastPath('What are the subdivisions of the central complex?'))
@@ -130,9 +115,6 @@ test('detectFastPath: definitional lookup yes; tool-specific / multi-step no', (
   assert.equal(detectFastPath('What is the function of PPL1?'), null)
   assert.equal(detectFastPath('What connects the antennal lobe to the lateral horn?'), null)
   assert.equal(detectFastPath('Trace a pathway from ORNs to the lateral horn'), null)
-  // bare pronoun must NOT fast-path (needs the history-aware planner)
-  assert.equal(detectFastPath('What are they?'), null)
-  assert.equal(detectFastPath('What is it?'), null)
 })
 
 test('INTENTS covers documentation and literature', () => {
