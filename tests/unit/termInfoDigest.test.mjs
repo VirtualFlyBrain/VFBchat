@@ -5,7 +5,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText } from '../../lib/termInfoDigest.mjs'
+import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText, unwrapTermInfo } from '../../lib/termInfoDigest.mjs'
 
 // Trimmed mushroom-body-shaped fixture (mirrors the live MCP payload).
 const MB = {
@@ -53,6 +53,19 @@ test('buildTermInfoDigest extracts description, queries (count+examples), pubs',
   assert.equal(pre.count, 367)
   assert.deepEqual(pre.examples, ['Li38', 'Li39'])
   assert.equal(d.publications[0].pmid, '20011144')
+})
+
+test('unwrapTermInfo handles the multi-id MCP batch-keyed and array formats', () => {
+  const rec = { Name: 'adult lateral horn', Id: 'FBbt_00007053', SuperTypes: ['Class'], Meta: { Name: '[adult lateral horn](FBbt_00007053)' }, Queries: [] }
+  assert.equal(unwrapTermInfo(rec), rec)                                    // already flat
+  assert.equal(unwrapTermInfo({ FBbt_00007053: rec }, 'FBbt_00007053'), rec) // batch-keyed
+  assert.equal(unwrapTermInfo([rec], 'FBbt_00007053'), rec)                  // array
+  // keyed with several entries: prefer the requested id
+  const other = { Name: 'x', Id: 'FBbt_00009999', Meta: {}, Queries: [] }
+  assert.equal(unwrapTermInfo({ FBbt_00009999: other, FBbt_00007053: rec }, 'FBbt_00007053'), rec)
+  assert.equal(unwrapTermInfo({ response: { docs: [] } }), null)             // not term-info
+  // the digest builds correctly from a keyed payload
+  assert.equal(termInfoToDigestText({ FBbt_00007053: rec }).startsWith('adult lateral horn'), true)
 })
 
 test('digest name uses the full canonical label, not a short symbol', () => {
