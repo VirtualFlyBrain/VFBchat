@@ -187,16 +187,27 @@ test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase n
   // "lateral horn" has no exact VFB label (they are stage-qualified). The neuron
   // is ranked first, but we must pick the region "adult lateral horn".
   const search = { response: { docs: [
-    { short_form: 'FBbt_00110058', label: 'adult lateral horn Leucokinin neuron', synonym: [] },
-    { short_form: 'FBbt_00007647', label: 'cell body rind of adult lateral horn', synonym: ['rLH'] },
-    { short_form: 'FBbt_00007053', label: 'adult lateral horn', synonym: ['LH'] },
-    { short_form: 'FBbt_00048293', label: 'adult lateral horn neuron', synonym: ['LHN'] }
+    { short_form: 'FBbt_00110058', label: 'adult lateral horn Leucokinin neuron', synonym: [], facets_annotation: ['Anatomy', 'Neuron', 'Cell'] },
+    { short_form: 'FBbt_00007647', label: 'cell body rind of adult lateral horn', synonym: ['rLH'], facets_annotation: ['Anatomy'] },
+    { short_form: 'FBbt_00007053', label: 'adult lateral horn', synonym: ['LH'], facets_annotation: ['Anatomy', 'Synaptic_neuropil'] },
+    { short_form: 'FBbt_00048293', label: 'adult lateral horn neuron', synonym: ['LHN'], facets_annotation: ['Anatomy', 'Neuron', 'Cell'] }
   ] } }
   // region: shortest label containing {lateral, horn}
   assert.equal(pickBestTermId(search, 'lateral horn'), 'FBbt_00007053')
-  // multi-word: "lateral horn neurons" (plural) -> the neuron class, not the
-  // cell body rind or the Leucokinin neuron
-  assert.equal(pickBestTermId(search, 'lateral horn neurons'), 'FBbt_00048293')
+  // PLURAL "lateral horn neurons" = the result set -> resolve the REGION (its
+  // neuron query is surfaced via chips/tables), not a single neuron class
+  assert.equal(pickBestTermId(search, 'lateral horn neurons'), 'FBbt_00007053')
+  // SINGULAR "lateral horn neuron" = the class
+  assert.equal(pickBestTermId(search, 'lateral horn neuron'), 'FBbt_00048293')
+})
+
+test('plural cell phrase with no matching region resolves to the cell class', () => {
+  const search = { response: { docs: [
+    { short_form: 'FBbt_00003686', label: 'Kenyon cell', synonym: ['KC'], facets_annotation: ['Anatomy', 'Neuron', 'Cell'] },
+    { short_form: 'FBbt_00100247', label: 'gamma Kenyon cell', synonym: [], facets_annotation: ['Anatomy', 'Neuron', 'Cell'] }
+  ] } }
+  // no region named "Kenyon", so "Kenyon cells" -> the cell class
+  assert.equal(pickBestTermId(search, 'Kenyon cells'), 'FBbt_00003686')
 })
 
 test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', async () => {
