@@ -22,6 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
+import { linkifyKnownTerms } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
 import {
@@ -10681,7 +10682,10 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
 
   try {
     const live = await runLiveHarness({
-      question: resolvedUserMessage,
+      // Plain user text — NOT the link-injected version, so the fast-path /
+      // planner resolve clean term names (markdown links were leaking into the
+      // resolved term and then into the follow-on chip text).
+      question: userMessage,
       history: priorMessages,
       apiBaseUrl,
       apiKey,
@@ -10714,9 +10718,13 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
 
     // Guard against an empty synthesis (e.g. ELM unreachable mid-request): never
     // emit a blank answer — say plainly what happened instead of crashing.
-    const answerText = (typeof live.answer === 'string' && live.answer.trim())
+    const rawAnswer = (typeof live.answer === 'string' && live.answer.trim())
       ? live.answer
       : 'I could not complete the answer just now (the language service did not respond). Please try again in a moment.'
+    // Linkify known VFB term names (resolved terms + example neurons) to their
+    // report pages with a hover tooltip — restores inline term links without the
+    // model writing ids into the prose.
+    const answerText = linkifyKnownTerms(rawAnswer, live.termLinks || [])
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,
