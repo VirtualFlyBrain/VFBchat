@@ -539,6 +539,48 @@ const ChatMessage = memo(function ChatMessage({
           ))}
         </div>
       )}
+      {/* Scrollable result tables (detailed query results with thumbnails). */}
+      {msg.role === 'assistant' && Array.isArray(msg.tables) && msg.tables.length > 0 && (
+        <div style={{ marginTop: '10px' }}>
+          {msg.tables.map((tbl, ti) => (
+            <div key={`tbl-${ti}`} style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
+              <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
+                {tbl.title}{typeof tbl.count === 'number' ? ` — ${tbl.count} result${tbl.count === 1 ? '' : 's'}` : ''}
+              </div>
+              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
+                  <tbody>
+                    {(tbl.rows || []).map((r, ri) => (
+                      <tr key={ri} style={{ borderTop: ri ? '1px solid #1a1a1a' : 'none' }}>
+                        <td style={{ width: '56px', padding: '4px 8px', verticalAlign: 'middle' }}>
+                          {r.thumbnail ? (
+                            <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`}>
+                              <img src={r.thumbnail} alt={r.name} style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: '3px', border: '1px solid #333' }} />
+                            </a>
+                          ) : null}
+                        </td>
+                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
+                          <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
+                          {Array.isArray(r.tags) && r.tags.length > 0 && (
+                            <div style={{ color: '#777', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {tbl.queryUrl && typeof tbl.count === 'number' && tbl.count > (tbl.rows ? tbl.rows.length : 0) && (
+                <div style={{ padding: '6px 10px', borderTop: '1px solid #222', fontSize: '0.75em' }}>
+                  <a href={tbl.queryUrl} target="_blank" rel="noopener noreferrer" title="Run this query in Virtual Fly Brain (new tab)" style={{ color: '#9ecbff' }}>
+                    View all {tbl.count} in VFB ↗
+                  </a>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Image gallery from API images field */}
       {msg.images && msg.images.length > 0 && (
         <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -943,6 +985,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 const finalMsg = makeMsg('assistant', data.response, {
                   images: data.images,
                   graphs: data.graphs,
+                  tables: data.tables,
                   followOns: data.followOns,
                   sources: data.sources,
                   requestId: data.requestId,

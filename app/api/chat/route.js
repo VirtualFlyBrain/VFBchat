@@ -10707,6 +10707,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         responseText: live.answer,
         images: [],
         graphs: [],
+        tables: [],
         followOns: [],
         sources: [],
         toolUsage: live.toolUsage,
@@ -10738,12 +10739,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       outboundAllowList: getOutboundAllowList(),
       graphSpecs: live.graphs
     })
-    // Only fall back to harvested thumbnails when the model surfaced none itself,
-    // so curated answers aren't flooded with every image the tools returned.
+    // Result tables (detailed query results) carry their own per-row thumbnails,
+    // so only show a separate image gallery when there is no table — and cap it.
+    const tables = live.tables || []
+    const galleryUrls = tables.length ? [] : (live.galleryThumbnails || []).slice(0, 8)
     const images = built.images.length > 0
       ? built.images
-      : mergeThumbnailImages(built.images, live.thumbnails)
-    return { ...built, images, responseId, followOns: live.followOns || [], sources: live.sources || [] }
+      : mergeThumbnailImages([], galleryUrls.length ? galleryUrls : (live.thumbnails || []).slice(0, 8))
+    return {
+      ...built, images, tables, responseId,
+      followOns: live.followOns || [], sources: live.sources || []
+    }
   } finally {
     await closeMcpClients(mcpClients)
   }
@@ -10990,6 +10996,7 @@ export async function POST(request) {
         response: result.responseText,
         images: result.images,
         graphs: result.graphs,
+        tables: result.tables || [],
         followOns: result.followOns || [],
         sources: result.sources || [],
         newScene: scene,
