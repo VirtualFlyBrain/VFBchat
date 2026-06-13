@@ -572,6 +572,10 @@ const ChatMessage = memo(function ChatMessage({
           ))}
         </div>
       )}
+      {/* Diagnostic: resolved terms (name/id/label/digest) — hidden, for testing. */}
+      {msg.role === 'assistant' && Array.isArray(msg.terms) && msg.terms.length > 0 && (
+        <span data-vfb-terms={JSON.stringify(msg.terms)} style={{ display: 'none' }} aria-hidden="true" />
+      )}
       {/* Scrollable result tables (detailed query results with thumbnails). */}
       {msg.role === 'assistant' && Array.isArray(msg.tables) && msg.tables.length > 0 && (
         <div style={{ marginTop: '10px' }}>
@@ -1010,6 +1014,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                   tables: data.tables,
                   followOns: data.followOns,
                   sources: data.sources,
+                  terms: data.terms,
                   requestId: data.requestId,
                   responseId: data.responseId
                 })
