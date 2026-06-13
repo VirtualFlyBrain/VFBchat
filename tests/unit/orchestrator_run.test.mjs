@@ -179,8 +179,11 @@ test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () =
   assert.equal(pickBestTermId(search, 'DAN'), 'FBbt_00049373')
   // exact label still wins
   assert.equal(pickBestTermId(search, 'mushroom body'), 'FBbt_00005801')
-  // unknown query falls back to the top-ranked valid id
-  assert.equal(pickBestTermId(search, 'zzz'), 'FBbt_00005801')
+  // a query token that matches NO candidate returns null rather than a spurious
+  // top hit — the guarded fallback prevents citing an unrelated term.
+  assert.equal(pickBestTermId(search, 'zzz'), null)
+  // a fuzzy query that still shares a real word resolves via the guarded fallback
+  assert.equal(pickBestTermId(search, 'mushroom zzz'), 'FBbt_00005801')
 })
 
 test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase neuron', () => {
@@ -207,6 +210,22 @@ test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase n
   assert.equal(pickBestTermId(search, 'adult lateral horn neuron'), 'FBbt_00048293')
   // while the stage-qualified region itself still resolves to the region
   assert.equal(pickBestTermId(search, 'adult lateral horn'), 'FBbt_00007053')
+})
+
+test('pickBestTermId returns null for a generic descriptor phrase (no spurious top hit)', () => {
+  // "major subdivisions" names no entity; Solr still returns "major mitochondrial
+  // derivative" (shares only "major"). The resolver must NOT cite it.
+  const search = { response: { docs: [
+    { short_form: 'FBbt_00004952', label: 'major mitochondrial derivative', synonym: [], facets_annotation: ['Anatomy'] },
+    { short_form: 'GENO_0000498', label: 'major polymorphic allele', synonym: [] }
+  ] } }
+  assert.equal(pickBestTermId(search, 'major subdivisions'), null)
+  assert.equal(pickBestTermId(search, 'the main structure'), null)
+  // but a real entity token still resolves via the guarded fallback (synonym match)
+  const search2 = { response: { docs: [
+    { short_form: 'FBbt_00003687', label: 'mushroom body pedunculus', synonym: ['peduncle'], facets_annotation: ['Anatomy'] }
+  ] } }
+  assert.equal(pickBestTermId(search2, 'peduncle'), 'FBbt_00003687')
 })
 
 test('plural cell phrase with no matching region resolves to the cell class', () => {
