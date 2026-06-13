@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseThumbnailUrl, parseTableRow } from '../../lib/termInfoDigest.mjs'
-import { buildTables, galleryThumbnails } from '../../lib/resultTables.mjs'
+import { buildTables, galleryThumbnails, isListQuestion } from '../../lib/resultTables.mjs'
 
 const THUMB_MD = "[![MBON33 aligned to JRC2018U](http://www.virtualflybrain.org/data/VFB/i/jrmc/20bn/VFB_00101567/thumbnail.png 'MBON33 aligned')](VFB_00101567,VFB_jrmc20bn)"
 
@@ -49,7 +49,32 @@ test('buildTables stays empty for a definitional question (no list intent / no o
   assert.equal(tables.length, 0)
 })
 
-test('galleryThumbnails collects unique row thumbnails', () => {
-  const urls = galleryThumbnails(ledgerWithRows())
-  assert.deepEqual(urls, ['https://x/a/b/c/thumbnail.png', 'https://y/a/b/c/thumbnail.png'])
+test('buildTables ignores term-name words: "What is the lateral horn" gets no tables', () => {
+  // Every query label repeats the term name ("… lateral horn"); a definitional
+  // question must not score against those shared words and surface result tables.
+  const tables = buildTables(ledgerWithRows(), 'What is the lateral horn')
+  assert.equal(tables.length, 0)
+})
+
+test('buildTables still surfaces a table when the question names the query (expression)', () => {
+  const tables = buildTables(ledgerWithRows(), 'Which expression patterns label the lateral horn?')
+  assert.ok(tables.length >= 1)
+  assert.match(tables[0].title, /Expression patterns/)
+})
+
+test('isListQuestion distinguishes list/image questions from definitional ones', () => {
+  assert.equal(isListQuestion('What neurons are in the lateral horn?'), true)
+  assert.equal(isListQuestion('Show me images of the medulla'), true)
+  assert.equal(isListQuestion('What is the adult lateral horn'), false)
+  assert.equal(isListQuestion('Where is it located'), false)
+})
+
+test('galleryThumbnails collects thumbnails for a list question, none for a definitional one', () => {
+  // unconditional (no question) — collects everything
+  assert.deepEqual(galleryThumbnails(ledgerWithRows()), ['https://x/a/b/c/thumbnail.png', 'https://y/a/b/c/thumbnail.png'])
+  // list/image question — collects
+  assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'Show me images of the lateral horn'),
+    ['https://x/a/b/c/thumbnail.png', 'https://y/a/b/c/thumbnail.png'])
+  // definitional question — suppressed
+  assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'What is the lateral horn'), [])
 })
