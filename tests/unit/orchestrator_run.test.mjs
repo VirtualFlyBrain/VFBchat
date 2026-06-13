@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -167,6 +167,43 @@ test('fast-path definitional question skips the planner call', async () => {
   assert.ok(!deps.calls.structured.includes('plan')) // no planner LLM call
   assert.equal(r.answer, 'FINAL ANSWER')
   assert.ok(deps.calls.tools.some(t => t.name === 'vfb_search_terms'))
+})
+
+test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () => {
+  // "DAN" must bind to dopaminergic neuron (which carries the synonym), not the
+  // first fuzzy result (mushroom body) — the bug seen live.
+  const search = { response: { docs: [
+    { short_form: 'FBbt_00005801', label: 'mushroom body', synonym: ['corpora pedunculata'] },
+    { short_form: 'FBbt_00049373', label: 'dopaminergic neuron', synonym: ['DAN'] }
+  ] } }
+  assert.equal(pickBestTermId(search, 'DAN'), 'FBbt_00049373')
+  // exact label still wins
+  assert.equal(pickBestTermId(search, 'mushroom body'), 'FBbt_00005801')
+  // unknown query falls back to the top-ranked valid id
+  assert.equal(pickBestTermId(search, 'zzz'), 'FBbt_00005801')
+})
+
+test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', async () => {
+  const plan = {
+    intent: 'region_connections', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  let synthMessages = null
+  const deps = makeDeps({ plan })
+  deps.tools = undefined
+  // override runTool + callText to capture the synth prompt
+  const baseRunTool = deps.runTool
+  deps.runTool = async (name, args) => {
+    if (name === 'vfb_get_term_info') return { Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'x' },
+      Queries: [{ query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in medulla', count: 262, preview_results: { rows: [] } }] }
+    if (name === 'vfb_search_terms') return { response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }
+    return baseRunTool(name, args)
+  }
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', deps)
+  assert.ok(synthMessages, 'synth ran')
+  assert.match(synthMessages[1].content, /AVAILABLE VFB DATA/)
+  assert.match(synthMessages[1].content, /Neurons with presynaptic terminals in medulla \(262\)/)
 })
 
 test('broaden ladder: a failing connectivity tool is recovered from the term digest', async () => {
