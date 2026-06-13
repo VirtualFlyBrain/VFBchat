@@ -413,16 +413,85 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
 })
 
 // ── Memoized single-message bubble ──────────────────────────────────
+// Feedback prompt — rendered ONCE at the bottom of the conversation (for the
+// latest assistant response), not repeated on every message.
+function FeedbackPrompt({ msg, feedbackState, onSubmitHelpful, onSelectNeedsWork, onSubmitFeedbackReason, onToggleIncludeConversation }) {
+  if (!msg || msg.role !== 'assistant' || !msg.requestId || !msg.responseId) return null
+  const isSubmittingFeedback = feedbackState?.status === 'submitting'
+  const isFeedbackSubmitted = feedbackState?.status === 'submitted'
+  return (
+    <div style={{ marginTop: '4px', padding: '8px 12px', borderTop: '1px solid #1f1f1f' }}>
+      {isFeedbackSubmitted ? (
+        <div style={{ fontSize: '0.75em', color: '#7ec699' }}>Feedback recorded. Thank you.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>Was this conversation useful?</div>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => onSubmitHelpful(msg)}
+              disabled={isSubmittingFeedback}
+              style={{ padding: '4px 10px', backgroundColor: '#173522', color: '#dff7e7', border: '1px solid #29543a', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.75em' }}
+            >
+              Helpful
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectNeedsWork(msg)}
+              disabled={isSubmittingFeedback}
+              style={{ padding: '4px 10px', backgroundColor: feedbackState?.selectedRating === 'down' ? '#3b1d22' : '#25161a', color: '#ffdede', border: '1px solid #5d2a33', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.75em' }}
+            >
+              Needs work
+            </button>
+          </div>
+          {feedbackState?.selectedRating === 'down' && (
+            <>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '10px', fontSize: '0.75em', color: '#b8d7ff', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(feedbackState?.attachConversation)}
+                  disabled={isSubmittingFeedback}
+                  onChange={(event) => onToggleIncludeConversation(msg, event.target.checked)}
+                  style={{ marginTop: '2px' }}
+                />
+                <span>
+                  Attach the full visible conversation for investigation.
+                  <span style={{ display: 'block', color: '#888', marginTop: '3px' }}>
+                    Only do this if you are comfortable sharing the chat text. Attached conversations are retained for up to 30 days.
+                  </span>
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
+                {NEGATIVE_FEEDBACK_REASON_CODES.map((reasonCode) => (
+                  <button
+                    key={reasonCode}
+                    type="button"
+                    onClick={() => onSubmitFeedbackReason(msg, reasonCode, Boolean(feedbackState?.attachConversation))}
+                    disabled={isSubmittingFeedback}
+                    style={{ padding: '4px 10px', backgroundColor: '#101820', color: '#c9e6ff', border: '1px solid #284055', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.72em' }}
+                  >
+                    {FEEDBACK_REASON_LABELS[reasonCode]}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {feedbackState?.status === 'error' && (
+            <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff9e9e' }}>
+              Unable to record feedback right now. Please try again.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // Only re-renders when its own props change, NOT when sibling messages
 // are added or the thinking indicator ticks.
 const ChatMessage = memo(function ChatMessage({
   msg,
   markdownComponents,
-  feedbackState,
-  onSubmitHelpful,
-  onSelectNeedsWork,
-  onSubmitFeedbackReason,
-  onToggleIncludeConversation,
   onAskFollowOn
 }) {
   const getDisplayName = (role) => {
@@ -431,10 +500,6 @@ const ChatMessage = memo(function ChatMessage({
     if (role === 'reasoning') return 'VFB'
     return role
   }
-
-  const canCollectFeedback = msg.role === 'assistant' && msg.requestId && msg.responseId
-  const isSubmittingFeedback = feedbackState?.status === 'submitting'
-  const isFeedbackSubmitted = feedbackState?.status === 'submitted'
 
   return (
     <div role="article" aria-label={`${getDisplayName(msg.role)} message`} style={{
@@ -549,114 +614,6 @@ const ChatMessage = memo(function ChatMessage({
               </a>
             </span>
           ))}
-        </div>
-      )}
-      {canCollectFeedback && (
-        <div style={{
-          marginTop: '10px',
-          paddingTop: '8px',
-          borderTop: '1px solid #1f1f1f'
-        }}>
-          {isFeedbackSubmitted ? (
-            <div style={{ fontSize: '0.75em', color: '#7ec699' }}>
-              Feedback recorded. Thank you.
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>
-                Was this response useful?
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  onClick={() => onSubmitHelpful(msg)}
-                  disabled={isSubmittingFeedback}
-                  style={{
-                    padding: '4px 10px',
-                    backgroundColor: '#173522',
-                    color: '#dff7e7',
-                    border: '1px solid #29543a',
-                    borderRadius: '999px',
-                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75em'
-                  }}
-                >
-                  Helpful
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectNeedsWork(msg)}
-                  disabled={isSubmittingFeedback}
-                  style={{
-                    padding: '4px 10px',
-                    backgroundColor: feedbackState?.selectedRating === 'down' ? '#3b1d22' : '#25161a',
-                    color: '#ffdede',
-                    border: '1px solid #5d2a33',
-                    borderRadius: '999px',
-                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75em'
-                  }}
-                >
-                  Needs work
-                </button>
-              </div>
-              {feedbackState?.selectedRating === 'down' && (
-                <>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '8px',
-                      marginTop: '10px',
-                      fontSize: '0.75em',
-                      color: '#b8d7ff',
-                      cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={Boolean(feedbackState?.attachConversation)}
-                      disabled={isSubmittingFeedback}
-                      onChange={(event) => onToggleIncludeConversation(msg, event.target.checked)}
-                      style={{ marginTop: '2px' }}
-                    />
-                    <span>
-                      Attach the full visible conversation for investigation.
-                      <span style={{ display: 'block', color: '#888', marginTop: '3px' }}>
-                        Only do this if you are comfortable sharing the chat text. Attached conversations are retained for up to 30 days.
-                      </span>
-                    </span>
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
-                    {NEGATIVE_FEEDBACK_REASON_CODES.map((reasonCode) => (
-                      <button
-                        key={reasonCode}
-                        type="button"
-                        onClick={() => onSubmitFeedbackReason(msg, reasonCode, Boolean(feedbackState?.attachConversation))}
-                        disabled={isSubmittingFeedback}
-                        style={{
-                          padding: '4px 10px',
-                          backgroundColor: '#101820',
-                          color: '#c9e6ff',
-                          border: '1px solid #284055',
-                          borderRadius: '999px',
-                          cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                          fontSize: '0.72em'
-                        }}
-                      >
-                        {FEEDBACK_REASON_LABELS[reasonCode]}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-              {feedbackState?.status === 'error' && (
-                <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff9e9e' }}>
-                  Unable to record feedback right now. Please try again.
-                </div>
-              )}
-            </>
-          )}
         </div>
       )}
     </div>
@@ -1050,10 +1007,10 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     return href
   }
 
-  const renderLink = ({ href, children }) => {
+  const renderLink = ({ href, children, title: mdTitle }) => {
     const normalizedHref = normalizeMarkdownHref(href)
     let url = normalizedHref
-    let title = undefined
+    let title = mdTitle   // honour the markdown link's own title (hover tooltip)
     let isQueryLink = false
     
     // Handle chat.virtualflybrain.org query links
@@ -1424,14 +1381,24 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             key={msg.id}
             msg={msg}
             markdownComponents={markdownComponents}
-            feedbackState={feedbackStateByResponseId[msg.responseId]}
-            onSubmitHelpful={handleSubmitHelpful}
-            onSelectNeedsWork={handleSelectNeedsWork}
-            onSubmitFeedbackReason={handleSubmitFeedbackReason}
-            onToggleIncludeConversation={handleToggleIncludeConversation}
             onAskFollowOn={handleAskFollowOn}
           />
         ))}
+        {/* One feedback prompt for the whole conversation (latest assistant reply). */}
+        {!isThinking && (() => {
+          const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.requestId && m.responseId)
+          if (!lastAssistant) return null
+          return (
+            <FeedbackPrompt
+              msg={lastAssistant}
+              feedbackState={feedbackStateByResponseId[lastAssistant.responseId]}
+              onSubmitHelpful={handleSubmitHelpful}
+              onSelectNeedsWork={handleSelectNeedsWork}
+              onSubmitFeedbackReason={handleSubmitFeedbackReason}
+              onToggleIncludeConversation={handleToggleIncludeConversation}
+            />
+          )
+        })()}
         {isThinking && (
           <div
             role="status"
