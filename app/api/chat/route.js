@@ -3201,95 +3201,6 @@ function searchDataResourceTool(store, args = {}) {
   })
 }
 
-const VFB_CACHED_TERM_INFO_URL = 'https://v3-cached.virtualflybrain.org/get_term_info'
-const VFB_CACHED_RUN_QUERY_URL = 'https://v3-cached.virtualflybrain.org/run_query'
-const VFB_CACHED_TERM_INFO_TIMEOUT_MS = normalizeInteger(process.env.VFB_CACHED_TERM_INFO_TIMEOUT_MS, 60000, 5000, 300000)
-
-function isRetryableMcpError(error) {
-  const message = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
-  return (
-    message.includes('timeout') ||
-    message.includes('timed out') ||
-    message.includes('abort') ||
-    message.includes('network') ||
-    message.includes('fetch failed') ||
-    message.includes('econnreset') ||
-    message.includes('econnrefused') ||
-    message.includes('enotfound') ||
-    message.includes('etimedout') ||
-    message.includes('eai_again') ||
-    message.includes('connectivity')
-  )
-}
-
-async function fetchCachedVfbTermInfo(id) {
-  const safeId = String(id || '').trim()
-  if (!safeId) throw new Error('Missing id for cached VFB get_term_info fallback.')
-
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
-
-  try {
-    const cacheUrl = `${VFB_CACHED_TERM_INFO_URL}?id=${encodeURIComponent(safeId)}`
-    const response = await fetch(cacheUrl, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal
-    })
-
-    if (!response.ok) {
-      const responseText = await response.text()
-      throw new Error(`Cached VFB get_term_info failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
-    }
-
-    const responseText = await response.text()
-    try {
-      JSON.parse(responseText)
-    } catch {
-      throw new Error('Cached VFB get_term_info returned non-JSON payload.')
-    }
-
-    return responseText
-  } finally {
-    clearTimeout(timeoutId)
-  }
-}
-
-async function fetchCachedVfbRunQuery(id, queryType) {
-  const safeId = String(id || '').trim()
-  const safeQueryType = String(queryType || '').trim()
-  if (!safeId || !safeQueryType) {
-    throw new Error('Missing id or query_type for cached VFB run_query fallback.')
-  }
-
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), VFB_CACHED_TERM_INFO_TIMEOUT_MS)
-
-  try {
-    const cacheUrl = `${VFB_CACHED_RUN_QUERY_URL}?id=${encodeURIComponent(safeId)}&query_type=${encodeURIComponent(safeQueryType)}`
-    const response = await fetch(cacheUrl, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal
-    })
-
-    if (!response.ok) {
-      const responseText = await response.text()
-      throw new Error(`Cached VFB run_query failed: HTTP ${response.status} ${responseText.slice(0, 200)}`.trim())
-    }
-
-    const responseText = await response.text()
-    try {
-      JSON.parse(responseText)
-    } catch {
-      throw new Error('Cached VFB run_query returned non-JSON payload.')
-    }
-
-    return responseText
-  } finally {
-    clearTimeout(timeoutId)
-  }
-}
 
 function extractQueryNamesFromTermInfoPayload(rawPayload) {
   let parsed = rawPayload
@@ -4262,21 +4173,6 @@ function isEmptyRunQueryOutput(outputText = '') {
   return hasZeroCount && hasNoRows
 }
 
-async function recoverEmptyRunQueryOutputFromCache(outputText = '', cleanArgs = {}, context = {}) {
-  if (!isEmptyRunQueryOutput(outputText)) return outputText
-
-  const expectedCount = getRememberedRunQueryCount(context, cleanArgs.id, cleanArgs.query_type)
-  if (!Number.isFinite(expectedCount) || expectedCount <= 0) return outputText
-
-  try {
-    const cachedOutput = await fetchCachedVfbRunQuery(cleanArgs.id, cleanArgs.query_type)
-    return isEmptyRunQueryOutput(cachedOutput) ? outputText : cachedOutput
-  } catch (error) {
-    console.warn('[VFBchat] Cached run_query recovery failed:', error?.message || error)
-    return outputText
-  }
-}
-
 function chooseAvailableQueryType(availableQueryTypes = [], preferredQueryTypes = []) {
   const available = availableQueryTypes
     .map(queryType => String(queryType || '').trim())
@@ -4575,42 +4471,18 @@ function getReadableTermName(termRecord, fallback = '') {
   return fallback
 }
 
+// Call a VFB MCP tool and return its text. The v3-cached HTTP fallback was
+// removed — the MCP is the single source of truth; errors propagate to the
+// caller (which degrades gracefully) rather than risk stale/incorrect cache data.
 async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
-  try {
-    const result = await client.callTool({ name: toolName, arguments: toolArguments }, undefined, VFB_MCP_CALL_OPTIONS)
-    if (result?.content) {
-      const texts = result.content
-        .filter(item => item.type === 'text')
-        .map(item => item.text)
-      return texts.join('\n') || JSON.stringify(result.content)
-    }
-
-    return JSON.stringify(result)
-  } catch (error) {
-    const shouldFallbackTermInfo =
-      toolName === 'get_term_info' &&
-      typeof toolArguments?.id === 'string' &&
-      toolArguments.id.trim().length > 0 &&
-      isRetryableMcpError(error)
-
-    if (shouldFallbackTermInfo) {
-      return fetchCachedVfbTermInfo(toolArguments.id)
-    }
-
-    const shouldFallbackRunQuery =
-      toolName === 'run_query' &&
-      typeof toolArguments?.id === 'string' &&
-      toolArguments.id.trim().length > 0 &&
-      typeof toolArguments?.query_type === 'string' &&
-      toolArguments.query_type.trim().length > 0 &&
-      isRetryableMcpError(error)
-
-    if (shouldFallbackRunQuery) {
-      return fetchCachedVfbRunQuery(toolArguments.id, toolArguments.query_type)
-    }
-
-    throw error
+  const result = await client.callTool({ name: toolName, arguments: toolArguments }, undefined, VFB_MCP_CALL_OPTIONS)
+  if (result?.content) {
+    const texts = result.content
+      .filter(item => item.type === 'text')
+      .map(item => item.text)
+    return texts.join('\n') || JSON.stringify(result.content)
   }
+  return JSON.stringify(result)
 }
 
 async function resolveConnectivityEndpointValue(client, rawValue = '') {
@@ -5030,21 +4902,8 @@ async function getConnectivityRowsForComparison(client, source = {}, queryType =
     id: source.id,
     query_type: queryType
   })
-  let rows = extractRowsFromRunQueryPayload(outputText)
-  let usedCachedRecovery = false
-
-  if (rows.length === 0) {
-    try {
-      const cachedOutputText = await fetchCachedVfbRunQuery(source.id, queryType)
-      const cachedRows = extractRowsFromRunQueryPayload(cachedOutputText)
-      if (cachedRows.length > 0) {
-        rows = cachedRows
-        usedCachedRecovery = true
-      }
-    } catch {
-      // Keep the original empty result when cache recovery is unavailable.
-    }
-  }
+  const rows = extractRowsFromRunQueryPayload(outputText)
+  const usedCachedRecovery = false   // cache recovery removed — MCP is the only source
 
   const parsed = parseJsonPayload(outputText)
   const count = Number(parsed?.count)
@@ -8461,9 +8320,6 @@ async function executeFunctionTool(name, args, context = {}) {
           rememberTermInfoResult(context, scopedOutputText, cleanArgs.id)
           return scopedOutputText
         }
-        if (name === 'vfb_run_query' && typeof cleanArgs.id === 'string' && typeof cleanArgs.query_type === 'string') {
-          return recoverEmptyRunQueryOutputFromCache(outputText, cleanArgs, context)
-        }
         return name === 'vfb_search_terms'
           ? postprocessVfbSearchTermsOutput(outputText, cleanArgs, context, client)
           : outputText
@@ -8471,43 +8327,9 @@ async function executeFunctionTool(name, args, context = {}) {
 
       return JSON.stringify(result)
     } catch (error) {
-      const shouldUseCachedTermInfoFallback =
-        name === 'vfb_get_term_info' &&
-        routing.server === 'vfb' &&
-        typeof cleanArgs.id === 'string' &&
-        cleanArgs.id.trim().length > 0 &&
-        isRetryableMcpError(error)
-
-      if (shouldUseCachedTermInfoFallback) {
-        try {
-          const fallbackOutput = await fetchCachedVfbTermInfo(cleanArgs.id)
-          return addStageScopeNoteToTermInfoOutput(fallbackOutput, context.userMessage || '')
-        } catch (fallbackError) {
-          throw new Error(
-            `VFB MCP get_term_info failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
-          )
-        }
-      }
-
-      const shouldUseCachedRunQueryFallback =
-        name === 'vfb_run_query' &&
-        routing.server === 'vfb' &&
-        typeof cleanArgs.id === 'string' &&
-        cleanArgs.id.trim().length > 0 &&
-        typeof cleanArgs.query_type === 'string' &&
-        cleanArgs.query_type.trim().length > 0 &&
-        isRetryableMcpError(error)
-
-      if (shouldUseCachedRunQueryFallback) {
-        try {
-          return await fetchCachedVfbRunQuery(cleanArgs.id, cleanArgs.query_type)
-        } catch (fallbackError) {
-          throw new Error(
-            `VFB MCP run_query failed (${error?.message || 'unknown error'}); cached fallback failed (${fallbackError?.message || 'unknown error'}).`
-          )
-        }
-      }
-
+      // The v3-cached fallback was removed: the MCP is the single source of truth.
+      // A failed MCP call propagates and the harness degrades gracefully rather
+      // than risk serving stale/incorrect cached data.
       const shouldEnrichRunQueryError =
         name === 'vfb_run_query' &&
         routing.server === 'vfb' &&
@@ -8531,14 +8353,8 @@ async function executeFunctionTool(name, args, context = {}) {
             ?.join('\n')
 
           if (termInfoText) termInfoPayload = termInfoText
-        } catch (termInfoError) {
-          if (isRetryableMcpError(termInfoError)) {
-            try {
-              termInfoPayload = await fetchCachedVfbTermInfo(cleanArgs.id)
-            } catch {
-              // Keep the original run_query error when enrichment lookup fails.
-            }
-          }
+        } catch {
+          // Keep the original run_query error when the enrichment lookup fails.
         }
 
         const availableQueryTypes = extractQueryNamesFromTermInfoPayload(termInfoPayload)
