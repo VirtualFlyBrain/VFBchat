@@ -183,6 +183,17 @@ test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () =
   assert.equal(pickBestTermId(search, 'zzz'), 'FBbt_00005801')
 })
 
+test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase neuron', () => {
+  // "lateral horn" has no exact VFB label (they are stage-qualified). The neuron
+  // is ranked first, but we must pick the region "adult lateral horn".
+  const search = { response: { docs: [
+    { short_form: 'FBbt_00110058', label: 'adult lateral horn Leucokinin neuron', synonym: [] },
+    { short_form: 'FBbt_00007053', label: 'adult lateral horn', synonym: ['LH'] },
+    { short_form: 'FBbt_00048293', label: 'adult lateral horn neuron', synonym: ['LHN'] }
+  ] } }
+  assert.equal(pickBestTermId(search, 'lateral horn'), 'FBbt_00007053')
+})
+
 test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', async () => {
   const plan = {
     intent: 'region_connections', underspecified: false, clarifying_question: '',
