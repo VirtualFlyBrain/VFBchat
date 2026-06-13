@@ -422,7 +422,8 @@ const ChatMessage = memo(function ChatMessage({
   onSubmitHelpful,
   onSelectNeedsWork,
   onSubmitFeedbackReason,
-  onToggleIncludeConversation
+  onToggleIncludeConversation,
+  onAskFollowOn
 }) {
   const getDisplayName = (role) => {
     if (role === 'user') return 'Researcher'
@@ -492,6 +493,61 @@ const ChatMessage = memo(function ChatMessage({
                 title={img.label}
               />
             </div>
+          ))}
+        </div>
+      )}
+      {/* Explore: follow-on chips (ask = run a chat query; vfb = open in VFB).
+          Two distinct styles + hover tooltips so the user knows what a click does. */}
+      {msg.role === 'assistant' && Array.isArray(msg.followOns) && msg.followOns.length > 0 && (
+        <div style={{ marginTop: '10px' }}>
+          <div aria-hidden="true" style={{ fontSize: '0.7em', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '5px' }}>
+            Explore ▸
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            {msg.followOns.map((chip, i) => chip.kind === 'vfb' ? (
+              <a
+                key={`fo-${i}`}
+                href={chip.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={chip.title || `Open in Virtual Fly Brain (new tab)`}
+                style={{
+                  padding: '4px 10px', fontSize: '0.75em', borderRadius: '999px',
+                  background: '#101820', color: '#9ecbff', border: '1px solid #284a6b',
+                  textDecoration: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px'
+                }}
+              >
+                {chip.label} <span aria-hidden="true">↗</span>
+              </a>
+            ) : (
+              <button
+                key={`fo-${i}`}
+                type="button"
+                onClick={() => onAskFollowOn && onAskFollowOn(chip.query)}
+                title={chip.title || `Ask VFB: ${chip.query}`}
+                style={{
+                  padding: '4px 10px', fontSize: '0.75em', borderRadius: '999px',
+                  background: '#173522', color: '#dff7e7', border: '1px solid #29543a',
+                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px'
+                }}
+              >
+                <span aria-hidden="true">↩</span> {chip.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Sources: clickable provenance — the VFB term pages backing the answer. */}
+      {msg.role === 'assistant' && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+        <div style={{ marginTop: '8px', fontSize: '0.72em', color: '#888' }}>
+          Sources:{' '}
+          {msg.sources.map((s, i) => (
+            <span key={`src-${i}`}>
+              {i > 0 ? ', ' : ''}
+              <a href={s.url} target="_blank" rel="noopener noreferrer" title={`Open ${s.label} term info in VFB (new tab)`} style={{ color: '#7fb2e6' }}>
+                {s.label}
+              </a>
+            </span>
           ))}
         </div>
       )}
@@ -854,6 +910,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     submitFeedback(msg, 'down', reasonCode, { attachConversation })
   }, [submitFeedback])
 
+  // Stable callback for follow-on chips → run the chip's query as a new message.
+  // Uses a ref so ChatMessage's memo isn't busted every render.
+  const handleSendRef = useRef(null)
+  const handleAskFollowOn = useCallback((query) => {
+    if (typeof query === 'string' && query.trim() && handleSendRef.current) handleSendRef.current(query)
+  }, [])
+
   const handleSend = async (messageText = null) => {
     const textToSend = (typeof messageText === 'string' ? messageText : null) || input
     if (!textToSend.trim()) return
@@ -923,6 +986,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 const finalMsg = makeMsg('assistant', data.response, {
                   images: data.images,
                   graphs: data.graphs,
+                  followOns: data.followOns,
+                  sources: data.sources,
                   requestId: data.requestId,
                   responseId: data.responseId
                 })
@@ -963,6 +1028,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       fetchRateInfo()
     }
   }
+  // Keep the ref pointing at the latest handleSend for follow-on chips.
+  handleSendRef.current = handleSend
 
   // Custom renderers for react-markdown
   const normalizeMarkdownHref = (rawHref) => {
@@ -1362,6 +1429,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             onSelectNeedsWork={handleSelectNeedsWork}
             onSubmitFeedbackReason={handleSubmitFeedbackReason}
             onToggleIncludeConversation={handleToggleIncludeConversation}
+            onAskFollowOn={handleAskFollowOn}
           />
         ))}
         {isThinking && (

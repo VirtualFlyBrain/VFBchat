@@ -10703,6 +10703,8 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         responseText: live.answer,
         images: [],
         graphs: [],
+        followOns: [],
+        sources: [],
         toolUsage: live.toolUsage,
         toolRounds: live.toolRounds,
         responseId,
@@ -10729,7 +10731,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     const images = built.images.length > 0
       ? built.images
       : mergeThumbnailImages(built.images, live.thumbnails)
-    return { ...built, images, responseId }
+    return { ...built, images, responseId, followOns: live.followOns || [], sources: live.sources || [] }
   } finally {
     await closeMcpClients(mcpClients)
   }
@@ -10976,6 +10978,8 @@ export async function POST(request) {
         response: result.responseText,
         images: result.images,
         graphs: result.graphs,
+        followOns: result.followOns || [],
+        sources: result.sources || [],
         newScene: scene,
         requestId,
         responseId
