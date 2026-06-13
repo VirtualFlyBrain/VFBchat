@@ -1018,6 +1018,35 @@ const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 // Prefer waiting for real data over a fast failure. Default 5 minutes.
 const VFB_MCP_CALL_TIMEOUT_MS = normalizeInteger(process.env.VFB_MCP_CALL_TIMEOUT_MS, 300000, 10000, 600000)
 const VFB_MCP_CALL_OPTIONS = { timeout: VFB_MCP_CALL_TIMEOUT_MS, maxTotalTimeout: VFB_MCP_CALL_TIMEOUT_MS }
+const VFB_MCP_MAX_RETRIES = normalizeInteger(process.env.VFB_MCP_MAX_RETRIES, 2, 0, 5)
+
+// Is this MCP error worth retrying (transient: timeout/network/5xx), vs a real
+// client error (e.g. invalid query_type) that retrying won't fix?
+function isTransientMcpError(error) {
+  const m = `${error?.name || ''} ${error?.message || ''}`.toLowerCase()
+  return /timeout|timed out|abort|network|fetch failed|socket hang up|econnreset|econnrefused|enotfound|etimedout|eai_again|connectivity|\b50[234]\b/.test(m)
+}
+
+/**
+ * Call an MCP tool, retrying TRANSIENT failures after a SHORT RANDOM delay.
+ * Jitter avoids retrying in lockstep with other requests. The per-call timeout
+ * is NOT shortened — a slow-but-responding call is allowed to finish, since
+ * cutting it off early just wastes the work already in flight.
+ */
+async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_RETRIES } = {}) {
+  let lastError
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await client.callTool({ name, arguments: args }, undefined, VFB_MCP_CALL_OPTIONS)
+    } catch (error) {
+      lastError = error
+      if (attempt >= retries || !isTransientMcpError(error)) throw error
+      const wait = 1000 * (attempt + 1) + Math.floor(Math.random() * 2000) // ~1-3s, growing
+      await new Promise(resolve => setTimeout(resolve, wait))
+    }
+  }
+  throw lastError
+}
 
 function getMcpClientConfig(server) {
   if (server === 'vfb') {
@@ -4475,7 +4504,7 @@ function getReadableTermName(termRecord, fallback = '') {
 // removed — the MCP is the single source of truth; errors propagate to the
 // caller (which degrades gracefully) rather than risk stale/incorrect cache data.
 async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
-  const result = await client.callTool({ name: toolName, arguments: toolArguments }, undefined, VFB_MCP_CALL_OPTIONS)
+  const result = await callMcpToolWithRetry(client, toolName, toolArguments)
   if (result?.content) {
     const texts = result.content
       .filter(item => item.type === 'text')
@@ -6228,7 +6257,7 @@ function normalizeDatasetScopeName(value = '') {
 
 async function getConnectomeDatasetListEvidence(client) {
   try {
-    const result = await client.callTool({ name: 'list_connectome_datasets', arguments: {} }, undefined, VFB_MCP_CALL_OPTIONS)
+    const result = await callMcpToolWithRetry(client, 'list_connectome_datasets', {})
     const text = result?.content
       ?.filter(item => item.type === 'text')
       ?.map(item => item.text)
@@ -8302,7 +8331,7 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     try {
-      const result = await client.callTool({ name: routing.mcpName, arguments: cleanArgs }, undefined, VFB_MCP_CALL_OPTIONS)
+      const result = await callMcpToolWithRetry(client, routing.mcpName, cleanArgs)
       if (result?.content) {
         const texts = result.content
           .filter(item => item.type === 'text')
@@ -8343,10 +8372,7 @@ async function executeFunctionTool(name, args, context = {}) {
         let termInfoPayload = null
 
         try {
-          const termInfoResult = await client.callTool({
-            name: 'get_term_info',
-            arguments: { id: cleanArgs.id }
-          }, undefined, VFB_MCP_CALL_OPTIONS)
+          const termInfoResult = await callMcpToolWithRetry(client, 'get_term_info', { id: cleanArgs.id })
           const termInfoText = termInfoResult?.content
             ?.filter(item => item.type === 'text')
             ?.map(item => item.text)
