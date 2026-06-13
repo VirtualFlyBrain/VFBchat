@@ -10748,7 +10748,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       : mergeThumbnailImages([], galleryUrls.length ? galleryUrls : (live.thumbnails || []).slice(0, 8))
     return {
       ...built, images, tables, responseId,
-      followOns: live.followOns || [], sources: live.sources || []
+      followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || []
     }
   } finally {
     await closeMcpClients(mcpClients)
@@ -10999,6 +10999,7 @@ export async function POST(request) {
         tables: result.tables || [],
         followOns: result.followOns || [],
         sources: result.sources || [],
+        terms: result.terms || [],
         newScene: scene,
         requestId,
         responseId

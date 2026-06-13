@@ -25,7 +25,10 @@ test('buildFollowOns derives ask chips from real queries + an open-in-VFB chip +
     ] }
   })
   const { terms, chips, sources } = buildFollowOns(ledger)
-  assert.deepEqual(terms, [{ name: 'mushroom body', id: 'FBbt_00005801', label: 'mushroom body' }])
+  assert.equal(terms.length, 1)
+  assert.equal(terms[0].name, 'mushroom body')
+  assert.equal(terms[0].id, 'FBbt_00005801')
+  assert.equal(terms[0].label, 'mushroom body')
   // source links to the term report (provenance for "(vfb)")
   assert.deepEqual(sources, [{ label: 'mushroom body', url: 'https://www.virtualflybrain.org/reports/FBbt_00005801', id: 'FBbt_00005801' }])
   // ask chip from the highest-count query, with a clear title and a runnable query
