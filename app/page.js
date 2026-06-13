@@ -413,6 +413,39 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
 })
 
 // ── Memoized single-message bubble ──────────────────────────────────
+// A VFB thumbnail: height-capped, click opens the entity in VFB (new tab), and
+// hovering shows a larger floating preview near the cursor so details are visible.
+function VfbThumbnail({ src, alt, href, maxHeight = 48 }) {
+  const [hover, setHover] = useState(false)
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  if (!src) return null
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const clamp = (v, max) => Math.max(8, Math.min(v, max))
+  const img = (
+    <img src={src} alt={alt || ''} style={{ maxHeight, borderRadius: 3, border: '1px solid #333', display: 'block', cursor: 'zoom-in' }} />
+  )
+  const inner = (
+    <>
+      {img}
+      {hover && (
+        <div style={{ position: 'fixed', left: clamp(pos.x + 18, vw - 360), top: clamp(pos.y + 18, vh - 360), zIndex: 10000, pointerEvents: 'none', background: '#000', padding: 4, border: '1px solid #555', borderRadius: 6, boxShadow: '0 6px 24px rgba(0,0,0,0.7)' }}>
+          <img src={src} alt={alt || ''} style={{ maxHeight: 320, maxWidth: 340, display: 'block' }} />
+          {alt ? <div style={{ color: '#cbd5e1', fontSize: '0.72em', marginTop: 3, maxWidth: 340 }}>{alt}</div> : null}
+        </div>
+      )}
+    </>
+  )
+  const handlers = {
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+    onMouseMove: (e) => setPos({ x: e.clientX, y: e.clientY })
+  }
+  return href
+    ? <a href={href} target="_blank" rel="noopener noreferrer" title={`Open ${alt || 'image'} in VFB (new tab)`} style={{ display: 'inline-block', lineHeight: 0 }} {...handlers}>{inner}</a>
+    : <span style={{ display: 'inline-block', lineHeight: 0 }} {...handlers}>{inner}</span>
+}
+
 // Feedback prompt — rendered ONCE at the bottom of the conversation (for the
 // latest assistant response), not repeated on every message.
 function FeedbackPrompt({ msg, feedbackState, onSubmitHelpful, onSelectNeedsWork, onSubmitFeedbackReason, onToggleIncludeConversation }) {
@@ -553,12 +586,7 @@ const ChatMessage = memo(function ChatMessage({
                     {(tbl.rows || []).map((r, ri) => (
                       <tr key={ri} style={{ borderTop: ri ? '1px solid #1a1a1a' : 'none' }}>
                         <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
-                          {r.thumbnail ? (
-                            <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`}>
-                              {/* Constrain HEIGHT only — the whole image shows, not a square crop. */}
-                              <img src={r.thumbnail} alt={r.name} style={{ maxHeight: '48px', borderRadius: '3px', border: '1px solid #333', display: 'block' }} />
-                            </a>
-                          ) : null}
+                          <VfbThumbnail src={r.thumbnail} alt={r.name} href={r.reportUrl} maxHeight={48} />
                         </td>
                         <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
                           <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
@@ -587,17 +615,11 @@ const ChatMessage = memo(function ChatMessage({
         <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
           {msg.images.map((img, i) => (
             <div key={i} style={{ display: 'inline-block' }}>
-              <img
+              <VfbThumbnail
                 src={img.thumbnail}
                 alt={img.label}
-                style={{
-                  maxHeight: '80px',
-                  border: '1px solid #444',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  display: 'block'
-                }}
-                title={img.label}
+                href={img.id ? `https://www.virtualflybrain.org/reports/${img.id}` : undefined}
+                maxHeight={80}
               />
             </div>
           ))}
