@@ -3,7 +3,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFollowOns, vfbReportUrl, stripMarkdown, buildTermLinks, linkifyKnownTerms } from '../../lib/followOns.mjs'
+import { buildFollowOns, vfbReportUrl, stripMarkdown, buildTermLinks, linkifyKnownTerms, buildCountLinks, linkifyCounts } from '../../lib/followOns.mjs'
+import { createLedger, recordTermId } from '../../lib/ledger.mjs'
 
 function ledgerWith(term) {
   return { terms: { [term.name]: term } }
@@ -87,6 +88,44 @@ test('linkifyKnownTerms links each term once, with a tooltip, leaving existing l
   assert.match(out, /`medulla`/)
   // medulla linked only once (the first plain occurrence)
   assert.equal((out.match(/reports\/FBbt_00003748/g) || []).length, 1)
+})
+
+test('buildTermLinks uses the authoritative registry, never pins a label to the wrong id', () => {
+  // Registry holds VFB's own labels: "mushroom body" -> region; the MBON term's
+  // VFB Name is "mushroom body output neuron". A label must map to ITS id only.
+  const ledger = createLedger('q')
+  recordTermId(ledger, 'mushroom body', 'FBbt_00005801', { canonical: true })
+  ledger.terms = { 'mushroom body output neurons': { id: 'FBbt_00047953', digest: { name: 'mushroom body output neuron', queries: [] } } }
+  const links = buildTermLinks(ledger)
+  const mb = links.find(l => l.name.toLowerCase() === 'mushroom body')
+  const mbon = links.find(l => l.name.toLowerCase() === 'mushroom body output neuron')
+  assert.equal(mb.id, 'FBbt_00005801', 'mushroom body must map to the region, not the MBON')
+  assert.equal(mbon.id, 'FBbt_00047953')
+  // there is NO "mushroom body" -> MBON entry
+  assert.ok(!links.some(l => l.name.toLowerCase() === 'mushroom body' && l.id === 'FBbt_00047953'))
+})
+
+test('buildCountLinks + linkifyCounts turn quoted counts into VFB query links', () => {
+  const ledger = { terms: { medulla: { id: 'FBbt_00003748', digest: { name: 'medulla', queries: [
+    { query_type: 'ImagesNeurons', label: 'Images of neurons with some part in medulla', count: 226524, examples: [] },
+    { query_type: 'NeuronsPartHere', label: 'Neurons with some part in medulla', count: 471, examples: [] }
+  ] } } } }
+  const counts = buildCountLinks(ledger)
+  assert.equal(counts[0].count, 226524) // largest first
+  const out = linkifyCounts('There are 226,524 images and 471 neurons; also 999 unrelated.', counts)
+  assert.match(out, /\[226,524\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003748 "View "Images of neurons with some part in medulla" in VFB"\)/)
+  assert.match(out, /\[471\]\(/)
+  // a number that is not a known count is left alone
+  assert.match(out, /also 999 unrelated/)
+  assert.ok(!/\[999\]/.test(out))
+})
+
+test('linkifyCounts leaves counts inside existing links/code alone and links each once', () => {
+  const counts = [{ count: 471, url: 'https://x/FBbt_1', title: 'View x in VFB' }]
+  const out = linkifyCounts('See [471](http://keep) and `471` and 471 plus 471 again.', counts)
+  assert.match(out, /\[471\]\(http:\/\/keep\)/)   // untouched
+  assert.match(out, /`471`/)                        // untouched
+  assert.equal((out.match(/FBbt_1/g) || []).length, 1) // linked once only
 })
 
 test('unresolved terms (no id) produce nothing', () => {

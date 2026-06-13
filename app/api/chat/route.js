@@ -22,7 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
-import { linkifyKnownTerms } from '../../../lib/followOns.mjs'
+import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
 import {
@@ -10723,8 +10723,12 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       : 'I could not complete the answer just now (the language service did not respond). Please try again in a moment.'
     // Linkify known VFB term names (resolved terms + example neurons) to their
     // report pages with a hover tooltip — restores inline term links without the
-    // model writing ids into the prose.
-    const answerText = linkifyKnownTerms(rawAnswer, live.termLinks || [])
+    // model writing ids into the prose — then turn quoted query counts into links
+    // that open that query's data in VFB.
+    const answerText = linkifyCounts(
+      linkifyKnownTerms(rawAnswer, live.termLinks || []),
+      live.countLinks || []
+    )
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,
