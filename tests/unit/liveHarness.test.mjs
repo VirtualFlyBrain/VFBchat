@@ -7,22 +7,27 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { collectThumbnails, buildLiveDeps, runLiveHarness } from '../../lib/liveHarness.mjs'
 
-// Two-segment VFB thumbnail format (template/id), matching extractImagesFromResponseText.
-const THUMB = 'https://www.virtualflybrain.org/data/VFB/i/0010/0001/thumbnail.png'
-const THUMB2 = 'https://www.virtualflybrain.org/data/VFB/i/0020/0002/thumbnailT.png'
+// Real VFB thumbnail shape: /i/<e1>/<e2>/<TEMPLATE>/thumbnail.png — the entity
+// id is VFB_<e1><e2> (the first two 4-char shards); the last segment is the
+// template the entity is aligned to.
+const THUMB = 'https://www.virtualflybrain.org/data/VFB/i/0010/0001/VFB_00101567/thumbnail.png'
+const THUMB2 = 'https://www.virtualflybrain.org/data/VFB/i/0020/0002/VFB_00101567/thumbnailT.png'
 
-test('collectThumbnails harvests unique VFB thumbnails as { url, label }', () => {
+test('collectThumbnails harvests unique VFB thumbnails as { url, label, id }', () => {
   const into = []
   collectThumbnails({ rows: [{ thumbnail: THUMB }, { thumbnail: THUMB }] }, into)
   collectThumbnails(`text ${THUMB2} more`, into)
-  assert.deepEqual(into, [{ url: THUMB, label: '' }, { url: THUMB2, label: '' }])
+  assert.deepEqual(into, [
+    { url: THUMB, label: '', id: 'VFB_00100001' },
+    { url: THUMB2, label: '', id: 'VFB_00200002' }
+  ])
 })
 
 test('collectThumbnails reads the entity name from the thumbnail markdown alt', () => {
   const into = []
   const md = `[![SLP037_R aligned to JRC2018U](${THUMB} 'SLP037_R aligned to JRC2018U')](VFB_0001)`
   collectThumbnails(md, into)
-  assert.deepEqual(into, [{ url: THUMB, label: 'SLP037_R' }])  // " aligned to …" stripped
+  assert.deepEqual(into, [{ url: THUMB, label: 'SLP037_R', id: 'VFB_00100001' }])  // " aligned to …" stripped
 })
 
 const TOOL_DEFS = [

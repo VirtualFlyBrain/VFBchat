@@ -26,6 +26,7 @@ import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
+import { parseThumbnailEntity } from '../../../lib/termInfoDigest.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
@@ -603,16 +604,25 @@ function dedupeGraphSpecs(graphs = []) {
 }
 
 function extractImagesFromResponseText(responseText = '') {
-  const thumbnailRegex = /https:\/\/www\.virtualflybrain\.org\/data\/VFB\/i\/([^/]+)\/([^/]+)\/thumbnail(?:T)?\.png/g
+  // Match the full sharded thumbnail path (http/https, www optional, any number
+  // of leading shard segments); derive the real entity id from the LAST segment
+  // before /thumbnail via parseThumbnailEntity (the old 2-segment pattern read a
+  // template shard as the id, or missed 3-segment URLs entirely).
+  const thumbnailRegex = /https?:\/\/(?:www\.)?virtualflybrain\.org\/data\/VFB\/i\/(?:[^/\s)]+\/)+thumbnail(?:T)?\.png/gi
   const images = []
+  const seen = new Set()
   let match
 
   while ((match = thumbnailRegex.exec(responseText)) !== null) {
+    const url = match[0].replace(/^http:/i, 'https:')
+    if (seen.has(url)) continue
+    seen.add(url)
+    const { id, template } = parseThumbnailEntity(url)
     images.push({
-      id: match[2],
-      template: match[1],
-      thumbnail: match[0],
-      label: `VFB Image ${match[2]}`
+      id,
+      template,
+      thumbnail: url,
+      label: id ? `VFB Image ${id}` : 'VFB Image'
     })
   }
 
@@ -10587,11 +10597,15 @@ function mergeThumbnailImages(images = [], thumbnails = []) {
     const givenLabel = typeof t === 'string' ? '' : (t && t.label) || ''
     const givenId = typeof t === 'string' ? '' : (t && t.id) || ''
     if (!url || seen.has(url)) continue
-    const m = url.match(/\/i\/([^/]+)\/([^/]+)\/thumbnail/)
-    const id = givenId || (m ? m[2] : url)
+    // Entity id is the LAST path segment before /thumbnail (VFB thumbnail URLs
+    // are sharded /i/<t1>/<t2>/<ENTITY>/thumbnail.png). NEVER fall back to the
+    // raw URL as the id — that yields a broken reports/<png-url> link that the
+    // VFB server redirects to geppetto?id=<png-url>.
+    const { id: parsedId, template } = parseThumbnailEntity(url)
+    const id = givenId || parsedId
     // Prefer the real entity name; only fall back to a generic label when none.
-    const label = givenLabel || (m ? `VFB image ${m[2]}` : 'VFB image')
-    out.push({ id, template: m ? m[1] : '', thumbnail: url, label })
+    const label = givenLabel || (id ? `VFB image ${id}` : 'VFB image')
+    out.push({ id, template, thumbnail: url, label })
     seen.add(url)
   }
   return out

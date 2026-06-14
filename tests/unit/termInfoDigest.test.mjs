@@ -5,7 +5,21 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText, unwrapTermInfo, parseReplacedBy, isDeprecatedRecord } from '../../lib/termInfoDigest.mjs'
+import { isTermInfo, buildTermInfoDigest, digestToText, termInfoToDigestText, unwrapTermInfo, parseReplacedBy, isDeprecatedRecord, parseThumbnailEntity } from '../../lib/termInfoDigest.mjs'
+
+test('parseThumbnailEntity reads the depicted entity from the first two shards, template from the last segment', () => {
+  // /i/<e1>/<e2>/<TEMPLATE>/thumbnail.png — entity VFB_001029eo (the neuron) on
+  // template VFB_00101567 (JRC2018U). Confirmed against the live Images field.
+  assert.deepEqual(
+    parseThumbnailEntity('https://www.virtualflybrain.org/data/VFB/i/0010/29eo/VFB_00101567/thumbnail.png'),
+    { id: 'VFB_001029eo', template: 'VFB_00101567' })
+  // http + thumbnailT variant resolves the same entity.
+  assert.equal(parseThumbnailEntity('http://www.virtualflybrain.org/data/VFB/i/jrmc/20bn/VFB_00101567/thumbnailT.png').id, 'VFB_jrmc20bn')
+  // A non-thumbnail / unparseable URL yields no id (so callers omit the link
+  // rather than building reports/<png-url>).
+  assert.deepEqual(parseThumbnailEntity('https://example.com/foo.png'), { id: '', template: '' })
+  assert.equal(parseThumbnailEntity('').id, '')
+})
 
 // Trimmed mushroom-body-shaped fixture (mirrors the live MCP payload).
 const MB = {
