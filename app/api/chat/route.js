@@ -22,6 +22,7 @@ import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
+import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -10547,7 +10548,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       defaultModel: apiModel,
       toolDefs: buildHarnessToolCatalogue(),
       executeTool: (name, args) => executeFunctionTool(name, args, ctx),
-      collectGraphs: (out) => extractGraphSpecsFromToolOutputs([out]),
+      collectGraphs: (out) => {
+        // First: an explicit create_basic_graph tool output (legacy shape).
+        const fromTool = extractGraphSpecsFromToolOutputs([out])
+        if (fromTool.length) return fromTool
+        // Otherwise build a graph deterministically from a connectivity tool's
+        // output — the harness synthesiser is a text stream and cannot call
+        // create_basic_graph itself, so this is how connectivity graphs appear.
+        let parsed = out
+        if (typeof out === 'string') { try { parsed = JSON.parse(out) } catch { parsed = null } }
+        return buildConnectivityGraphs(parsed).map(normalizeGraphSpec).filter(Boolean)
+      },
       streamText: ({ messages, model }) => streamSynthCompletion({
         messages, model, apiBaseUrl, apiKey, sendEvent,
         onResponseId: (id) => { if (!responseId) responseId = id }
