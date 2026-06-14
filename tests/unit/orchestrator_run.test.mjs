@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -250,6 +250,23 @@ test('maybeInjectConnectivityStep adds a connectivity step for a neuron + graph 
   assert.ok(injected, 'a connectivity step should be injected')
   assert.equal(injected.args.endpoint_type, 'giant fiber neuron')
   assert.equal(injected.args.direction, 'downstream')
+})
+
+test('maybeInjectScrnaseqStep injects the expression macro for a gene-expression question on a scRNAseq term', () => {
+  const ledger = { plan: [{ id: 's1', tool: 'vfb_get_term_info', status: 'satisfied' }],
+    terms: { 'Kenyon cell': { id: 'FBbt_00003686', label: 'Kenyon cell',
+      digest: { name: 'Kenyon cell' }, info: { SuperTypes: ['Neuron', 'Anatomy', 'hasScRNAseq'] } } } }
+  maybeInjectScrnaseqStep(ledger, 'which dopamine receptor genes do adult Kenyon cells express?')
+  const inj = ledger.plan.find(s => s.tool === 'vfb_scrnaseq_gene_expression')
+  assert.ok(inj, 'scRNAseq step injected')
+  assert.equal(inj.args.neuron_type, 'Kenyon cell')
+  // not for a term without scRNAseq data, and not for a non-expression question
+  const noSc = { plan: [], terms: { x: { id: 'i', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Anatomy'] } } } }
+  maybeInjectScrnaseqStep(noSc, 'which genes does the medulla express?')
+  assert.equal(noSc.plan.length, 0)
+  const notExpr = { plan: [], terms: { x: { id: 'i', label: 'KC', digest: { name: 'Kenyon cell' }, info: { SuperTypes: ['Neuron', 'hasScRNAseq'] } } } }
+  maybeInjectScrnaseqStep(notExpr, 'what is a Kenyon cell?')
+  assert.equal(notExpr.plan.length, 0)
 })
 
 test('maybeInjectRegionNeuronCountStep injects the count tool for a region count question', () => {
