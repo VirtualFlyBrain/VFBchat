@@ -133,6 +133,12 @@ test('detectFastPath: definitional lookup yes; tool-specific / multi-step no', (
   // bare pronoun must NOT fast-path (needs the history-aware planner)
   assert.equal(detectFastPath('What are they?'), null)
   assert.equal(detectFastPath('What is it?'), null)
+  // "(major) subdivisions of the Drosophila X" resolves the ENTITY X, not the descriptor
+  const subs = detectFastPath('What are the major subdivisions of the Drosophila mushroom body?')
+  assert.ok(subs, 'subdivisions question should fast-path')
+  assert.deepEqual(subs.terms_to_resolve, ['mushroom body'])
+  const parts = detectFastPath('What are the parts of the antennal lobe?')
+  assert.deepEqual(parts.terms_to_resolve, ['antennal lobe'])
 })
 
 test('INTENTS covers documentation and literature', () => {
