@@ -71,6 +71,22 @@ test('buildTables: a genetic-tools question surfaces the expression table, not n
   assert.ok(!tables.some(t => /Neurons with some part/.test(t.title)), 'neuron list must be suppressed for a tools question')
 })
 
+test('buildTables suppresses a secondary gene (FBgn) term\'s tables alongside a non-gene subject', () => {
+  const ledger = { terms: {
+    'Kenyon cell': { id: 'FBbt_00003686', digest: { name: 'Kenyon cell', queries: [
+      { query_type: 'SubclassesOf', label: 'Subclasses of Kenyon cell', count: 37, output_format: 'table',
+        previewRows: [{ name: 'gamma KC', id: 'FBbt_1', thumbnail: '', tags: [] }] }
+    ] } },
+    'Dop1R1': { id: 'FBgn0011582', digest: { name: 'Dop1R1', queries: [
+      { query_type: 'ClustersExpressingHere', label: 'Clusters expressing Dop1R1', count: 437, output_format: 'table',
+        previewRows: [{ name: 'optic chiasma glia', id: 'FBlc_1', thumbnail: '', tags: [] }] }
+    ] } }
+  } }
+  const tables = buildTables(ledger, 'which genes do Kenyon cells express?')
+  // the gene's "clusters expressing" table is suppressed; only the subject's tables remain
+  assert.ok(!tables.some(t => /Clusters expressing/i.test(t.title)), 'gene term tables suppressed')
+})
+
 test('isListQuestion distinguishes list/image questions from definitional ones', () => {
   assert.equal(isListQuestion('What neurons are in the lateral horn?'), true)
   assert.equal(isListQuestion('Show me images of the medulla'), true)
