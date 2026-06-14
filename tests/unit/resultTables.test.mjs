@@ -78,12 +78,15 @@ test('isListQuestion distinguishes list/image questions from definitional ones',
   assert.equal(isListQuestion('Where is it located'), false)
 })
 
-test('galleryThumbnails collects thumbnails for a list question, none for a definitional one', () => {
-  // unconditional (no question) — collects everything
-  assert.deepEqual(galleryThumbnails(ledgerWithRows()), ['https://x/a/b/c/thumbnail.png', 'https://y/a/b/c/thumbnail.png'])
+test('galleryThumbnails collects { url, label, id } for a list question, none for a definitional one', () => {
+  const expected = [
+    { url: 'https://x/a/b/c/thumbnail.png', label: 'GMR12A11', id: 'VFBexp_1' },
+    { url: 'https://y/a/b/c/thumbnail.png', label: 'LHN1', id: 'VFB_n1' }
+  ]
+  // unconditional (no question) — collects everything, each with its row name as label
+  assert.deepEqual(galleryThumbnails(ledgerWithRows()), expected)
   // list/image question — collects
-  assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'Show me images of the lateral horn'),
-    ['https://x/a/b/c/thumbnail.png', 'https://y/a/b/c/thumbnail.png'])
+  assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'Show me images of the lateral horn'), expected)
   // definitional question — suppressed
   assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'What is the lateral horn'), [])
 })

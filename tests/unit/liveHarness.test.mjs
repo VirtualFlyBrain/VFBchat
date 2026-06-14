@@ -11,11 +11,18 @@ import { collectThumbnails, buildLiveDeps, runLiveHarness } from '../../lib/live
 const THUMB = 'https://www.virtualflybrain.org/data/VFB/i/0010/0001/thumbnail.png'
 const THUMB2 = 'https://www.virtualflybrain.org/data/VFB/i/0020/0002/thumbnailT.png'
 
-test('collectThumbnails harvests unique VFB thumbnail URLs from any shape', () => {
+test('collectThumbnails harvests unique VFB thumbnails as { url, label }', () => {
   const into = []
   collectThumbnails({ rows: [{ thumbnail: THUMB }, { thumbnail: THUMB }] }, into)
   collectThumbnails(`text ${THUMB2} more`, into)
-  assert.deepEqual(into, [THUMB, THUMB2])
+  assert.deepEqual(into, [{ url: THUMB, label: '' }, { url: THUMB2, label: '' }])
+})
+
+test('collectThumbnails reads the entity name from the thumbnail markdown alt', () => {
+  const into = []
+  const md = `[![SLP037_R aligned to JRC2018U](${THUMB} 'SLP037_R aligned to JRC2018U')](VFB_0001)`
+  collectThumbnails(md, into)
+  assert.deepEqual(into, [{ url: THUMB, label: 'SLP037_R' }])  // " aligned to …" stripped
 })
 
 const TOOL_DEFS = [
@@ -67,6 +74,6 @@ test('runLiveHarness (fast-path term lookup) returns an answer and harvests a th
   const { runHarness } = await import('../../lib/orchestrator.mjs')
   const r = await runHarness('What is the medulla?', deps)
   assert.equal(r.answer, 'The medulla is a region of the optic lobe.')
-  assert.ok(collected.thumbnails.includes(THUMB), 'thumbnail harvested from term-info output')
+  assert.ok(collected.thumbnails.some(t => t.url === THUMB), 'thumbnail harvested from term-info output')
   assert.ok(collected.toolUsage.vfb_search_terms >= 1)
 })

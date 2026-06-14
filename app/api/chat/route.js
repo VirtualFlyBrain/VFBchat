@@ -10503,10 +10503,17 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
 function mergeThumbnailImages(images = [], thumbnails = []) {
   const out = Array.isArray(images) ? [...images] : []
   const seen = new Set(out.map(i => i.thumbnail))
-  for (const url of thumbnails || []) {
-    if (seen.has(url)) continue
+  for (const t of thumbnails || []) {
+    // Thumbnails may be bare URL strings or { url, label, id } pairs.
+    const url = typeof t === 'string' ? t : (t && t.url)
+    const givenLabel = typeof t === 'string' ? '' : (t && t.label) || ''
+    const givenId = typeof t === 'string' ? '' : (t && t.id) || ''
+    if (!url || seen.has(url)) continue
     const m = url.match(/\/i\/([^/]+)\/([^/]+)\/thumbnail/)
-    out.push({ id: m ? m[2] : url, template: m ? m[1] : '', thumbnail: url, label: m ? `VFB Image ${m[2]}` : 'VFB Image' })
+    const id = givenId || (m ? m[2] : url)
+    // Prefer the real entity name; only fall back to a generic label when none.
+    const label = givenLabel || (m ? `VFB image ${m[2]}` : 'VFB image')
+    out.push({ id, template: m ? m[1] : '', thumbnail: url, label })
     seen.add(url)
   }
   return out
