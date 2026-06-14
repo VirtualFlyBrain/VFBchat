@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -226,6 +226,39 @@ test('pickBestTermId returns null for a generic descriptor phrase (no spurious t
     { short_form: 'FBbt_00003687', label: 'mushroom body pedunculus', synonym: ['peduncle'], facets_annotation: ['Anatomy'] }
   ] } }
   assert.equal(pickBestTermId(search2, 'peduncle'), 'FBbt_00003687')
+})
+
+test('maybeInjectConnectivityStep adds a connectivity step for a neuron + graph question', () => {
+  const ledger = {
+    plan: [{ id: 's1', tool: 'vfb_get_term_info', status: 'satisfied' }],
+    terms: { 'giant fiber neuron': { id: 'FBbt_X', label: 'giant fiber neuron',
+      digest: { name: 'giant fiber neuron' }, info: { SuperTypes: ['Class', 'Neuron', 'Adult'] } } }
+  }
+  maybeInjectConnectivityStep(ledger, 'What does the giant fiber neuron connect to downstream? Show a graph')
+  const injected = ledger.plan.find(s => s.tool === 'vfb_find_connectivity_partners')
+  assert.ok(injected, 'a connectivity step should be injected')
+  assert.equal(injected.args.endpoint_type, 'giant fiber neuron')
+  assert.equal(injected.args.direction, 'downstream')
+})
+
+test('maybeInjectConnectivityStep: upstream wording, no double-inject, regions excluded', () => {
+  // upstream
+  const up = { plan: [], terms: { x: { id: 'i', label: 'x', digest: { name: 'MBON01' }, info: { Tags: ['Neuron'] } } } }
+  maybeInjectConnectivityStep(up, 'what provides input to MBON01 upstream?')
+  assert.equal(up.plan.find(s => s.tool === 'vfb_find_connectivity_partners').args.direction, 'upstream')
+  // does not double-inject when a connectivity tool is already planned
+  const has = { plan: [{ id: 's1', tool: 'vfb_query_connectivity', status: 'pending' }],
+    terms: { x: { id: 'i', label: 'x', digest: { name: 'n' }, info: { SuperTypes: ['Neuron'] } } } }
+  maybeInjectConnectivityStep(has, 'graph of connectivity')
+  assert.equal(has.plan.filter(s => /connect/i.test(s.tool)).length, 1)
+  // a REGION endpoint is not routed to the connectivity tool
+  const region = { plan: [], terms: { medulla: { id: 'm', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Anatomy', 'Synaptic_neuropil'] } } } }
+  maybeInjectConnectivityStep(region, 'connectivity from the medulla in graph form')
+  assert.equal(region.plan.length, 0)
+  // no connectivity intent -> no injection
+  const plain = { plan: [], terms: { x: { id: 'i', label: 'x', digest: { name: 'Kenyon cell' }, info: { SuperTypes: ['Neuron'] } } } }
+  maybeInjectConnectivityStep(plain, 'what is a Kenyon cell?')
+  assert.equal(plain.plan.length, 0)
 })
 
 test('plural cell phrase with no matching region resolves to the cell class', () => {
