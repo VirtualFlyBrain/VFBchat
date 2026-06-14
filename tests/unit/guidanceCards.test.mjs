@@ -54,6 +54,13 @@ test('extended cards fire on their battery-style intents with the right tools', 
   assert.match(g('what neurotransmitter do Kenyon cells use'), /vfb_get_neurotransmitter_profile/)
 })
 
+test('neuron-count card carries synth guidance to separate annotated vs biological counts', () => {
+  const s = synthGuidance('Approximately how many neurons are in the adult central brain?')
+  assert.match(s, /annotated|not the biological total/i)
+  // not injected for unrelated questions
+  assert.equal(synthGuidance('What is the central complex?'), '')
+})
+
 test('cards do not over-fire on a plain definitional question', () => {
   assert.deepEqual(selectCards('What is the mushroom body?').map(c => c.id), [])
   assert.deepEqual(selectCards('Where is the medulla located?').map(c => c.id), [])
