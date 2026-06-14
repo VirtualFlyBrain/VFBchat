@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId, maybeInjectConnectivityStep } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -250,6 +250,24 @@ test('maybeInjectConnectivityStep adds a connectivity step for a neuron + graph 
   assert.ok(injected, 'a connectivity step should be injected')
   assert.equal(injected.args.endpoint_type, 'giant fiber neuron')
   assert.equal(injected.args.direction, 'downstream')
+})
+
+test('maybeInjectRegionNeuronCountStep injects the count tool for a region count question', () => {
+  const ledger = { plan: [{ id: 's1', tool: 'vfb_get_term_info', status: 'satisfied' }],
+    terms: { 'adult central brain': { id: 'FBbt_00047887', label: 'adult central brain',
+      digest: { name: 'adult central brain' }, info: { SuperTypes: ['Anatomy', 'Synaptic_neuropil'] } } } }
+  maybeInjectRegionNeuronCountStep(ledger, 'Approximately how many neurons are in the adult central brain?')
+  const inj = ledger.plan.find(s => s.tool === 'vfb_get_region_neuron_count')
+  assert.ok(inj, 'count step injected')
+  assert.equal(inj.args.region, 'adult central brain')
+  assert.equal(inj.args.include_literature, true)
+  // not for a neuron type, and not for a non-count question
+  const neuron = { plan: [], terms: { x: { id: 'i', label: 'x', digest: { name: 'KC' }, info: { SuperTypes: ['Neuron'] } } } }
+  maybeInjectRegionNeuronCountStep(neuron, 'how many neurons connect to KC?')
+  assert.equal(neuron.plan.length, 0)
+  const noCount = { plan: [], terms: { r: { id: 'i', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Anatomy'] } } } }
+  maybeInjectRegionNeuronCountStep(noCount, 'What is the medulla?')
+  assert.equal(noCount.plan.length, 0)
 })
 
 test('maybeInjectConnectivityStep: upstream wording, no double-inject, regions excluded', () => {
