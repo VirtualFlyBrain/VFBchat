@@ -24,6 +24,7 @@ import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
+import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -10666,9 +10667,26 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
 
     // Guard against an empty synthesis (e.g. ELM unreachable mid-request): never
     // emit a blank answer — say plainly what happened instead of crashing.
-    const rawAnswer = (typeof live.answer === 'string' && live.answer.trim())
+    const rawAnswerText = (typeof live.answer === 'string' && live.answer.trim())
       ? live.answer
       : 'I could not complete the answer just now (the language service did not respond). Please try again in a moment.'
+    // Grounding guard: strip any ontology ids the model leaked into prose (they are
+    // re-linked deterministically from labels below), and log leaked ids / numbers
+    // that do not trace to any tool value so the partial-fabrication rate is visible
+    // in the container logs.
+    const leakedIds = findLeakedIds(rawAnswerText)
+    const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText) : rawAnswerText
+    try {
+      const grounded = collectGroundedNumbers(
+        (live.terms || []).map(t => t),
+        Object.values(live.ledger?.terms || {}).map(t => t.digest),
+        live.expression || [], live.graphs || [], live.countLinks || []
+      )
+      const ungrounded = findUngroundedNumbers(rawAnswer, grounded)
+      if (leakedIds.length || ungrounded.length) {
+        console.error(`[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'} | ungrounded_numbers=${ungrounded.join(',') || 'none'} | q=${String(userMessage).slice(0, 120)}`)
+      }
+    } catch { /* audit is best-effort */ }
     // Linkify known VFB term names (resolved terms + example neurons) to their
     // report pages with a hover tooltip — restores inline term links without the
     // model writing ids into the prose — then turn quoted query counts into links
