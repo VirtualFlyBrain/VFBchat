@@ -87,6 +87,25 @@ test('buildTables suppresses a secondary gene (FBgn) term\'s tables alongside a 
   assert.ok(!tables.some(t => /Clusters expressing/i.test(t.title)), 'gene term tables suppressed')
 })
 
+test('buildTables maps input->presynaptic and output->postsynaptic for a region', () => {
+  const ledger = { terms: { 'mushroom body': { id: 'FBbt_00005801', digest: { name: 'mushroom body', queries: [
+    { query_type: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in mushroom body', count: 367, output_format: 'table',
+      previewRows: [{ name: 'Li38', id: 'FBbt_a', thumbnail: '', tags: [] }] },
+    { query_type: 'NeuronsPostsynapticHere', label: 'Neurons with postsynaptic terminals in mushroom body', count: 301, output_format: 'table',
+      previewRows: [{ name: 'LT34', id: 'FBbt_b', thumbnail: '', tags: [] }] },
+    { query_type: 'NeuronsPartHere', label: 'Neurons with some part in mushroom body', count: 602, output_format: 'table',
+      previewRows: [{ name: 'CB2311', id: 'FBbt_c', thumbnail: '', tags: [] }] }
+  ] } } } }
+  // "input neurons to X" -> presynaptic table is top, postsynaptic suppressed
+  const inputT = buildTables(ledger, 'What are the main input neurons to the mushroom body?')
+  assert.match(inputT[0].title, /presynaptic/i)
+  assert.ok(!inputT.some(t => /postsynaptic/i.test(t.title)), 'postsynaptic suppressed for an input question')
+  // "output neurons of X" -> postsynaptic table is top, presynaptic suppressed
+  const outputT = buildTables(ledger, 'What neurons receive output from the mushroom body?')
+  assert.match(outputT[0].title, /postsynaptic/i)
+  assert.ok(!outputT.some(t => /presynaptic/i.test(t.title)), 'presynaptic suppressed for an output question')
+})
+
 test('isListQuestion distinguishes list/image questions from definitional ones', () => {
   assert.equal(isListQuestion('What neurons are in the lateral horn?'), true)
   assert.equal(isListQuestion('Show me images of the medulla'), true)
