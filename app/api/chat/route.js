@@ -23,6 +23,7 @@ import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSe
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
+import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix } from '../../../lib/scrnaseq.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -1230,6 +1231,26 @@ function getToolConfig() {
         limit: {
           type: 'number',
           description: 'Maximum subclass/example rows to include (default 12, max 30).'
+        }
+      },
+      required: ['neuron_type']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_scrnaseq_gene_expression',
+    description: 'Report single-cell (scRNA-seq) gene expression for a neuron class from VFB, filtered to the genes asked about. Use this for "which genes / which receptors does <neuron type> express?" (e.g. dopamine-receptor expression in Kenyon cells). Resolves the neuron type, fetches its scRNA-seq clusters and per-gene expression tables, and returns a compact gene × cluster matrix (expression level + fraction of cells expressing) with the dataset publication. Distinguishes subtypes (e.g. gamma vs alpha/beta Kenyon cells) when present.',
+    parameters: {
+      type: 'object',
+      properties: {
+        neuron_type: {
+          type: 'string',
+          description: 'Neuron-class label or FBbt ID, e.g. "Kenyon cell", "gamma Kenyon cell", or "FBbt_00003686".'
+        },
+        genes: {
+          type: 'string',
+          description: 'Optional: the genes or gene family to report, e.g. "dopamine receptors" or "Dop1R1, Dop2R". If omitted, the top-expressed genes are returned.'
         }
       },
       required: ['neuron_type']
@@ -6910,6 +6931,54 @@ async function getNeurotransmitterProfileTool(client, args = {}, context = {}) {
   })
 }
 
+// scRNA-seq gene-expression recipe (the paper's flagship T4.9 two-hop). Resolves a
+// neuron type, confirms it has scRNAseq data, fetches its clusters
+// (anatScRNAseqQuery), then the per-gene expression table per cluster
+// (clusterExpression), and filters server-side to the genes the user asked about —
+// turning a ~450 KB-per-cluster payload into a compact, cited gene × cluster matrix.
+async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
+  const requested = String(args.neuron_type || '').trim()
+  if (!requested) {
+    return JSON.stringify({ error: 'vfb_scrnaseq_gene_expression requires neuron_type.', tool: 'vfb_scrnaseq_gene_expression', recoverable: true })
+  }
+  // Resolve to an FBbt class.
+  let id = sanitizeVfbId(requested)
+  let label = requested
+  let record = null
+  if (/^FBbt_\d{8}$/i.test(id)) {
+    const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
+  } else {
+    const r = await resolveComparisonUpstreamType(client, requested)
+    if (r?.id) { id = r.id; label = r.label || requested; const ti = await getTermInfoEvidence(client, id); record = ti.record } else { id = '' }
+  }
+  if (!id) {
+    return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_scrnaseq_gene_expression', recoverable: true })
+  }
+  const supertypes = [].concat(record?.SuperTypes || [], record?.Tags || []).map(s => String(s).toLowerCase())
+  if (!supertypes.includes('hasscrnaseq')) {
+    return JSON.stringify({ tool: 'vfb_scrnaseq_gene_expression', resolved: { id, label }, has_scrnaseq: false, note: `VFB does not currently hold scRNA-seq expression data for ${label}.` })
+  }
+  // Hop 1: scRNA-seq clusters for this cell type.
+  let clusters = []
+  try { clusters = parseScrnaseqClusters(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'anatScRNAseqQuery' }))) } catch { clusters = [] }
+  // Bound cost: prefer adult clusters, cap the number queried for expression.
+  const picked = clusters.filter(c => !(c.tags || []).includes('Larva')).slice(0, 4)
+  // Hop 2: per-cluster expression tables.
+  const perCluster = new Map()
+  for (const c of picked) {
+    try { perCluster.set(c.id, parseClusterExpression(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id: c.id, query_type: 'clusterExpression' })))) } catch { /* skip a failed cluster */ }
+  }
+  const requestedGenes = extractRequestedGenes(context.userMessage || requested)
+  const matrix = buildExpressionMatrix(picked, perCluster, requestedGenes)
+  return JSON.stringify({
+    tool: 'vfb_scrnaseq_gene_expression',
+    resolved: { id, label },
+    has_scrnaseq: true,
+    cluster_count: clusters.length,
+    ...matrix
+  })
+}
+
 function inferRegionFromUserMessage(userMessage = '', rawValue = '') {
   const rawText = String(rawValue || '').trim()
   if (rawText) {
@@ -8041,6 +8110,11 @@ async function executeFunctionTool(name, args, context = {}) {
   if (name === 'vfb_get_neurotransmitter_profile') {
     const client = await getMcpClientForContext('vfb', context)
     return getNeurotransmitterProfileTool(client, normalizedArgs, context)
+  }
+
+  if (name === 'vfb_scrnaseq_gene_expression') {
+    const client = await getMcpClientForContext('vfb', context)
+    return scrnaseqGeneExpressionTool(client, normalizedArgs, context)
   }
 
   if (name === 'vfb_summarize_region_connections') {
