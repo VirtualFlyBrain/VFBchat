@@ -26,6 +26,7 @@ import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
+import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -10621,11 +10622,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
   let responseId = null
 
   try {
+    // Complexity router: scale planner self-consistency and the tool-round budget
+    // to the question, so simple definitional lookups are not slowed by full
+    // voting / a deep budget they do not need. An env override caps the budget.
+    const complexity = classifyComplexity(userMessage)
+    const roundCap = normalizeInteger(process.env.VFB_MAX_TOOL_ROUNDS, 24, 4, 50)
     const live = await runLiveHarness({
       // Plain user text — NOT the link-injected version, so the fast-path /
       // planner resolve clean term names (markdown links were leaking into the
       // resolved term and then into the follow-on chip text).
       question: userMessage,
+      plannerVotes: complexity.plannerVotes,
       history: priorMessages,
       apiBaseUrl,
       apiKey,
@@ -10648,7 +10655,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         onResponseId: (id) => { if (!responseId) responseId = id }
       }),
       onStatus: (status) => sendEvent('status', status),
-      maxToolRounds: normalizeInteger(process.env.VFB_MAX_TOOL_ROUNDS, 24, 4, 50)
+      maxToolRounds: Math.min(complexity.maxToolRounds, roundCap)
     })
 
     if (live.clarify) {

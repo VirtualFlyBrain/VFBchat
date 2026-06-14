@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectCards, plannerGuidance, synthGuidance, CARDS } from '../../lib/guidanceCards.mjs'
+import { selectCards, plannerGuidance, synthGuidance, classifyComplexity, CARDS } from '../../lib/guidanceCards.mjs'
 
 test('connectivity card fires for connectivity/graph questions only', () => {
   const ids = (q) => selectCards(q).map(c => c.id)
@@ -67,6 +67,30 @@ test('scrnaseq card fires for gene/receptor-expression questions', () => {
   assert.match(plannerGuidance('what genes do Kenyon cells express'), /vfb_scrnaseq_gene_expression/)
   // a driver-line question should not be treated as a gene-expression question
   assert.ok(!selectCards('what GAL4 driver lines label the mushroom body?').some(c => c.id === 'scrnaseq'))
+})
+
+test('classifyComplexity scales effort: simple < standard < complex', () => {
+  // simple definitional lookup -> one planner vote, shallow budget
+  const simple = classifyComplexity('What is the mushroom body?')
+  assert.equal(simple.tier, 'simple')
+  assert.equal(simple.plannerVotes, 1)
+  // standard single-tool intent
+  const standard = classifyComplexity('What GAL4 driver lines label the mushroom body?')
+  assert.equal(standard.tier, 'standard')
+  assert.equal(standard.plannerVotes, 2)
+  // complex: connectivity / scRNAseq / comparison / pathway / count
+  for (const q of [
+    'What does the giant fiber neuron connect to downstream?',
+    'which dopamine receptor genes do Kenyon cells express?',
+    'how many neurons are in the central brain?',
+    'trace a pathway from ORNs to the lateral horn',
+    'compare the downstream targets of s-LNv and l-LNv'
+  ]) {
+    const c = classifyComplexity(q)
+    assert.equal(c.tier, 'complex', `expected complex for: ${q}`)
+    assert.equal(c.plannerVotes, 3)
+    assert.equal(c.maxToolRounds, 24)
+  }
 })
 
 test('cards do not over-fire on a plain definitional question', () => {
