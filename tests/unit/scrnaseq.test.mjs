@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes,
-  buildExpressionMatrix, GENE_SETS
+  buildExpressionMatrix, renderExpressionMarkdown, GENE_SETS
 } from '../../lib/scrnaseq.mjs'
 
 // Shapes mirror the live VFB anatScRNAseqQuery / clusterExpression output.
@@ -85,6 +85,23 @@ test('buildExpressionMatrix returns a top-expressed view when no genes named', (
   const m = buildExpressionMatrix(clusters, perCluster, { symbols: [] }, { maxGenes: 2 })
   // ranked by expression level: jdp (15079) then Dop1R1 (1200)
   assert.deepEqual(m.genes.map(g => g.symbol), ['jdp', 'Dop1R1'])
+})
+
+test('renderExpressionMarkdown builds a gene × subtype table with levels, percent and a citation', () => {
+  const clusters = parseScrnaseqClusters(CLUSTERS)
+  const perCluster = new Map([
+    ['FBlc0006127', parseClusterExpression(GAMMA_EXPR)],
+    ['FBlc0006141', parseClusterExpression(AB_EXPR)]
+  ])
+  const m = buildExpressionMatrix(clusters, perCluster, extractRequestedGenes('dopamine receptors in Kenyon cells'))
+  const md = renderExpressionMarkdown(m, 'Kenyon cell')
+  assert.match(md, /scRNA-seq expression — Kenyon cell/)
+  assert.match(md, /\| Gene \|/)
+  assert.match(md, /gamma Kenyon cell/)          // column header from cell type
+  assert.match(md, /Dop1R1 \|[^|]*\(81%\)/)      // level + fraction of cells
+  assert.match(md, /Source:.*Davie/)             // citation line
+  // empty matrix -> no table
+  assert.equal(renderExpressionMarkdown({ genes: [] }), '')
 })
 
 test('buildExpressionMatrix notes when requested genes are absent', () => {

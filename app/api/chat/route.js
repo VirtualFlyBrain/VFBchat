@@ -23,7 +23,7 @@ import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSe
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
-import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix } from '../../../lib/scrnaseq.mjs'
+import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -10684,9 +10684,15 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       .filter(t => t && t.superseded && t.superseded.fromId)
       .map(t => `${t.superseded.fromLabel || t.superseded.fromId} (${t.superseded.fromId}) is deprecated in VFB; showing its current replacement, ${t.label}.`)
     const dedupNotes = [...new Set(supersededNotes)]
-    const answerText = dedupNotes.length
+    let answerText = dedupNotes.length
       ? `_Note: ${dedupNotes.join(' ')}_\n\n${answerBody}`
       : answerBody
+    // Append the scRNA-seq expression matrix (genes × subtypes, with levels and %
+    // cells) deterministically — the weak synthesiser tends to drop the numbers.
+    for (const m of (live.expression || [])) {
+      const md = renderExpressionMarkdown(m, m?.resolved?.label || '')
+      if (md) answerText += `\n\n${md}`
+    }
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,

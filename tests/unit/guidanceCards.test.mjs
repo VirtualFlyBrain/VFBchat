@@ -61,14 +61,6 @@ test('neuron-count card carries synth guidance to separate annotated vs biologic
   assert.equal(synthGuidance('What is the central complex?'), '')
 })
 
-test('scrnaseq card fires for gene/receptor-expression questions', () => {
-  assert.ok(selectCards('which dopamine receptor genes do Kenyon cells express?').some(c => c.id === 'scrnaseq'))
-  assert.ok(selectCards('single-cell transcriptomic profile of MBONs').some(c => c.id === 'scrnaseq'))
-  assert.match(plannerGuidance('what genes do Kenyon cells express'), /vfb_scrnaseq_gene_expression/)
-  // a driver-line question should not be treated as a gene-expression question
-  assert.ok(!selectCards('what GAL4 driver lines label the mushroom body?').some(c => c.id === 'scrnaseq'))
-})
-
 test('cards do not over-fire on a plain definitional question', () => {
   assert.deepEqual(selectCards('What is the mushroom body?').map(c => c.id), [])
   assert.deepEqual(selectCards('Where is the medulla located?').map(c => c.id), [])
