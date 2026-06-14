@@ -25,6 +25,7 @@ import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
+import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
 import { isInvestigationOutput, buildInvestigationDirective } from '../../../lib/investigationRecovery.mjs'
@@ -10709,6 +10710,13 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // cells) deterministically — the weak synthesiser tends to drop the numbers.
     for (const m of (live.expression || [])) {
       const md = renderExpressionMarkdown(m, m?.resolved?.label || '')
+      if (md) answerText += `\n\n${md}`
+    }
+    // Append published neuron-count estimates (with their citation) deterministically
+    // — the weak synthesiser otherwise omits the biological figure or restates the
+    // annotated count as the total.
+    for (const c of (live.countEstimates || [])) {
+      const md = renderNeuronCountEstimate(c, c?.query?.resolved_region || '')
       if (md) answerText += `\n\n${md}`
     }
 
