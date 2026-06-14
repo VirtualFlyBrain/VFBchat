@@ -212,6 +212,17 @@ test('pickBestTermId resolves a stage-prefixed region, not a containing-phrase n
   assert.equal(pickBestTermId(search, 'adult lateral horn'), 'FBbt_00007053')
 })
 
+test('pickBestTermId drops species qualifiers so "Drosophila X" resolves like "X"', () => {
+  // "adult Drosophila central brain" — VFB labels never contain "Drosophila", and
+  // the glial cell ranks above the region in Solr. Must still pick the region.
+  const search = { response: { docs: [
+    { short_form: 'FBbt_00047885', label: 'adult central brain astrocyte-like glial cell', synonym: ['adult central brain astrocyte'] },
+    { short_form: 'FBbt_00047887', label: 'adult central brain', synonym: ['midbrain'] }
+  ] } }
+  assert.equal(pickBestTermId(search, 'adult Drosophila central brain'), 'FBbt_00047887')
+  assert.equal(pickBestTermId(search, 'Drosophila central brain'), 'FBbt_00047887')
+})
+
 test('pickBestTermId returns null for a generic descriptor phrase (no spurious top hit)', () => {
   // "major subdivisions" names no entity; Solr still returns "major mitochondrial
   // derivative" (shares only "major"). The resolver must NOT cite it.
