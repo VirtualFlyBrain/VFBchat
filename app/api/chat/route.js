@@ -7684,6 +7684,7 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
   const neuronsPartHere = querySummaries.find(summary => summary.query_type === 'NeuronsPartHere')
   const hasCentralBrainLiterature = countCandidates.some(candidate => /central brain/i.test(candidate.scope || ''))
   return JSON.stringify({
+    tool: 'vfb_get_region_neuron_count',
     query: {
       region: args.region,
       resolved_region: region.label,
