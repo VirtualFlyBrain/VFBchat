@@ -1028,12 +1028,27 @@ const DEFAULT_VFB_MCP_URL = 'https://vfb3-mcp-preview.virtualflybrain.org/'
 const VFB_MCP_URL = (process.env.VFB_MCP_URL || '').trim() || DEFAULT_VFB_MCP_URL
 const BIORXIV_MCP_URL = 'https://mcp.deepsense.ai/biorxiv/mcp'
 
-// Allow slow VFB MCP calls to complete rather than failing. The MCP SDK default
-// request timeout is 60s, which the backend can exceed on heavier composite
-// queries (region connections, neuron counts), causing the model to give up.
-// Prefer waiting for real data over a fast failure. Default 5 minutes.
-const VFB_MCP_CALL_TIMEOUT_MS = normalizeInteger(process.env.VFB_MCP_CALL_TIMEOUT_MS, 300000, 10000, 600000)
-const VFB_MCP_CALL_OPTIONS = { timeout: VFB_MCP_CALL_TIMEOUT_MS, maxTotalTimeout: VFB_MCP_CALL_TIMEOUT_MS }
+// Per-call-type VFB MCP timeouts. A flat 5-minute timeout meant a transiently
+// slow backend turned a simple lookup into a multi-minute "Resolving…" hang (and
+// with retries, up to ~15 min). Split by weight instead:
+//   - FAST lookups (term info, search, resolve) are indexed single-record reads —
+//     they must return quickly, so a stalled MCP fails fast and the abstention
+//     ladder kicks in instead of holding the chat open.
+//   - SLOW data queries (run_query, connectivity, hierarchy, stocks, big image
+//     lists such as "all neuron images in the adult brain") legitimately take
+//     longer, so they keep a generous budget.
+// Both are env-overridable; VFB_MCP_CALL_TIMEOUT_MS still tunes the slow budget.
+const VFB_MCP_FAST_TIMEOUT_MS = normalizeInteger(process.env.VFB_MCP_FAST_TIMEOUT_MS, 30000, 5000, 120000)
+const VFB_MCP_SLOW_TIMEOUT_MS = normalizeInteger(process.env.VFB_MCP_CALL_TIMEOUT_MS, 150000, 10000, 600000)
+// Light, indexed lookups that must be quick (bare MCP names as sent to callTool).
+const VFB_FAST_TOOLS = new Set([
+  'get_term_info', 'search_terms', 'resolve_entity', 'resolve_combination',
+  'vfb_get_term_info', 'vfb_search_terms', 'vfb_resolve_entity', 'vfb_resolve_combination'
+])
+function mcpCallOptions(name) {
+  const ms = VFB_FAST_TOOLS.has(name) ? VFB_MCP_FAST_TIMEOUT_MS : VFB_MCP_SLOW_TIMEOUT_MS
+  return { timeout: ms, maxTotalTimeout: ms }
+}
 const VFB_MCP_MAX_RETRIES = normalizeInteger(process.env.VFB_MCP_MAX_RETRIES, 2, 0, 5)
 
 // Is this MCP error worth retrying (transient: timeout/network/5xx), vs a real
@@ -1053,7 +1068,7 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
   let lastError
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await client.callTool({ name, arguments: args }, undefined, VFB_MCP_CALL_OPTIONS)
+      return await client.callTool({ name, arguments: args }, undefined, mcpCallOptions(name))
     } catch (error) {
       lastError = error
       const transient = isTransientMcpError(error)
