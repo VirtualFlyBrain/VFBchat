@@ -68,6 +68,37 @@ test('resolveTerms: a bare VFB/FBbt id is fetched directly, skipping the lexical
   assert.ok(deps.calls.tools.some(t => t.name === 'vfb_get_term_info' && t.args.id === 'VFB_00200000'), 'must fetch the id directly')
 })
 
+test('parallel doc-search: a relevant reviewed-docs hit is folded into the answer for any question', async () => {
+  // VFB has no events/news data; the parallel reviewed-docs search must surface a
+  // relevant blog/conference hit and feed it to the synthesiser, even though no
+  // documentation keyword routed there.
+  const plan = {
+    intent: 'other', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'NeuroFly 2026 is 7-11 September in Cologne', verbatim: '7-11 September 2026, University of Cologne' } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'vfb-neurofly-2026', title: 'NeuroFly 2026: 21st Biennial European Drosophila Neurobiology Conference', url: 'https://www.virtualflybrain.org/blog/2025/12/17/neurofly-2026' }] }),
+    get_reviewed_page: () => 'NeuroFly 2026 will be held 7-11 September 2026 at the University of Cologne.'
+  } })
+  const r = await runHarness('When and where is NeuroFly 2026?', deps)
+  assert.ok(deps.calls.tools.some(t => t.name === 'search_reviewed_docs'), 'doc search ran')
+  assert.ok(deps.calls.tools.some(t => t.name === 'get_reviewed_page'), 'relevant hit was fetched')
+  assert.ok(r.ledger.evidence.some(e => e.source === 'doc'), 'doc evidence added for synthesis')
+})
+
+test('parallel doc-search: an irrelevant hit is NOT fetched (no per-query page cost)', async () => {
+  const plan = { intent: 'term_info', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] }
+  const deps = makeDeps({ plan, tools: {
+    // doc index returns something unrelated to "medulla" — must be skipped before fetch
+    search_reviewed_docs: () => ({ results: [{ id: 'x', title: 'How to install vfb-connect in Python', url: 'https://vfb-connect.readthedocs.io/install' }] })
+  } })
+  await runHarness('What is the medulla?', deps)
+  assert.ok(deps.calls.tools.some(t => t.name === 'search_reviewed_docs'), 'doc search still runs in parallel')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'get_reviewed_page'), 'irrelevant page not fetched')
+})
+
 test('end-to-end connectivity: plan → resolve → step → evidence → synthesise', async () => {
   const plan = {
     intent: 'connectivity', underspecified: false, clarifying_question: '',
