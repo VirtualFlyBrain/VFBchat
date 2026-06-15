@@ -10,6 +10,27 @@ function ledgerWith(term) {
   return { terms: { [term.name]: term } }
 }
 
+test('buildFollowOns surfaces documentation evidence pages as sources (with the page title)', () => {
+  const ledger = {
+    terms: {},
+    evidence: [
+      { source: 'doc', claim: 'NeuroFly 2026 is 7-11 Sept in Cologne', verbatim: '…', locator: { url: 'https://www.virtualflybrain.org/blog/2025/12/17/neurofly-2026', title: 'NeuroFly 2026: 21st Biennial European Drosophila Neurobiology Conference' } },
+      { source: 'doc', claim: 'dup', verbatim: '', locator: { url: 'https://www.virtualflybrain.org/blog/2025/12/17/neurofly-2026', title: 'dup' } }
+    ]
+  }
+  const { sources } = buildFollowOns(ledger)
+  assert.equal(sources.length, 1)   // de-duplicated by url
+  assert.match(sources[0].label, /NeuroFly 2026/)
+  assert.equal(sources[0].url, 'https://www.virtualflybrain.org/blog/2025/12/17/neurofly-2026')
+  assert.equal(sources[0].id, null) // doc sources carry no VFB id
+})
+
+test('buildFollowOns falls back to a readable label from the URL when a doc has no title', () => {
+  const ledger = { terms: {}, evidence: [{ source: 'doc', claim: 'x', verbatim: '', locator: { url: 'https://vfb-connect.readthedocs.io/en/stable/installation-guide' } }] }
+  const { sources } = buildFollowOns(ledger)
+  assert.equal(sources[0].label, 'installation guide')
+})
+
 test('vfbReportUrl builds a VFB report link', () => {
   assert.equal(vfbReportUrl('FBbt_00005801'), 'https://www.virtualflybrain.org/reports/FBbt_00005801')
   assert.equal(vfbReportUrl(''), '')

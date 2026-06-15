@@ -673,7 +673,7 @@ const ChatMessage = memo(function ChatMessage({
           {msg.sources.map((s, i) => (
             <span key={`src-${i}`}>
               {i > 0 ? ', ' : ''}
-              <a href={s.url} target="_blank" rel="noopener noreferrer" title={`Open ${s.label} term info in VFB (new tab)`} style={{ color: '#7fb2e6' }}>
+              <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.id ? `Open ${s.label} term info in VFB (new tab)` : `Open ${s.label} (new tab)`} style={{ color: '#7fb2e6' }}>
                 {s.label}
               </a>
             </span>
