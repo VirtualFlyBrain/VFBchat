@@ -141,6 +141,16 @@ test('detectFastPath: definitional lookup yes; tool-specific / multi-step no', (
   assert.deepEqual(parts.terms_to_resolve, ['antennal lobe'])
 })
 
+test('detectFastPath: "what datasets are available" lists datasets; a specific dataset does not', () => {
+  for (const q of ['What datasets are available?', 'list the datasets in VFB', 'which datasets does VFB have?']) {
+    const p = detectFastPath(q)
+    assert.equal(p?.steps?.[0]?.tool, 'vfb_list_connectome_datasets', `should list datasets for: ${q}`)
+    assert.deepEqual(p.terms_to_resolve, [])
+  }
+  // a specific/singular dataset question is NOT the listing route
+  assert.notEqual(detectFastPath('what is in the FAFB dataset')?.steps?.[0]?.tool, 'vfb_list_connectome_datasets')
+})
+
 test('INTENTS covers documentation and literature', () => {
   assert.ok(INTENTS.includes('documentation') && INTENTS.includes('literature'))
 })
