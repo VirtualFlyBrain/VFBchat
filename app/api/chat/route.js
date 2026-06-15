@@ -27,6 +27,7 @@ import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, b
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { parseThumbnailEntity } from '../../../lib/termInfoDigest.mjs'
+import { orderImagesByTemplate, requestedTemplateFromScene } from '../../../lib/resultTables.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
@@ -10616,7 +10617,7 @@ function buildHarnessToolCatalogue() {
   return TOOL_DEFINITIONS.map(tool => ({ name: tool.name, purpose: tool.description || '', parameters: tool.parameters }))
 }
 
-async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage }) {
+async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene }) {
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
   const toolState = {
@@ -10751,12 +10752,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       graphSpecs: live.graphs
     })
     // Result tables (detailed query results) carry their own per-row thumbnails,
-    // so only show a separate image gallery when there is no table — and cap it.
+    // so only show a separate image gallery when there is no table.
     const tables = live.tables || []
-    const galleryUrls = tables.length ? [] : (live.galleryThumbnails || []).slice(0, 8)
-    const images = built.images.length > 0
-      ? built.images
-      : mergeThumbnailImages([], galleryUrls.length ? galleryUrls : (live.thumbnails || []).slice(0, 8))
+    const gallerySource = tables.length
+      ? (live.thumbnails || [])
+      : ((live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || []))
+    const rawImages = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
+    // Prefer the request's own template, then JRC2018U, then JRC2018UVNC, and keep
+    // one image per entity — so an entity's view in the template the user is
+    // looking at comes before the same entity aligned to a different template.
+    const preferredTemplate = requestedTemplateFromScene(scene)
+    const images = orderImagesByTemplate(rawImages, preferredTemplate).slice(0, 8)
     return {
       ...built, images, tables, responseId,
       followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || []
@@ -10959,7 +10965,8 @@ export async function POST(request) {
         apiBaseUrl,
         apiKey,
         apiModel,
-        userMessage: message
+        userMessage: message,
+        scene
       })
 
       if (!result.ok) {

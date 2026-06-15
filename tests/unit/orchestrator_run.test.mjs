@@ -50,6 +50,24 @@ function defaultArgs(tool) {
   return {}
 }
 
+test('resolveTerms: a bare VFB/FBbt id is fetched directly, skipping the lexical search', async () => {
+  // The planner handed us the actual id (e.g. user typed "VFB_00200000"); the
+  // resolver must call get_term_info on it directly, never route it through
+  // vfb_search_terms (which can miss a short_form and wrongly abstain).
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['VFB_00200000'],
+    steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['what is VFB_00200000'] }]
+  }
+  const deps = makeDeps({ plan, tools: {
+    vfb_get_term_info: (a) => ({ Id: a.id, Name: 'JRC2018UnisexVNC', Meta: { Description: 'VNC template' }, Publications: [] })
+  } })
+  const r = await runHarness('What is VFB_00200000?', deps)
+  assert.equal(r.ledger.terms['VFB_00200000'].id, 'VFB_00200000')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'vfb_search_terms'), 'must not run lexical search for a bare id')
+  assert.ok(deps.calls.tools.some(t => t.name === 'vfb_get_term_info' && t.args.id === 'VFB_00200000'), 'must fetch the id directly')
+})
+
 test('end-to-end connectivity: plan → resolve → step → evidence → synthesise', async () => {
   const plan = {
     intent: 'connectivity', underspecified: false, clarifying_question: '',

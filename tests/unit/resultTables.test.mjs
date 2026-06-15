@@ -4,7 +4,39 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseThumbnailUrl, parseTableRow } from '../../lib/termInfoDigest.mjs'
-import { buildTables, galleryThumbnails, isListQuestion } from '../../lib/resultTables.mjs'
+import { buildTables, galleryThumbnails, isListQuestion, orderImagesByTemplate, requestedTemplateFromScene } from '../../lib/resultTables.mjs'
+
+test('requestedTemplateFromScene reads the template from the scene i param', () => {
+  assert.equal(requestedTemplateFromScene({ i: 'VFB_00200000,VFB_001029eo' }), 'VFB_00200000')
+  assert.equal(requestedTemplateFromScene({ i: 'VFB_00101567' }), 'VFB_00101567')
+  assert.equal(requestedTemplateFromScene({}), '')
+  assert.equal(requestedTemplateFromScene(null), '')
+  assert.equal(requestedTemplateFromScene({ i: 'not-an-id,x' }), '')
+})
+
+test('orderImagesByTemplate: requested template first, then JRC2018U, then JRC2018UVNC, then rest', () => {
+  const imgs = [
+    { id: 'VFB_a', template: 'VFB_00200000', thumbnail: 'a' },   // JRC2018UVNC
+    { id: 'VFB_b', template: 'VFB_00999999', thumbnail: 'b' },   // other
+    { id: 'VFB_c', template: 'VFB_00101567', thumbnail: 'c' }    // JRC2018U
+  ]
+  // no preferred template: JRC2018U (c) before JRC2018UVNC (a) before other (b)
+  assert.deepEqual(orderImagesByTemplate(imgs).map(i => i.id), ['VFB_c', 'VFB_a', 'VFB_b'])
+  // preferred = the VNC template -> a comes first
+  assert.deepEqual(orderImagesByTemplate(imgs, 'VFB_00200000').map(i => i.id), ['VFB_a', 'VFB_c', 'VFB_b'])
+})
+
+test('orderImagesByTemplate keeps one image per entity, choosing the best template', () => {
+  const imgs = [
+    { id: 'VFB_x', template: 'VFB_00999999', thumbnail: 'x-other' },   // same entity, other template
+    { id: 'VFB_x', template: 'VFB_00101567', thumbnail: 'x-jrc' },     // same entity, JRC2018U
+    { id: 'VFB_y', template: 'VFB_00999999', thumbnail: 'y-other' }    // only on another template -> still kept
+  ]
+  const out = orderImagesByTemplate(imgs)
+  assert.equal(out.length, 2)
+  assert.equal(out.find(i => i.id === 'VFB_x').thumbnail, 'x-jrc')   // JRC2018U version wins
+  assert.ok(out.some(i => i.id === 'VFB_y'))                         // entity with only a non-preferred template still shown
+})
 
 const THUMB_MD = "[![MBON33 aligned to JRC2018U](http://www.virtualflybrain.org/data/VFB/i/jrmc/20bn/VFB_00101567/thumbnail.png 'MBON33 aligned')](VFB_00101567,VFB_jrmc20bn)"
 

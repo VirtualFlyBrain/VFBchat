@@ -33,7 +33,7 @@ test('buildFollowOns derives ask chips from real queries + an open-in-VFB chip +
   assert.deepEqual(sources, [{ label: 'mushroom body', url: 'https://www.virtualflybrain.org/reports/FBbt_00005801', id: 'FBbt_00005801', superseded: null }])
   // ask chip from the highest-count query, with a clear title and a runnable query
   const ask = chips.find(c => c.kind === 'ask')
-  assert.match(ask.query, /input to mushroom body/)
+  assert.match(ask.query, /input to the mushroom body/)
   assert.match(ask.label, /\(367\)$/)
   assert.match(ask.title, /^Ask VFB:/)
   // open-in-VFB chip with a "new tab" title
@@ -68,7 +68,7 @@ test('chip text is clean even when the resolved term label is markdown', () => {
   const { chips } = buildFollowOns(ledger)
   const ask = chips.find(c => c.kind === 'ask')
   assert.ok(!/\[|\]\(/.test(ask.label), `chip label must be markdown-free: ${ask.label}`)
-  assert.match(ask.query, /part of medulla/)
+  assert.match(ask.query, /in the medulla\?/)
 })
 
 test('buildTermLinks collects resolved terms + example neurons (longest first)', () => {
