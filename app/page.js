@@ -77,6 +77,28 @@ function getGraphNodeRole(stats = {}, directed = true) {
   return 'isolated'
 }
 
+// Wrap a long node label onto multiple lines (by word) so it fits under the node
+// instead of overflowing the SVG edge. Caps at maxLines, ellipsising the last.
+function wrapGraphLabel(label = '', maxChars = 20, maxLines = 3) {
+  const words = String(label).trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return ['']
+  const lines = []
+  let line = ''
+  for (const w of words) {
+    if (!line) { line = w }
+    else if ((line.length + 1 + w.length) <= maxChars) { line += ` ${w}` }
+    else { lines.push(line); line = w }
+    if (lines.length === maxLines) break
+  }
+  if (lines.length < maxLines && line) lines.push(line)
+  if (lines.length === maxLines) {
+    // If words remain unplaced, mark truncation on the last visible line.
+    const placed = lines.join(' ').split(/\s+/).length
+    if (placed < words.length) lines[maxLines - 1] = `${lines[maxLines - 1]}…`
+  }
+  return lines
+}
+
 const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const containerRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
@@ -209,9 +231,14 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const svgGraph = useMemo(() => {
     const graphNodes = elements.filter(element => !element.data?.source)
     const graphEdges = elements.filter(element => element.data?.source && element.data?.target)
-    const margin = 48
-    const availableHeight = Math.max(1, svgSize.height - (margin * 2))
-    const availableWidth = Math.max(1, svgSize.width - (margin * 2))
+    // Horizontal gutter must leave room for the (wrapped) node labels that sit
+    // under the left/right column nodes — a narrow margin clipped long class names
+    // like "adult octopaminergic and glutamatergic neuron" off the left edge.
+    const marginX = Math.min(140, Math.max(70, svgSize.width * 0.18))
+    const marginY = 40
+    const margin = marginX
+    const availableHeight = Math.max(1, svgSize.height - (marginY * 2))
+    const availableWidth = Math.max(1, svgSize.width - (marginX * 2))
     const statsByNodeId = new Map(graphNodes.map(node => [node.data.id, { indegree: 0, outdegree: 0 }]))
 
     graphEdges.forEach(edge => {
@@ -246,7 +273,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         bucket.forEach((node, index) => {
           positions.set(node.data.id, {
             x: roleColumns[role],
-            y: margin + ((index + 1) * availableHeight / (bucket.length + 1))
+            y: marginY + ((index + 1) * availableHeight / (bucket.length + 1))
           })
         })
       })
@@ -428,7 +455,9 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
                 stroke="#0f0f12"
                 strokeWidth="3"
               >
-                {node.label}
+                {wrapGraphLabel(node.label).map((line, i) => (
+                  <tspan key={i} x={node.x} dy={i === 0 ? 0 : 12}>{line}</tspan>
+                ))}
               </text>
             </g>
           ))}
