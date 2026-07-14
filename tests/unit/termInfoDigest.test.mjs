@@ -130,3 +130,35 @@ test('digestToText renders the available-data block with counts (answers "inputs
   // compact: must be far smaller than a raw 25 KB payload
   assert.ok(text.length < 4000, `digest should be compact, got ${text.length}`)
 })
+
+// A large query type (e.g. ImagesNeurons on a big region like the medulla) comes
+// back from get_term_info with count -1 and no preview rows. That means the data
+// EXISTS but was not pre-counted — it must be RUN. Regression guard for the bug
+// where such queries were dropped from the digest and the assistant then wrongly
+// answered "VFB does not currently hold data".
+const UNCOUNTED = {
+  Name: 'medulla',
+  Id: 'FBbt_00003748',
+  Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Optic-lobe neuropil.' },
+  Queries: [
+    { query: 'ImagesNeurons', label: 'Images of neurons with some part in the medulla', count: -1, preview_results: { rows: [] } },
+    { query: 'SubclassesOf', label: 'Subclasses of medulla', count: 4, preview_results: { rows: [{ label: '[medulla layer](FBbt_00003749)' }] } },
+    { query: 'Empty', label: 'Nothing here', count: 0, preview_results: { rows: [] } }
+  ]
+}
+
+test('uncounted (-1) queries are kept and flagged to be run, not dropped as "no data"', () => {
+  const d = buildTermInfoDigest(UNCOUNTED)
+  const labels = d.queries.map(q => q.label)
+  // -1 query kept; genuinely empty (count 0, no examples) still dropped
+  assert.ok(labels.includes('Images of neurons with some part in the medulla'))
+  assert.ok(!labels.includes('Nothing here'))
+
+  const text = termInfoToDigestText(UNCOUNTED)
+  // The image query is surfaced with an explicit "run this query" instruction
+  // naming the query_type, not hidden and not shown as a bare -1.
+  assert.match(text, /Images of neurons with some part in the medulla: run this query — call vfb_run_query with query_type ImagesNeurons/)
+  assert.doesNotMatch(text, /-1/)
+  // counted query still renders its number
+  assert.match(text, /Subclasses of medulla: 4/)
+})
