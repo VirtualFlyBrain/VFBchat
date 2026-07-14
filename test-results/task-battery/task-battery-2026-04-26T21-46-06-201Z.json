@@ -1,0 +1,1608 @@
+{
+  "metadata": {
+    "run_id": "task-battery-2026-04-26T21-46-06-201Z",
+    "started_at": "2026-04-26T21:46:06.201Z",
+    "completed_at": "2026-04-26T21:48:05.221Z",
+    "git_sha": "0842d7a17dec4ca6f564dbd719d4e5545e3eb66f",
+    "task_file": "/home/runner/work/VFBchat/VFBchat/VFBchat/tests/task-battery/tasks.json",
+    "base_url": "http://127.0.0.1:3210",
+    "started_server": true,
+    "server_command": "start",
+    "repetitions": 1,
+    "concurrency": 4,
+    "timeout_ms": 240000
+  },
+  "prompt": {
+    "provenance_instruction": "Answer the following question about Drosophila neuroscience. For every claim you make, state where the information comes from - for example: the specific database, dataset, or tool query you used; the publication (with full citation); or your general training knowledge. If you are uncertain or do not have a source, say so explicitly rather than guessing."
+  },
+  "summary": {
+    "total": 31,
+    "ok": 31,
+    "errors": 0,
+    "by_tier": {
+      "T1": {
+        "total": 8,
+        "ok": 8,
+        "errors": 0
+      },
+      "T2": {
+        "total": 8,
+        "ok": 8,
+        "errors": 0
+      },
+      "T3": {
+        "total": 8,
+        "ok": 8,
+        "errors": 0
+      },
+      "T4": {
+        "total": 6,
+        "ok": 6,
+        "errors": 0
+      },
+      "T5": {
+        "total": 1,
+        "ok": 1,
+        "errors": 0
+      }
+    },
+    "quality": {
+      "no_tool_factual_answer": {
+        "count": 0,
+        "task_ids": []
+      },
+      "tool_claim_without_tool": {
+        "count": 0,
+        "task_ids": []
+      },
+      "disambiguation_only_answer": {
+        "count": 0,
+        "task_ids": []
+      },
+      "investigation_plan_answer": {
+        "count": 0,
+        "task_ids": []
+      },
+      "not_verified_or_no_results_answer": {
+        "count": 0,
+        "task_ids": []
+      },
+      "graph_failure_mentioned": {
+        "count": 1,
+        "task_ids": [
+          "G1"
+        ]
+      },
+      "missing_required_graph": {
+        "count": 0,
+        "task_ids": []
+      },
+      "used_data_resource": {
+        "count": 1,
+        "task_ids": [
+          "T1.3"
+        ]
+      }
+    },
+    "mean_duration_ms": 14337
+  },
+  "results": [
+    {
+      "attempt_index": 0,
+      "task_index": 0,
+      "task_id": "T1.1",
+      "tier": 1,
+      "title": "Brain region identification",
+      "question": "What are the major subdivisions of the Drosophila mushroom body?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 28129,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Refining tool choice for VFB query",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections for \"mushroom body\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 4,
+      "request_id": "f05a049b-db2a-4691-b291-d53b25cda52a",
+      "response_id": "chatcmpl-56835c4999bf8f55a69baaf2a0c3f9b1",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The major subdivisions of the Drosophila mushroom body are the calyx, peduncle, and lobes (including the alpha, beta, and gamma lobes). This information comes from the Virtual Fly Brain (VFB) term info for FBbt_00005801 (mushroom body).\n\nAccording to the VFB term metadata, the mushroom body is a bilaterally paired neuropil structure situated postero-dorsally in the protocerebrum that functions in olfactory associative learning and memory. The calyx is the part of the mushroom body closest to the cortex and receives sensory interneuron afferents. The pedunculus is a thick axon bundle extending from the calyx to the base of the lobes. The mushroom body lobe system consists of a vertical branch and a medial branch, which have different structures at different life stages.\n\nThe VFB term metadata also provides information on the parts of the mushroom body, including the adult mushroom body dorsal accessory calyx, adult mushroom body lateral calyx, layer of mushroom body slice, pedunculus divide of adult mushroom body, and pedunculus neck of adult mushroom body.\n\nAdditionally, the VFB query summaries provide information on the neurons with some part in the mushroom body, neurons with presynaptic terminals in the mushroom body, neurons with postsynaptic terminals in the mushroom body, and neurons with synaptic terminals in the mushroom body.\n\nThe evidence for these subdivisions and components comes from the VFB term metadata and query summaries, which provide a detailed description of the mushroom body and its parts, as well as information on the neurons associated with this region.\n\nIt's worth noting that the VFB evidence summary suggests that broad anatomy regions are not single neuron classes, and that weighted connectome queries require a narrower neuron class. Therefore, if the user wants to know more about the synaptic weights or connectivity of specific neurons in the mushroom body, they would need to choose a narrower neuron class before running connectivity queries.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 2002,
+        "status_count": 3
+      }
+    },
+    {
+      "attempt_index": 1,
+      "task_index": 1,
+      "task_id": "T1.2",
+      "tier": 1,
+      "title": "Neuron type classification",
+      "question": "What types of Kenyon cells exist in the adult Drosophila brain?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 9495,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing neuron taxonomy for \"Kenyon cell\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "fbe74f59-3121-4bbb-aee0-3ef96211ae92",
+      "response_id": "chatcmpl-428386f027c1c8ffad3c4a1112c566d5",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "In the adult Drosophila brain, there are several types of Kenyon cells, which are intrinsic neurons of the mushroom body. According to VFB, the main classes of adult Kenyon cells are alpha/beta, alpha'/beta', and gamma Kenyon cells. These classes are further subdivided into subtypes, including core, surface, and posterior Kenyon cells for the alpha/beta class, and anterior-posterior and middle Kenyon cells for the alpha'/beta' class. Additionally, there are dorsal and main/gamma-s/gamma-t subtypes of gamma Kenyon cells. VFB also mentions that there are approximately 2000 Kenyon cells per adult mushroom body. \n\nSources:\n- VFB\n- VFB term information for Kenyon cell (FBbt_00003686) and adult Kenyon cell (FBbt_00049825)",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 725,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 2,
+      "task_index": 2,
+      "task_id": "T1.3",
+      "tier": 1,
+      "title": "Basic connectivity",
+      "question": "What are the main input neurons to the mushroom body?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 57391,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections",
+          "phase": "mcp"
+        },
+        {
+          "message": "Searching VFB terms",
+          "phase": "mcp"
+        },
+        {
+          "message": "Summarizing region connections",
+          "phase": "mcp"
+        },
+        {
+          "message": "Looking up term details",
+          "phase": "mcp"
+        },
+        {
+          "message": "Running VFB analysis",
+          "phase": "mcp"
+        },
+        {
+          "message": "Inspecting stored tool data",
+          "phase": "llm"
+        },
+        {
+          "message": "Inspecting stored tool data",
+          "phase": "llm"
+        },
+        {
+          "message": "Reading stored tool data",
+          "phase": "llm"
+        }
+      ],
+      "event_count": 10,
+      "request_id": "6832bbf5-249c-4cdc-acd6-64b47c519e83",
+      "response_id": "chatcmpl-0d6744bdc6e75244c693326475bbd4de",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The input neurons to the mushroom body are included in the 367 rows returned by the \"NeuronsPresynapticHere\" query. The stage counts show that 305 of these neurons are in the adult stage and 59 are in the larval stage. The tag counts indicate that the most common tags are \"Adult\" (305), \"Nervous_system\" (157), \"Cholinergic\" (141), and \"primary_neuron\" (108). \n\nSome examples of the input neurons to the mushroom body are:\n\n* Li38 (FBbt_20011419)\n* Li39 (FBbt_20011420)\n* LoVC14 (FBbt_20011421)\n\nThese neurons are likely to be input neurons to the mushroom body, but the exact nature of their connections is not specified in the VFB evidence. \n\nSince VFB call was unsuccessful, I will provide the final answer based on the available evidence. \n\nThe main input neurons to the mushroom body are not explicitly stated in the provided VFB evidence. However, the \"NeuronsPresynapticHere\" query returned 367 rows, which include neurons with presynaptic terminals in the mushroom body. Some examples of these neurons are Li38, Li39, and LoVC14. \n\nNote that the exact nature of their connections is not specified in the VFB evidence.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": true,
+        "response_chars": 1126,
+        "status_count": 9
+      }
+    },
+    {
+      "attempt_index": 3,
+      "task_index": 3,
+      "task_id": "T1.4",
+      "tier": 1,
+      "title": "Gene expression",
+      "question": "What neurotransmitter do mushroom body Kenyon cells use?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 7141,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Checking neurotransmitter evidence",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "b7222c74-fddd-4e2c-80e0-0998fb6c0f1a",
+      "response_id": "chatcmpl-411464a887213ae2d6131452b6eca838",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "According to the VFB tool \"VFB\", Kenyon cells are cholinergic, meaning they use the neurotransmitter acetylcholine. This information comes from the neurotransmitter facet/tag annotations on the resolved VFB class and inspected subclass rows. Additionally, some Kenyon cells are also peptidergic, meaning they use neuropeptides as neurotransmitters.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 348,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 4,
+      "task_index": 4,
+      "task_id": "T1.5",
+      "tier": 1,
+      "title": "Neuroanatomy",
+      "question": "What brain regions does the antennal lobe connect to?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 8929,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "b16e6f44-4d8d-443e-a006-47a839abe5f9",
+      "response_id": "chatcmpl-2910211015a2a560f8a3d67579b97961",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The antennal lobe connects to the mushroom body calyx and lateral horn through antennal lobe projection neurons. According to the VFB evidence, the antennal lobe projection neuron term describes axons to higher brain centers, generally the mushroom body calyx and/or lateral horn. The antennal-lobe-projection-neuron-to-mushroom-body class explicitly sends synaptic output to the mushroom body, and the antennal-lobe-projection-neuron-to-lateral-horn class sends synaptic output to the adult lateral horn. For detailed weights, specific projection-neuron or glomerulus classes are required.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 590,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 5,
+      "task_index": 5,
+      "task_id": "T1.6",
+      "tier": 1,
+      "title": "Cell count",
+      "question": "Approximately how many neurons are in the adult Drosophila central brain?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 5987,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Checking neuron-count evidence",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "482fc978-5259-4893-adcd-00ebdd9902d6",
+      "response_id": "chatcmpl-46379c5eb8592b0141c8fcbc20c07f41",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "Approximately more than 125,000 neurons are in the adult Drosophila central brain, according to a Drosophila computational brain model (PMID: 39358519). Additionally, a whole adult Drosophila brain wiring diagram reports 139,255 neurons (PMID: 39358518). Note that these counts are from literature and may describe reconstructed neurons in specific datasets, whereas VFB query counts describe returned records/classes.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 418,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 6,
+      "task_index": 6,
+      "task_id": "T1.7",
+      "tier": 1,
+      "title": "Central complex structure",
+      "question": "What are the main components of the Drosophila central complex and what functions are they associated with?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 17334,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Honoring region-connection workflow",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections for \"central complex\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 4,
+      "request_id": "e2a47642-0c29-4da5-ad34-da283bd298fe",
+      "response_id": "chatcmpl-86c35696de1db16398ec64d139d5b803",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The main components of the Drosophila central complex are the ellipsoid body, fan-shaped body, paired noduli, asymmetrical bodies, and protocerebral bridge. These components are associated with various functions, including navigation and orientation, locomotor control, and sleep/arousal and memory-related behaviors.\n\nThe ellipsoid body is a ring-shaped structure that surrounds the protocerebral bridge and is involved in spatial memory and navigation. The fan-shaped body is a complex structure composed of multiple layers and is involved in the processing of visual and sensory information. The paired noduli are small structures that are connected to the fan-shaped body and are thought to be involved in the regulation of locomotion. The asymmetrical bodies are a pair of structures that are connected to the fan-shaped body and are thought to be involved in the regulation of sleep and arousal. The protocerebral bridge is a bundle of neurons that connects the ellipsoid body to the fan-shaped body and is thought to be involved in the integration of sensory information.\n\nThese components and their associated functions are based on the Virtual Fly Brain (VFB) term report for the central complex (FBbt_00003632) and the literature records returned by PubMed.\n\nTo learn more about the central complex and its components, you can inspect the component terms, focus on a specific function, or retrieve more targeted publications and neuron classes.\n\nHere is a VFB query link to the central complex term report: https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003632,SubclassesOf",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1607,
+        "status_count": 3
+      }
+    },
+    {
+      "attempt_index": 7,
+      "task_index": 7,
+      "task_id": "T1.8",
+      "tier": 1,
+      "title": "Genetic tools",
+      "question": "What genetic tools are commonly used to label mushroom body neurons in Drosophila?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 18672,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding genetic tools",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "e2261285-f1db-48b9-8afb-7a155b0f5613",
+      "response_id": "chatcmpl-8e65ae3f7f361f03ebbabd73561e1938",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB returned 24 genetic tool/expression pattern rows for labeling mushroom body neurons in Drosophila. The top tools include:\n\n1. PBac{I-SceI(FRT.Rab27-GAL4.ORF(loxP.3xP3-RFP))} expression pattern (GAL4 driver)\n2. P{ChAT-GAL4.7.4} expression pattern (GAL4 driver)\n3. P{GAL4}107 expression pattern (GAL4 driver)\n4. P{GMR21B11-GAL4} expression pattern (GAL4 driver)\n5. P{GMR21D02-GAL4} expression pattern (GAL4 driver)\n6. P{GMR35F02-GAL4} expression pattern (GAL4 driver)\n7. P{GMR65C02-GAL4} expression pattern (GAL4 driver)\n8. P{GawB}30Y expression pattern (GAL4 driver)\n9. P{GawB}C253 expression pattern (GAL4 driver)\n10. P{GawB}Hr39[c739] expression pattern (GAL4 driver)\n11. P{GawB}OK107 expression pattern (GAL4 driver)\n12. P{GawB}OK72 expression pattern (GAL4 driver)\n\nThese tools are categorized as GAL4 drivers and have associated publications. For example, the PBac{I-SceI(FRT.Rab27-GAL4.ORF(loxP.3xP3-RFP))} expression pattern has publications by Jin et al. (2012) and Chan et al. (2011). \n\nTo check the specificity of these tools, you can inspect the expression patterns in VFB. Additionally, you can find stocks for a specific tool by resolving the driver/transgene ID and looking up stock availability. \n\nNote: The information provided is based on VFB and may not be exhaustive. It is recommended to verify the information with additional sources and consult with experts in the field for specific experimental designs.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1430,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 8,
+      "task_index": 8,
+      "task_id": "T2.1",
+      "tier": 2,
+      "title": "Circuit motif",
+      "question": "Describe the dopaminergic input to mushroom body output neurons (MBONs). Which DAN types connect to which MBON types?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 16378,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding connectivity partners (upstream)",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "7f79ffdf-df1e-4fc6-90e5-0c70beb58fa3",
+      "response_id": "chatcmpl-dedac3da047b16c64fd2401168ee5d26",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB found 56 upstream class-connectivity partners matching \"dopaminergic neuron\" for MBON. The top mapped pairs to list directly are: \n1. dopaminergic PAM neuron 11 (FBbt_00111022) -> mushroom body output neuron 7 (FBbt_00111005): total_weight 1498, pairwise_connections 56; \n2. dopaminergic PAM neuron 6 (FBbt_00111018) -> mushroom body output neuron 3 (FBbt_00100232): total_weight 1382, pairwise_connections 71; \n3. dopaminergic PAM neuron 10 (FBbt_00110994) -> mushroom body output neuron 6 (FBbt_00100242): total_weight 1066, pairwise_connections 28; \n4. dopaminergic PAM neuron 8 (FBbt_00111020) -> mushroom body output neuron 5 (FBbt_00111004): total_weight 911, pairwise_connections 82; \n5. dopaminergic PAM neuron 5 (FBbt_00111017) -> mushroom body output neuron 26 (FBbt_00049846): total_weight 579, pairwise_connections 46. \n\nThese pairs show the specific DAN types that connect to which MBON types. The information comes from VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 942,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 9,
+      "task_index": 9,
+      "task_id": "T2.2",
+      "tier": 2,
+      "title": "Cross-dataset comparison",
+      "question": "Is the connectivity of olfactory projection neurons consistent between the Hemibrain and FAFB connectome datasets?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 8692,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Comparing dataset-scoped evidence",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "ea235cf5-7896-4983-8dea-ad0ccfd00312",
+      "response_id": "chatcmpl-4d159a4e06fdb5e513e13b215bc81b75",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB found that the antennal lobe projection neuron is the relevant neuron class for comparing connectivity between the Hemibrain and FAFB connectome datasets. The available dataset scopes include Neuprint web interface - hemibrain:v1.2.1 (hb) and VFB CATMAID Adult Brain (FAFB) (fafb). To determine consistency, it is recommended to compare the same projection-neuron subclass or glomerulus-specific PN target rankings in each dataset scope. The evidence packet provides a bounded next query: choose a concrete olfactory projection-neuron subtype and compare its partners under each dataset scope. \n\nThe matched dataset scopes are Neuprint web interface - hemibrain:v1.2.1 (hb) and VFB CATMAID Adult Brain (FAFB) (fafb). The VFB query summaries provide a preview of subclasses of antennal lobe projection neurons, including AMMC-Bi16, larval uniglomerular projection neuron 35a, larval uniglomerular projection neuron 42a, larval uniglomerular projection neuron 42b, and larval uniglomerular projection neuron 45a-A3. \n\nTherefore, the connectivity of olfactory projection neurons is not directly comparable between the Hemibrain and FAFB connectome datasets without further specification of the projection-neuron subtype. The user should choose a concrete olfactory projection-neuron subtype and compare its partners under each dataset scope to determine consistency.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1367,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 10,
+      "task_index": 10,
+      "task_id": "T2.3",
+      "tier": 2,
+      "title": "Reagent identification",
+      "question": "I want to image neurons in the lateral horn. What split-GAL4 driver lines are available that target lateral horn neuron types?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 9972,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding genetic tools",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "4e982d1b-ac68-40f9-80f4-fcd324e52377",
+      "response_id": "chatcmpl-a4e0695a043843cec805ed037aeaf187",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB returned 1935 genetic tool/expression pattern rows for the adult lateral horn. Among these, 1931 rows are GAL4 drivers. The top tools include P{GMR11B09-GAL4}, P{GMR13A07-GAL4}, P{GMR13A11-GAL4}, P{GMR13F02-GAL4}, P{GMR15F08-GAL4}, P{GMR16C06-GAL4}, P{GMR16C09-GAL4}, P{GMR19B07-GAL4}, and P{GMR20B07-GAL4} expression patterns. These drivers have been used in various studies, including those published in PLoS Biology (Varela et al., 2019) and annotated in the Janelia GAL4 Drivers - adult brain annotation table (Jenett and Svirskas, 2012). To determine the specificity of these drivers for lateral horn neurons, it is recommended to inspect the expression patterns in VFB and check the publications for more information. Additionally, you can find stocks for a specific driver by resolving the driver ID and looking up stock availability.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 845,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 11,
+      "task_index": 11,
+      "task_id": "T2.4",
+      "tier": 2,
+      "title": "Neuron characterisation",
+      "question": "What is known about the LPLC2 visual neuron type? Where is it, what does it connect to, and what is its function?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 16883,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Building neuron profile for \"LPLC2\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "dbdf922b-6af5-463d-90bc-b420bc498a71",
+      "response_id": "chatcmpl-b36b2e9da8035c47be44896547b31d1f",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The LPLC2 visual neuron type is a type of lobula plate-lobula columnar neuron. According to the VFB term metadata, LPLC2 neurons have a distinct dendritic arbor in each lobula plate layer, extending outwards from the main fiber in the direction of motion detection for the layer. They are cholinergic and are involved in detecting looming (expansion) stimuli. The neurons project to an optic glomerulus of the PVLP, anterior to LPLC1 and dorsal to LC4. \n\nLPLC2 neurons are located in the dorsal area of the lateral cell body rind and have a wide-field columnar morphology. There are approximately 80 of these cells per optic lobe, and they are thought to play a role in eliciting a jump escape response.\n\nThe VFB query summaries provide evidence for the connectivity of LPLC2 neurons. The downstream connectivity classes for LPLC2 include adult VPNd1 lineage neurons, lobula plate-lobula columnar neurons LPLC2, adult cholinergic neurons, and adult posterior ventrolateral protocerebrum neurons 111. The upstream connectivity classes for LPLC2 include adult cholinergic neurons, T5c neurons, T5b neurons, T4c neurons, and transmedullary neurons Tm5Y.\n\nGenetic tools that label LPLC2 neurons include the split-GAL4 lines P{R12E04-GAL4.DBD} ∩ P{R19G02-p65.AD} and P{R75G12-GAL4.DBD} ∩ P{R19G02-p65.AD}, as well as the GAL4 lines P{VT007194-GAL4}, P{GMR75G12-GAL4}, and P{GMR12E04-GAL4}.\n\nPublications that mention LPLC2 neurons include those by Wu et al. (2016), Klapoetke et al. (2017), and Tanaka and Clark (2022). However, without accessing the publications, it is unclear what specific information they provide about LPLC2 neurons.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1633,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 12,
+      "task_index": 12,
+      "task_id": "T2.5",
+      "tier": 2,
+      "title": "Comparative anatomy",
+      "question": "How does the organisation of the antennal lobe compare between adult and larval Drosophila?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 18127,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Comparing region organization for \"antennal lobe\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "76bfca19-1c27-459d-992b-3668cb3adc66",
+      "response_id": "chatcmpl-6faaaa8c0386803449318ead649535a5",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The organization of the antennal lobe in adult and larval Drosophila can be compared using VFB. \n\nThe adult antennal lobe is a bilaterally paired synaptic neuropil domain of the deutocerebrum, divided into approximately 50 glomeruli. It receives olfactory receptor neuron axons from the antennal nerve and subesophageal tract and is connected to the antennal commissure, antennal lobe tracts, and broad root.\n\nIn contrast, the larval antennal lobe is also a paired synaptic neuropil domain, but it consists of around 22 glomeruli. It is the major target of innervation for axons carried by the antennal nerve and is connected to the antero-basal tract.\n\nThe main differences between the adult and larval antennal lobes are the number of glomeruli and the organization of the surrounding anatomy and tracts. The adult antennal lobe has more glomeruli and a more complex organization, with connections to multiple tracts and commissures. The larval antennal lobe, on the other hand, has fewer glomeruli and a simpler organization, with connections primarily to the antennal nerve and antero-basal tract.\n\nThese comparisons are based on the VFB term metadata and query counts for the adult and larval antennal lobe terms, which provide information on the anatomy, connections, and organization of these brain regions. The evidence summary from VFB highlights the key differences between the adult and larval antennal lobes, including the number of glomeruli, the organization of the surrounding anatomy, and the connections to different tracts and commissures. \n\nSource: VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1572,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 13,
+      "task_index": 13,
+      "task_id": "T2.6",
+      "tier": 2,
+      "title": "Publications for a circuit",
+      "question": "What publications describe the PPL1 dopaminergic neurons and their role in aversive memory?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 5126,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Searching publications",
+          "phase": "pubmed"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "d47012d0-9c4e-45b6-b534-8bfad50782c8",
+      "response_id": "chatcmpl-7b2786dbb728a91261c0e6b20b6b36f8",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The search_pubmed tool returned zero any publications that describe the PPL1 dopaminergic neurons and their role in aversive memory. According to the VFB evidence, no relevant results were found.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 195,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 14,
+      "task_index": 14,
+      "task_id": "T2.7",
+      "tier": 2,
+      "title": "Morphological similarity",
+      "question": "Are there neurons in the Hemibrain dataset that are morphologically similar to the fru+ mAL neurons described in light microscopy studies?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 12493,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Searching VFB terms for \"fru+ mAL neurons\"",
+          "phase": "mcp"
+        },
+        {
+          "message": "Looking up term details for FBbt_00003686",
+          "phase": "mcp"
+        },
+        {
+          "message": "Running VFB analysis — SimilarMorphologyTo on FBbt_00003686",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 5,
+      "request_id": "fbe68924-1269-43e3-a02c-7e4ea84eefd7",
+      "response_id": "chatcmpl-e7868ba908529145213b9524b3837cea",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. According to the VFB search results, the term \"fru+ mAL neurons\" is synonymous with \"adult fru-mAL neuron\" and \"fru-aDT1\". The VFB term metadata for \"fru-aDT1\" (FBbt_00110537) provides information on its anatomy, connections, and expression patterns. However, the VFB run query for \"SimilarMorphologyTo\" returned zero any results, indicating that there is no direct morphology similarity query available for this term. \n\nTherefore, based on the VFB evidence, it cannot be confirmed that there are neurons in the Hemibrain dataset that are morphologically similar to the fru+ mAL neurons. To determine this, a more specific query or a different approach would be needed, such as using a returned individual neuron/image or a term with SimilarMorphologyTo/NBLAST available for a dataset-scoped morphology comparison.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 919,
+        "status_count": 4
+      }
+    },
+    {
+      "attempt_index": 15,
+      "task_index": 15,
+      "task_id": "T2.8",
+      "tier": 2,
+      "title": "Upstream circuit",
+      "question": "What sensory neurons provide input to the fan-shaped body, and through how many synaptic steps?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 6398,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding pathway evidence — sensory neurons to fan-shaped body",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "684b5a07-8d5a-4e00-9886-5d0bf9427c8f",
+      "response_id": "chatcmpl-97eb040f7368443f52135d3b74e811d3",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The fan-shaped body receives direct presynaptic input from central-complex neuron classes such as PFN/PFNa/PFNp classes. However, primary sensory neurons are not directly presynaptic to the fan-shaped body and are upstream by at least one relay class. To determine the exact synaptic step count, it is necessary to choose a specific sensory modality (e.g., visual, olfactory, thermosensory, or mechanosensory) and trace the pathway from that modality-specific class. This information comes from VFB, specifically the `pathway_steps` and `evidence summary` sections.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 565,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 16,
+      "task_index": 16,
+      "task_id": "T3.1",
+      "tier": 3,
+      "title": "Bidirectional connectivity",
+      "question": "Are there reciprocal connections between mushroom body output neurons (MBONs) and dopaminergic neurons (DANs)? Which pairs have the strongest mutual connectivity?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 14900,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding reciprocal connectivity — mushroom body output neuron ↔ dopaminergic neuron",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "f84a60db-1677-40bb-af85-92e7877ce0d6",
+      "response_id": "chatcmpl-f73f40f0d2cfb6701a3a2386fe38b0a3",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB found reciprocal class-level connections between mushroom body output neurons (MBONs) and dopaminergic neurons (DANs). The top reciprocal pairs, ranked by the weaker-direction total weight, are:\n\n1. Mushroom body output neuron 5 (FBbt_00111004) and dopaminergic PAM neuron 8 (FBbt_00111020) with a source-to-target weight of 295 and a target-to-source weight of 911.\n2. Mushroom body output neuron 3 (FBbt_00100232) and dopaminergic PAM neuron 6 (FBbt_00111018) with a source-to-target weight of 260 and a target-to-source weight of 1382.\n3. Mushroom body output neuron 4 (FBbt_00111014) and dopaminergic PAM neuron 6 (FBbt_00111018) with a source-to-target weight of 146 and a target-to-source weight of 355.\n4. Mushroom body output neuron 21 (FBbt_00111046) and dopaminergic PAM neuron 8 (FBbt_00111020) with a source-to-target weight of 34 and a target-to-source weight of 173.\n5. Mushroom body output neuron 4 (FBbt_00111014) and dopaminergic PAM neuron 8 (FBbt_00111020) with a source-to-target weight of 31 and a target-to-source weight of 171.\n6. Mushroom body output neuron 26 (FBbt_00049846) and dopaminergic PAM neuron 6 (FBbt_00111018) with a source-to-target weight of 6 and a target-to-source weight of 29.\n\nThese reciprocal connections suggest a bidirectional communication between MBONs and DANs, which may play a role in modulating the activity of these neurons in the context of learning, memory, and behavior. \n\nThis information comes from VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1466,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 17,
+      "task_index": 17,
+      "task_id": "T3.2",
+      "tier": 3,
+      "title": "Pathway tracing",
+      "question": "Trace a pathway from olfactory receptor neurons to the lateral horn. What are the intermediate neuron types and their connections?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 9671,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding pathway evidence — olfactory receptor neurons to lateral horn",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "dace8b54-2d86-4d3f-91bb-5c70b66bbdd5",
+      "response_id": "chatcmpl-cb2ca11a427a76c3a8a48e22daab4487",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB found a high-level pathway from olfactory receptor neurons (ORNs) to the lateral horn. The pathway involves the following intermediate neuron types and their connections:\n\n1. Olfactory receptor neurons detect odor stimuli.\n2. Antennal lobe projection neurons receive olfactory input in the antennal lobe and send axons to higher brain centers, including the lateral horn.\n\nThe adult antennal lobe projection neurons to the lateral horn explicitly target the adult lateral horn. \n\nFor exact weights and synaptic evidence, it is necessary to choose specific ORN, glomerulus, and projection neuron subclasses. The provided evidence summary suggests a bounded VFB pathway, and the answer hint notes that specific weights require choosing narrower neuron classes or individual neurons. \n\nThe next steps could include picking specific neuron classes, inspecting subclasses, or setting a dataset scope for a narrower weighted follow-up.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 933,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 18,
+      "task_index": 18,
+      "task_id": "T3.3",
+      "tier": 3,
+      "title": "Cell type taxonomy depth",
+      "question": "How many distinct neuron types are currently classified within the adult Drosophila visual system, and how are they organised hierarchically?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 10338,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing neuron taxonomy",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "5f5216c1-6dcf-42ba-ba7a-47ee890eaff0",
+      "response_id": "chatcmpl-7433746de2055d767654ebb41b6cdc73",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "According to VFB, there are approximately 950 distinct neuron types classified within the adult Drosophila visual system. These neuron types are organized hierarchically, with the visual system neuron being a subclass of the sensory system neuron. The hierarchy can be explored further by examining the \"SubclassesOf\" query results, which provide a list of neuron types that are part of the visual system. \n\nSome examples of neuron types within the visual system include:\n\n* IB089 (FBbt_20001266)\n* IB091 (FBbt_20001268)\n* SIP058 (FBbt_20002362)\n* Photoreceptor cell of Bolwig organ (FBbt_00007253)\n* Rhabdomeric photoreceptor cell (FBbt_00007251)\n\nThese neuron types are characterized by their specific functions, such as photoreception, and are organized into a hierarchical structure that reflects their relationships and functions within the visual system. \n\nSource: VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 875,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 19,
+      "task_index": 19,
+      "task_id": "T3.4",
+      "tier": 3,
+      "title": "Connectivity strength comparison",
+      "question": "Which neuron type provides the strongest synaptic input to the MBON-gamma1pedc>a/b neuron, and how does this compare to the next strongest inputs?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 10123,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Refining tool choice for VFB query",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding connectivity partners for MBON-gamma1pedc>a/b (upstream)",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 4,
+      "request_id": "4b14ef7f-370b-4dfe-9bc8-dfe193aba6b9",
+      "response_id": "chatcmpl-5255fc8214dbc2f94c8c97f78ccbd1c5",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The strongest synaptic input to the MBON-gamma1pedc>a/b neuron comes from the mushroom body dopaminergic neuron (FBbt_00048138) and the adult dopaminergic neuron (FBbt_00058206), both with a total weight of 19455. The top partners also include the gamma main Kenyon cell (FBbt_00111061), alpha/beta Kenyon cell (FBbt_00100248), and other adult MBp lineage neurons. \n\nThe evidence comes from VFB, which provides ranked class-connectivity partners for the MBON-gamma1pedc>a/b neuron. VFB includes the total weight, pairwise connections, connected neurons, and average weight for each partner. \n\nTo further investigate the connectivity of the MBON-gamma1pedc>a/b neuron, one could inspect a specific partner type or adjust the filter or threshold used in the query. However, based on the current evidence, the mushroom body dopaminergic neuron and the adult dopaminergic neuron are the strongest synaptic inputs to the MBON-gamma1pedc>a/b neuron.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 943,
+        "status_count": 3
+      }
+    },
+    {
+      "attempt_index": 20,
+      "task_index": 20,
+      "task_id": "T3.5",
+      "tier": 3,
+      "title": "Shared connectivity",
+      "question": "Do the alpha/beta and gamma Kenyon cells converge on any of the same downstream MBON types? Which MBONs receive input from both?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 10678,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Comparing shared downstream targets",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "5e8ab750-1511-48c8-81c8-afcec81c7a1c",
+      "response_id": "chatcmpl-de947850c596a4d5b0ed228f2a87d14f",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB found 13 shared downstream target classes among the compared source classes, alpha/beta Kenyon cells and gamma Kenyon cells. The top shared targets include mushroom body output neuron 7, mushroom body output neuron 9, mushroom body output neuron 14, and mushroom body output neuron 22. These MBONs receive input from both alpha/beta and gamma Kenyon cells. The evidence comes from VFB, which provides the shared target classes and their corresponding weights and pairwise connections.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 488,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 21,
+      "task_index": 21,
+      "task_id": "T3.6",
+      "tier": 3,
+      "title": "Anatomical containment chain",
+      "question": "Trace the anatomical containment hierarchy from the DA1 glomerulus up to the top-level brain structure. What is each level in the hierarchy?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 11143,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Tracing containment hierarchy",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "b04929f7-60da-4fc4-a503-26c29815620e",
+      "response_id": "chatcmpl-eaa5209a9416e27efa3e294da904f46b",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The anatomical containment hierarchy from the DA1 glomerulus up to the top-level brain structure is as follows: \n1. DA1 glomerulus (FBbt_00003932) \n2. Adult olfactory antennal lobe glomerulus (FBbt_00051292) \n3. Adult antennal lobe (FBbt_00007401) \n4. Adult deutocerebrum (FBbt_00007146) \n5. Adult cerebrum (FBbt_00007050) \n6. Adult central brain (FBbt_00047887) \n7. Adult brain (FBbt_00003624) \n\nThis hierarchy is based on the VFB term descriptions, types, and relationships. Note that some VFB query previews for PartsOf can be empty on a term even when parentage is present in term metadata relationships or type definitions.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 628,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 22,
+      "task_index": 22,
+      "task_id": "T3.7",
+      "tier": 3,
+      "title": "Cross-region connectivity",
+      "question": "What neuron types connect the central complex to the lateral accessory lobe, and how strong are these connections?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 13756,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Refining tool choice for VFB query",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding pathway evidence — central complex to lateral accessory lobe",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 4,
+      "request_id": "f33a2d55-e0bc-4866-b3f0-7de36525914c",
+      "response_id": "chatcmpl-fb1477e93f2921e064575ced1c3a1387",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB supports a plausible route between the central complex and the lateral accessory lobe, particularly through PFL classes. The candidate classes include PFL1, PFL2_PB4, and PFL3_PB7. For exact weights or mechanisms, a narrower follow-up should use specific neuron-class or individual-neuron endpoints.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 303,
+        "status_count": 3
+      }
+    },
+    {
+      "attempt_index": 23,
+      "task_index": 23,
+      "task_id": "T3.8",
+      "tier": 3,
+      "title": "Dataset coverage",
+      "question": "For the DNa02 descending neuron type, what data is available in VFB? Is it in the Hemibrain, FAFB, or both? Are there light microscopy images and driver lines?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 23836,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Refining tool choice for VFB query",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding genetic tools for \"DNa02\"",
+          "phase": "mcp"
+        },
+        {
+          "message": "Running VFB analysis — ListAllAvailableImages on FBbt_00047573",
+          "phase": "mcp"
+        },
+        {
+          "message": "Comparing dataset-scoped evidence - DNa02 across Hemibrain vs FAFB",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 6,
+      "request_id": "9b1a024a-fcb8-4d34-95c1-3f83b0e068ff",
+      "response_id": "chatcmpl-850509bbe2af785d2877427af3e885e6",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "For the DNa02 descending neuron type, VFB has several images and expression patterns available, including light microscopy images from the Hemibrain and FAFB datasets. There are also driver lines available, such as the P{R87D07-GAL4.DBD} ∩ P{R75C10-p65.AD} expression pattern. The DNa02 neuron is cholinergic and has been implicated in the control of rotational movement downstream of central complex neurons and odor stimuli. It receives input from many other descending neurons. The available dataset scopes for comparing the DNa02 neuron's connectivity include the Hemibrain and FAFB datasets. To compare the connectivity of the DNa02 neuron across these datasets, it is recommended to choose a concrete projection-neuron subtype and compare its partners under each dataset scope.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 783,
+        "status_count": 5
+      }
+    },
+    {
+      "attempt_index": 24,
+      "task_index": 24,
+      "task_id": "T4.1",
+      "tier": 4,
+      "title": "Experimental planning",
+      "question": "I want to study the neural circuit underlying CO2 avoidance in Drosophila. What neurons are involved, how are they connected, and what genetic tools can I use to access them?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 15175,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing experimental circuit evidence",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "604ee057-5157-4a1f-9b27-ea9a149547cc",
+      "response_id": "chatcmpl-2e0ae48a888f8f890f6b804fcb650487",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The neural circuit underlying CO2 avoidance in Drosophila involves carbon dioxide sensitive neurons. According to VFB, these neurons are connected to downstream classes such as GABAergic local interneurons of the adult antennal lobe, adult antennal lobe local neurons, and cholinergic local interneurons of the adult antennal lobe. \n\nTo access these neurons, you can use genetic tools like the Gr21a, Gr63a, and E409 expression patterns. These tools are listed in VFB as expression patterns that overlap with carbon dioxide sensitive neurons.\n\nFor further experimentation, it is recommended to inspect the downstream classes and check the specificity of the drivers. Additionally, literature support can be added to understand the behavioral roles and receptor biology of the CO2 avoidance circuit.\n\nIt's worth noting that VFB provides a bounded evidence packet for the CO2 avoidance circuit, but it does not prove the complete behavioral circuit end-to-end. Therefore, a narrower follow-up and experimentation are needed to fully understand the neural circuit underlying CO2 avoidance in Drosophila.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1100,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 25,
+      "task_index": 25,
+      "task_id": "T4.2",
+      "tier": 4,
+      "title": "Complete neuron profile",
+      "question": "Give me a comprehensive profile of the giant fiber neuron: its anatomy, connectivity, available driver lines, and relevant publications.",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 19094,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Building neuron profile for \"giant fiber neuron\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "73d6bb51-5b92-4258-b836-334e4d6a3c6c",
+      "response_id": "chatcmpl-3f37cc2de91405b05f72ef52d085e933",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The giant fiber neuron, also known as DNp01, is a large adult descending neuron that controls jump escape behavior in Drosophila. It has a large cell body located posterior to the lower protocerebrum and a large descending axon that enters the cervical connective via the posterior cerebro-cervical fascicle. The neuron has dendritic arborization in the ipsilateral zones A and B of the antennal mechanosensory and motor center, where it receives substantial input from zone A and B Johnston organ neurons. It also arborizes in the posterior ventrolateral protocerebrum and gorget.\n\nThe giant fiber neuron forms electrical synapses with downstream motor and premotor neurons at the inframedial bridge and at the axonal lateral bend. It is a primary neuron, meaning it is directly responsible for transmitting sensory information from the antennae to the motor neurons that control the jump response.\n\nThere are several genetic tools available for studying the giant fiber neuron, including GAL4 drivers and split-GAL4 lines. Some of these tools have been used to study the development and function of the giant fiber system, while others have been used to manipulate the activity of the neuron and study its role in behavior.\n\nSome relevant publications that mention the giant fiber neuron include:\n\n* Koto et al. (1981) - \"The morphology of the cervical giant fiber neuron of Drosophila\"\n* Allen et al. (1998) - \"Development of the giant fiber neuron of Drosophila melanogaster\"\n* Lee and Godenschwege (2015) - \"Structure-function analyses of tyrosine phosphatase PTP69D in giant fiber synapse formation of Drosophila\"\n* Ache et al. (2019) - \"Neural Basis for Looming Size and Velocity Encoding in the Drosophila Giant Fiber Escape Pathway\"\n* Jang et al. (2023) - \"Azimuthal invariance to looming stimuli in the Drosophila giant fiber escape circuit\"\n\nThese publications provide information on the anatomy, development, and function of the giant fiber neuron, as well as its role in behavior and its potential as a model system for studying neural development and function. \n\nThe information comes from the Virtual Fly Brain (VFB) database and the PubMed database.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 2165,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 26,
+      "task_index": 26,
+      "task_id": "T4.3",
+      "tier": 4,
+      "title": "Hypothesis generation",
+      "question": "Based on connectivity data, what neuron types might mediate a connection between the visual system and the mushroom body? Could visual information reach the memory circuit?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 9003,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding pathway evidence — visual system to mushroom body",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "cdc95af9-cef4-42bb-a59b-7251a0a14964",
+      "response_id": "chatcmpl-703aacb8564d80976737100a8d519eec",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "According to VFB, there is a candidate visual-to-memory-circuit route mediated by the \"adult visual projection neuron to the mushroom body\" class. This class has presynaptic terminals in the mushroom body and fasciculates with an optic lobe-calycal tract.\n\nThe VFB evidence also provides a list of subclasses of this neuron type, including \"Li38\", \"SLP339\", \"aMe12\", \"optic lobe-calycal tract 1 neuron 1\", and \"optic lobe-calycal tract 2 neuron 1\". These subclasses may be involved in mediating the connection between the visual system and the mushroom body.\n\nAdditionally, the VFB evidence provides downstream class connectivity evidence for the \"adult visual projection neuron to the mushroom body\" class, including connections to \"adult cholinergic neuron\", \"transmedullary neuron Tm5Y\", \"transmedullary Y neuron TmY5a\", \"T2a neuron\", and \"Y neuron Y3\".\n\nTherefore, based on the connectivity data, it appears that visual information could reach the memory circuit via the \"adult visual projection neuron to the mushroom body\" class and its subclasses, which connect to various downstream neurons in the mushroom body.\n\nSource: VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1134,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 27,
+      "task_index": 27,
+      "task_id": "T4.4",
+      "tier": 4,
+      "title": "Comparative analysis",
+      "question": "Compare the downstream targets of the two main types of clock neurons (s-LNv and l-LNv). Do they converge on any common target neuron types?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 7562,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Comparing shared downstream targets for s-LNv vs l-LNv",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "459d9dec-86bb-4b53-ae34-af43dac5cb55",
+      "response_id": "chatcmpl-5b2465658db5c81ded020dc4c8ce3a2b",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "VFB returned zero downstream class-connectivity rows for one or more compared source classes, so common downstream targets were unresolved in these class-level tables. This does not prove that biological convergence is absent. The top downstream targets for the s-LNv neuron include the adult SLPpl1 lineage neuron, small central-projecting DN3 neuron, and adult CB2443 neuron.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 377,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 28,
+      "task_index": 28,
+      "task_id": "T4.5",
+      "tier": 4,
+      "title": "Novel circuit exploration",
+      "question": "What is the connectivity between thermosensory neurons and the mushroom body? Could temperature information influence memory formation?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 10785,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding pathway evidence — thermosensory neurons to mushroom body",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "1beb331e-ef8f-4f36-a135-1922ab15c84c",
+      "response_id": "chatcmpl-c77a3f659a19867f81fe2331460b07e1",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "According to the VFB evidence, thermosensory projection neurons relay temperature-detecting neurons to higher brain centers. The downstream class-connectivity previews for adult thermosensory projection neurons include mushroom-body-associated dopaminergic neurons and gamma main Kenyon cells. This suggests a plausible thermosensory influence on mushroom-body memory circuitry through thermosensory projection neurons. \n\nTo further investigate the connectivity between thermosensory neurons and the mushroom body, it is recommended to pick specific neuron classes and run weighted class-level connectivity or inspect subclasses to choose named intermediate neurons. Additionally, setting a dataset scope, such as FlyWire or hemibrain, can provide a narrower weighted follow-up. \n\nThe evidence summary from VFB supports the idea that thermosensory information could influence memory formation in the mushroom body, but more specific and weighted connectivity evidence is needed to confirm this. \n\nSource: VFB.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1009,
+        "status_count": 2
+      }
+    },
+    {
+      "attempt_index": 29,
+      "task_index": 29,
+      "task_id": "T4.6",
+      "tier": 4,
+      "title": "Data availability survey",
+      "question": "I'm interested in studying the subesophageal zone (SEZ). How well-characterised is this region in VFB? What neuron types are annotated, what connectomics data is available, and what genetic tools exist for SEZ neurons?",
+      "requires_graph": false,
+      "min_graphs": 0,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 20040,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections",
+          "phase": "mcp"
+        },
+        {
+          "message": "Honoring genetic-tool search workflow",
+          "phase": "llm"
+        },
+        {
+          "message": "Finding genetic tools for \"subesophageal zone\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 5,
+      "request_id": "a3f65f29-a8dd-49e8-a8be-26dccc5f8114",
+      "response_id": "chatcmpl-488d2a52093f610df96617325be12a3a",
+      "images_count": 0,
+      "graphs_count": 0,
+      "response": "The subesophageal zone (SEZ) is a neuropil mass below the esophagus and is part of the central nervous system. VFB has 2698 neurons with some part in the SEZ, including image-backed connectome or light-microscopy examples. These neurons can be GABAergic, cholinergic, or glutamatergic, and some have associated images. The SEZ has 122 parts and 2 subclasses, including the adult and larval subesophageal zones. There is one expression pattern overlapping the SEZ, which is the P{GMR25B07-lexA} expression pattern. For weighted input/output connectivity, it is recommended to choose a concrete SEZ neuron class or image-backed example and query its upstream/downstream class connectivity. \n\nVFB returned 1 genetic tool/expression pattern row for the subesophageal zone, which is the P{GMR25B07-lexA} expression pattern. This is a binary/intersectional driver and has been used in the publication \"Alpert et al., 2020, Curr. Biol. 30(12): 2275--2288.e5\" (FlyBase: FBrf0246007, PubMed: 32442464, DOI: 10.1016/j.cub.2020.04.038\"). \n\nNote that the suitability of this expression pattern for a specific experiment may require inspecting expression specificity and stock availability.",
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": false,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1177,
+        "status_count": 4
+      }
+    },
+    {
+      "attempt_index": 30,
+      "task_index": 30,
+      "task_id": "G1",
+      "tier": 5,
+      "title": "Graph view regression - medulla region connectivity",
+      "question": "what are the class summarised connectivity from the medulla in graph form",
+      "requires_graph": true,
+      "min_graphs": 1,
+      "repetition": 1,
+      "ok": true,
+      "duration_ms": 11210,
+      "status_messages": [
+        {
+          "message": "Thinking...",
+          "phase": "llm"
+        },
+        {
+          "message": "Summarizing region connections for \"medulla\"",
+          "phase": "mcp"
+        }
+      ],
+      "event_count": 3,
+      "request_id": "0e39c2de-996e-4d9f-9610-a0d9f56386ca",
+      "response_id": "chatcmpl-2797158dd4cabe47de0cd750a2d16f1b",
+      "images_count": 0,
+      "graphs_count": 1,
+      "response": "The medulla is a region in the Drosophila brain that is divided into 10 layers and is involved in visual processing. According to the Virtual Fly Brain (VFB) database, the medulla has 471 neurons with some part in it, 464 neurons with synaptic terminals in it, 262 neurons with presynaptic terminals in it, and 333 neurons with postsynaptic terminals in it. The medulla also has 28 parts, including sublayers M3A, M3B, M6A, and M6B.\n\nThe VFB database also provides information on the tracts and nerves that innervate the medulla, including the first optic chiasma, posterior optic commissure, and second optic chiasma. Additionally, the database lists 2346 expression patterns that overlap with the medulla, including patterns from various transgenic lines.\n\nThe graph view was unable to generate a graph for the medulla connectivity as it requires more specific information about the neurons and their connections. However, VFB provides a summary of the region's description, available query counts, and preview rows for various queries, including neurons with some part in the medulla, neurons with synaptic terminals in the medulla, and parts of the medulla.\n\nBased on the evidence from the VFB database, the medulla is a complex region with many neurons and connections involved in visual processing. Further analysis of the specific neurons and their connections would be required to generate a graph of the medulla's connectivity. \n\nSources:\n- VFB\n- Virtual Fly Brain (VFB) database",
+      "graphs": [
+        {
+          "type": "basic_graph",
+          "version": 1,
+          "title": "Medulla region connectivity preview",
+          "directed": true,
+          "layout": "radial",
+          "nodes": [
+            {
+              "id": "FBbt_00003748",
+              "label": "medulla",
+              "group": "queried region",
+              "color": null,
+              "size": 2.4
+            },
+            {
+              "id": "FBbt_20005420",
+              "label": "MeVP3",
+              "group": "medulla pre/post preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00003789",
+              "label": "Tm1",
+              "group": "medulla presynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00003808",
+              "label": "Tm20",
+              "group": "medulla presynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00003791",
+              "label": "Tm3",
+              "group": "medulla presynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00110071",
+              "label": "Tm3b",
+              "group": "medulla presynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00111769",
+              "label": "MC63",
+              "group": "medulla postsynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00052137",
+              "label": "ML1",
+              "group": "medulla postsynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00003731",
+              "label": "T4",
+              "group": "medulla postsynaptic preview",
+              "color": null,
+              "size": 1.15
+            },
+            {
+              "id": "FBbt_00111770",
+              "label": "medulla columnar neuron VPN-MB2",
+              "group": "medulla postsynaptic preview",
+              "color": null,
+              "size": 1.15
+            }
+          ],
+          "edges": [
+            {
+              "source": "FBbt_20005420",
+              "target": "FBbt_00003748",
+              "label": "presynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003789",
+              "target": "FBbt_00003748",
+              "label": "presynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003808",
+              "target": "FBbt_00003748",
+              "label": "presynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003791",
+              "target": "FBbt_00003748",
+              "label": "presynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00110071",
+              "target": "FBbt_00003748",
+              "label": "presynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003748",
+              "target": "FBbt_00111769",
+              "label": "postsynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003748",
+              "target": "FBbt_00052137",
+              "label": "postsynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003748",
+              "target": "FBbt_20005420",
+              "label": "postsynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003748",
+              "target": "FBbt_00003731",
+              "label": "postsynaptic sites in medulla",
+              "weight": 0
+            },
+            {
+              "source": "FBbt_00003748",
+              "target": "FBbt_00111770",
+              "label": "postsynaptic sites in medulla",
+              "weight": 0
+            }
+          ]
+        }
+      ],
+      "quality_flags": {
+        "has_tool_status": true,
+        "no_tool_factual_answer": false,
+        "tool_claim_without_tool": false,
+        "disambiguation_only_answer": false,
+        "investigation_plan_answer": false,
+        "not_verified_or_no_results_answer": false,
+        "graph_failure_mentioned": true,
+        "missing_required_graph": false,
+        "used_data_resource": false,
+        "response_chars": 1488,
+        "status_count": 2
+      }
+    }
+  ]
+}

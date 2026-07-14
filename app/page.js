@@ -6,8 +6,6 @@ import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
 
-const cytoscape = typeof window !== 'undefined' ? require('cytoscape') : null
-
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
   wrong: 'Wrong',
@@ -55,8 +53,6 @@ function getGraphNodeRole(stats = {}, directed = true) {
 
 const BasicGraphView = memo(function BasicGraphView({ graph }) {
   const containerRef = useRef(null)
-  const graphRef = useRef(null)
-  const cyRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 640, height: 400 })
 
   const nodes = useMemo(() => (Array.isArray(graph?.nodes) ? graph.nodes : []), [graph?.nodes])
@@ -179,6 +175,97 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     return [...cyNodes, ...cyEdges]
   }, [nodes, edges, visualGrouping])
 
+  const svgSize = useMemo(() => ({
+    width: Math.max(280, dimensions.width - 20),
+    height: dimensions.height
+  }), [dimensions])
+
+  const svgGraph = useMemo(() => {
+    const graphNodes = elements.filter(element => !element.data?.source)
+    const graphEdges = elements.filter(element => element.data?.source && element.data?.target)
+    const margin = 48
+    const availableHeight = Math.max(1, svgSize.height - (margin * 2))
+    const availableWidth = Math.max(1, svgSize.width - (margin * 2))
+    const statsByNodeId = new Map(graphNodes.map(node => [node.data.id, { indegree: 0, outdegree: 0 }]))
+
+    graphEdges.forEach(edge => {
+      const sourceStats = statsByNodeId.get(edge.data.source)
+      const targetStats = statsByNodeId.get(edge.data.target)
+      if (sourceStats) sourceStats.outdegree += 1
+      if (targetStats) targetStats.indegree += 1
+    })
+
+    const sortedNodes = graphNodes.slice().sort((a, b) => String(a.data.label).localeCompare(String(b.data.label)))
+    const positions = new Map()
+    const directedRoles = ['source', 'bridge', 'target', 'isolated']
+    const roleBuckets = Object.fromEntries(directedRoles.map(role => [role, []]))
+
+    sortedNodes.forEach(node => {
+      const role = getGraphNodeRole(statsByNodeId.get(node.data.id), isDirected)
+      roleBuckets[role].push(node)
+    })
+
+    const useDirectionalLayout = isDirected && roleBuckets.source.length > 0 && roleBuckets.target.length > 0
+
+    if (useDirectionalLayout) {
+      const roleColumns = {
+        source: margin,
+        bridge: margin + (availableWidth * 0.5),
+        target: margin + availableWidth,
+        isolated: margin + (availableWidth * 0.5)
+      }
+
+      directedRoles.forEach(role => {
+        const bucket = roleBuckets[role]
+        bucket.forEach((node, index) => {
+          positions.set(node.data.id, {
+            x: roleColumns[role],
+            y: margin + ((index + 1) * availableHeight / (bucket.length + 1))
+          })
+        })
+      })
+    } else {
+      const radius = Math.max(60, Math.min(availableWidth, availableHeight) * 0.38)
+      const centerX = svgSize.width / 2
+      const centerY = svgSize.height / 2
+      sortedNodes.forEach((node, index) => {
+        const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / Math.max(1, sortedNodes.length))
+        positions.set(node.data.id, {
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius
+        })
+      })
+    }
+
+    const laidOutNodes = graphNodes.map(node => ({
+      id: node.data.id,
+      label: node.data.label,
+      group: node.data.group,
+      color: node.data.color,
+      radius: Math.max(14, Math.min(32, Number(node.data.size) / 2 || 18)),
+      ...(positions.get(node.data.id) || { x: svgSize.width / 2, y: svgSize.height / 2 })
+    }))
+    const laidOutNodeById = new Map(laidOutNodes.map(node => [node.id, node]))
+
+    return {
+      nodes: laidOutNodes,
+      edges: graphEdges
+        .map(edge => {
+          const source = laidOutNodeById.get(edge.data.source)
+          const target = laidOutNodeById.get(edge.data.target)
+          if (!source || !target) return null
+          return {
+            id: edge.data.id,
+            label: edge.data.label,
+            width: edge.data.width,
+            source,
+            target
+          }
+        })
+        .filter(Boolean)
+    }
+  }, [elements, isDirected, svgSize.height, svgSize.width])
+
   // Measure container width
   useEffect(() => {
     if (!containerRef.current) return
@@ -191,100 +278,6 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     ro.observe(containerRef.current)
     return () => ro.disconnect()
   }, [])
-
-  // Initialize and update Cytoscape instance
-  useEffect(() => {
-    if (!graphRef.current || !cytoscape || elements.length === 0) return
-
-    if (cyRef.current) {
-      cyRef.current.destroy()
-    }
-
-    const cy = cytoscape({
-      container: graphRef.current,
-      elements: elements,
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': 'data(color)',
-            'label': 'data(label)',
-            'width': 'data(size)',
-            'height': 'data(size)',
-            'font-size': '11px',
-            'color': '#e5e7eb',
-            'text-valign': 'bottom',
-            'text-margin-y': 5,
-            'text-outline-color': '#0f0f12',
-            'text-outline-width': 2,
-            'border-width': 1,
-            'border-color': '#1a1a2e'
-          }
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 'data(width)',
-            'line-color': '#4b5563',
-            'target-arrow-color': '#4b5563',
-            'target-arrow-shape': isDirected ? 'triangle' : 'none',
-            'curve-style': 'bezier',
-            'label': 'data(label)',
-            'font-size': '9px',
-            'color': '#8f9aad',
-            'text-outline-color': '#0f0f12',
-            'text-outline-width': 1.5,
-            'text-rotation': 'autorotate'
-          }
-        },
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': 3,
-            'border-color': '#fff'
-          }
-        },
-        {
-          selector: 'edge:selected',
-          style: {
-            'line-color': '#9ecbff',
-            'target-arrow-color': '#9ecbff',
-            'width': 4
-          }
-        }
-      ],
-      layout: {
-        name: isDirected ? 'breadthfirst' : 'cose',
-        directed: isDirected,
-        spacingFactor: 1.2,
-        animate: true,
-        animationDuration: 500,
-        padding: 30,
-        nodeDimensionsIncludeLabels: true,
-        ...(isDirected ? {} : {
-          idealEdgeLength: 100,
-          nodeRepulsion: 4500,
-          gravity: 0.25
-        })
-      },
-      userZoomingEnabled: true,
-      userPanningEnabled: true,
-      boxSelectionEnabled: false
-    })
-
-    cy.on('layoutstop', () => cy.fit(undefined, 30))
-    cyRef.current = cy
-
-    return () => {
-      cy.destroy()
-      cyRef.current = null
-    }
-  }, [elements, isDirected])
-
-  // Resize cytoscape when dimensions change
-  useEffect(() => {
-    if (cyRef.current) cyRef.current.resize()
-  }, [dimensions])
 
   if (nodes.length === 0 || edges.length === 0) return null
 
@@ -325,24 +318,214 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         </div>
       )}
       <div
-        ref={graphRef}
-        style={{ width: dimensions.width - 20, height: dimensions.height, backgroundColor: '#0f0f12' }}
-      />
+        style={{ width: svgSize.width, height: svgSize.height, backgroundColor: '#0f0f12' }}
+      >
+        <svg
+          role="img"
+          aria-label={graph?.title || 'Graph visualisation'}
+          width="100%"
+          height="100%"
+          viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+          style={{ display: 'block' }}
+        >
+          <defs>
+            <marker
+              id="graph-arrow"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M0,0 L8,4 L0,8 Z" fill="#4b5563" />
+            </marker>
+          </defs>
+          {svgGraph.edges.map(edge => {
+            const dx = edge.target.x - edge.source.x
+            const dy = edge.target.y - edge.source.y
+            const distance = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)))
+            const sourcePad = edge.source.radius + 2
+            const targetPad = edge.target.radius + 9
+            const x1 = edge.source.x + (dx / distance) * sourcePad
+            const y1 = edge.source.y + (dy / distance) * sourcePad
+            const x2 = edge.target.x - (dx / distance) * targetPad
+            const y2 = edge.target.y - (dy / distance) * targetPad
+            const midX = (x1 + x2) / 2
+            const midY = (y1 + y2) / 2
+
+            return (
+              <g key={edge.id}>
+                <line
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  stroke="#4b5563"
+                  strokeWidth={edge.width}
+                  markerEnd={isDirected ? 'url(#graph-arrow)' : undefined}
+                />
+                {edge.label && (
+                  <text
+                    x={midX}
+                    y={midY - 4}
+                    textAnchor="middle"
+                    fill="#8f9aad"
+                    fontSize="9"
+                    paintOrder="stroke"
+                    stroke="#0f0f12"
+                    strokeWidth="3"
+                  >
+                    {edge.label}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+          {svgGraph.nodes.map(node => (
+            <g key={node.id}>
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={node.radius}
+                fill={node.color}
+                stroke="#1a1a2e"
+                strokeWidth="1"
+              />
+              <text
+                x={node.x}
+                y={node.y + node.radius + 13}
+                textAnchor="middle"
+                fill="#e5e7eb"
+                fontSize="11"
+                paintOrder="stroke"
+                stroke="#0f0f12"
+                strokeWidth="3"
+              >
+                {node.label}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
     </div>
   )
 })
 
 // ── Memoized single-message bubble ──────────────────────────────────
+// A VFB thumbnail: height-capped, click opens the entity in VFB (new tab), and
+// hovering shows a larger floating preview near the cursor so details are visible.
+function VfbThumbnail({ src, alt, href, maxHeight = 48 }) {
+  const [hover, setHover] = useState(false)
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  if (!src) return null
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const clamp = (v, max) => Math.max(8, Math.min(v, max))
+  const img = (
+    <img src={src} alt={alt || ''} style={{ maxHeight, borderRadius: 3, border: '1px solid #333', display: 'block', cursor: 'zoom-in' }} />
+  )
+  const inner = (
+    <>
+      {img}
+      {hover && (
+        <div style={{ position: 'fixed', left: clamp(pos.x + 18, vw - 360), top: clamp(pos.y + 18, vh - 360), zIndex: 10000, pointerEvents: 'none', background: '#000', padding: 4, border: '1px solid #555', borderRadius: 6, boxShadow: '0 6px 24px rgba(0,0,0,0.7)' }}>
+          <img src={src} alt={alt || ''} style={{ maxHeight: 320, maxWidth: 340, display: 'block' }} />
+          {alt ? <div style={{ color: '#cbd5e1', fontSize: '0.72em', marginTop: 3, maxWidth: 340 }}>{alt}</div> : null}
+        </div>
+      )}
+    </>
+  )
+  const handlers = {
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+    onMouseMove: (e) => setPos({ x: e.clientX, y: e.clientY })
+  }
+  return href
+    ? <a href={href} target="_blank" rel="noopener noreferrer" title={`Open ${alt || 'image'} in VFB (new tab)`} style={{ display: 'inline-block', lineHeight: 0 }} {...handlers}>{inner}</a>
+    : <span style={{ display: 'inline-block', lineHeight: 0 }} {...handlers}>{inner}</span>
+}
+
+// Feedback prompt — rendered ONCE at the bottom of the conversation (for the
+// latest assistant response), not repeated on every message.
+function FeedbackPrompt({ msg, feedbackState, onSubmitHelpful, onSelectNeedsWork, onSubmitFeedbackReason, onToggleIncludeConversation }) {
+  if (!msg || msg.role !== 'assistant' || !msg.requestId || !msg.responseId) return null
+  const isSubmittingFeedback = feedbackState?.status === 'submitting'
+  const isFeedbackSubmitted = feedbackState?.status === 'submitted'
+  return (
+    <div style={{ marginTop: '4px', padding: '8px 12px', borderTop: '1px solid #1f1f1f' }}>
+      {isFeedbackSubmitted ? (
+        <div style={{ fontSize: '0.75em', color: '#7ec699' }}>Feedback recorded. Thank you.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>Was this conversation useful?</div>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => onSubmitHelpful(msg)}
+              disabled={isSubmittingFeedback}
+              style={{ padding: '4px 10px', backgroundColor: '#173522', color: '#dff7e7', border: '1px solid #29543a', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.75em' }}
+            >
+              Helpful
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectNeedsWork(msg)}
+              disabled={isSubmittingFeedback}
+              style={{ padding: '4px 10px', backgroundColor: feedbackState?.selectedRating === 'down' ? '#3b1d22' : '#25161a', color: '#ffdede', border: '1px solid #5d2a33', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.75em' }}
+            >
+              Needs work
+            </button>
+          </div>
+          {feedbackState?.selectedRating === 'down' && (
+            <>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '10px', fontSize: '0.75em', color: '#b8d7ff', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(feedbackState?.attachConversation)}
+                  disabled={isSubmittingFeedback}
+                  onChange={(event) => onToggleIncludeConversation(msg, event.target.checked)}
+                  style={{ marginTop: '2px' }}
+                />
+                <span>
+                  Attach the full visible conversation for investigation.
+                  <span style={{ display: 'block', color: '#888', marginTop: '3px' }}>
+                    Only do this if you are comfortable sharing the chat text. Attached conversations are retained for up to 30 days.
+                  </span>
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
+                {NEGATIVE_FEEDBACK_REASON_CODES.map((reasonCode) => (
+                  <button
+                    key={reasonCode}
+                    type="button"
+                    onClick={() => onSubmitFeedbackReason(msg, reasonCode, Boolean(feedbackState?.attachConversation))}
+                    disabled={isSubmittingFeedback}
+                    style={{ padding: '4px 10px', backgroundColor: '#101820', color: '#c9e6ff', border: '1px solid #284055', borderRadius: '999px', cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer', fontSize: '0.72em' }}
+                  >
+                    {FEEDBACK_REASON_LABELS[reasonCode]}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {feedbackState?.status === 'error' && (
+            <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff9e9e' }}>
+              Unable to record feedback right now. Please try again.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // Only re-renders when its own props change, NOT when sibling messages
 // are added or the thinking indicator ticks.
 const ChatMessage = memo(function ChatMessage({
   msg,
   markdownComponents,
-  feedbackState,
-  onSubmitHelpful,
-  onSelectNeedsWork,
-  onSubmitFeedbackReason,
-  onToggleIncludeConversation
+  onAskFollowOn
 }) {
   const getDisplayName = (role) => {
     if (role === 'user') return 'Researcher'
@@ -350,10 +533,6 @@ const ChatMessage = memo(function ChatMessage({
     if (role === 'reasoning') return 'VFB'
     return role
   }
-
-  const canCollectFeedback = msg.role === 'assistant' && msg.requestId && msg.responseId
-  const isSubmittingFeedback = feedbackState?.status === 'submitting'
-  const isFeedbackSubmitted = feedbackState?.status === 'submitted'
 
   return (
     <div role="article" aria-label={`${getDisplayName(msg.role)} message`} style={{
@@ -393,134 +572,112 @@ const ChatMessage = memo(function ChatMessage({
           ))}
         </div>
       )}
+      {/* Scrollable result tables (detailed query results with thumbnails). */}
+      {msg.role === 'assistant' && Array.isArray(msg.tables) && msg.tables.length > 0 && (
+        <div style={{ marginTop: '10px' }}>
+          {msg.tables.map((tbl, ti) => (
+            <div key={`tbl-${ti}`} style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
+              <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
+                {tbl.title}{typeof tbl.count === 'number' ? ` — ${tbl.count} result${tbl.count === 1 ? '' : 's'}` : ''}
+              </div>
+              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
+                  <tbody>
+                    {(tbl.rows || []).map((r, ri) => (
+                      <tr key={ri} style={{ borderTop: ri ? '1px solid #1a1a1a' : 'none' }}>
+                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
+                          <VfbThumbnail src={r.thumbnail} alt={r.name} href={r.reportUrl} maxHeight={48} />
+                        </td>
+                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
+                          <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
+                          {Array.isArray(r.tags) && r.tags.length > 0 && (
+                            <div style={{ color: '#777', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {tbl.queryUrl && typeof tbl.count === 'number' && tbl.count > (tbl.rows ? tbl.rows.length : 0) && (
+                <div style={{ padding: '6px 10px', borderTop: '1px solid #222', fontSize: '0.75em' }}>
+                  <a href={tbl.queryUrl} target="_blank" rel="noopener noreferrer" title="Run this query in Virtual Fly Brain (new tab)" style={{ color: '#9ecbff' }}>
+                    View all {tbl.count} in VFB ↗
+                  </a>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Image gallery from API images field */}
       {msg.images && msg.images.length > 0 && (
         <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
           {msg.images.map((img, i) => (
             <div key={i} style={{ display: 'inline-block' }}>
-              <img
+              <VfbThumbnail
                 src={img.thumbnail}
                 alt={img.label}
-                style={{
-                  width: '80px',
-                  height: '80px',
-                  objectFit: 'cover',
-                  border: '1px solid #444',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-                title={img.label}
+                href={img.id ? `https://www.virtualflybrain.org/reports/${img.id}` : undefined}
+                maxHeight={80}
               />
             </div>
           ))}
         </div>
       )}
-      {canCollectFeedback && (
-        <div style={{
-          marginTop: '10px',
-          paddingTop: '8px',
-          borderTop: '1px solid #1f1f1f'
-        }}>
-          {isFeedbackSubmitted ? (
-            <div style={{ fontSize: '0.75em', color: '#7ec699' }}>
-              Feedback recorded. Thank you.
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: '0.75em', color: '#aaa', marginBottom: '6px' }}>
-                Was this response useful?
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  onClick={() => onSubmitHelpful(msg)}
-                  disabled={isSubmittingFeedback}
-                  style={{
-                    padding: '4px 10px',
-                    backgroundColor: '#173522',
-                    color: '#dff7e7',
-                    border: '1px solid #29543a',
-                    borderRadius: '999px',
-                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75em'
-                  }}
-                >
-                  Helpful
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectNeedsWork(msg)}
-                  disabled={isSubmittingFeedback}
-                  style={{
-                    padding: '4px 10px',
-                    backgroundColor: feedbackState?.selectedRating === 'down' ? '#3b1d22' : '#25161a',
-                    color: '#ffdede',
-                    border: '1px solid #5d2a33',
-                    borderRadius: '999px',
-                    cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75em'
-                  }}
-                >
-                  Needs work
-                </button>
-              </div>
-              {feedbackState?.selectedRating === 'down' && (
-                <>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '8px',
-                      marginTop: '10px',
-                      fontSize: '0.75em',
-                      color: '#b8d7ff',
-                      cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={Boolean(feedbackState?.attachConversation)}
-                      disabled={isSubmittingFeedback}
-                      onChange={(event) => onToggleIncludeConversation(msg, event.target.checked)}
-                      style={{ marginTop: '2px' }}
-                    />
-                    <span>
-                      Attach the full visible conversation for investigation.
-                      <span style={{ display: 'block', color: '#888', marginTop: '3px' }}>
-                        Only do this if you are comfortable sharing the chat text. Attached conversations are retained for up to 30 days.
-                      </span>
-                    </span>
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
-                    {NEGATIVE_FEEDBACK_REASON_CODES.map((reasonCode) => (
-                      <button
-                        key={reasonCode}
-                        type="button"
-                        onClick={() => onSubmitFeedbackReason(msg, reasonCode, Boolean(feedbackState?.attachConversation))}
-                        disabled={isSubmittingFeedback}
-                        style={{
-                          padding: '4px 10px',
-                          backgroundColor: '#101820',
-                          color: '#c9e6ff',
-                          border: '1px solid #284055',
-                          borderRadius: '999px',
-                          cursor: isSubmittingFeedback ? 'not-allowed' : 'pointer',
-                          fontSize: '0.72em'
-                        }}
-                      >
-                        {FEEDBACK_REASON_LABELS[reasonCode]}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-              {feedbackState?.status === 'error' && (
-                <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff9e9e' }}>
-                  Unable to record feedback right now. Please try again.
-                </div>
-              )}
-            </>
-          )}
+      {/* Explore: follow-on chips (ask = run a chat query; vfb = open in VFB).
+          Two distinct styles + hover tooltips so the user knows what a click does. */}
+      {msg.role === 'assistant' && Array.isArray(msg.followOns) && msg.followOns.length > 0 && (
+        <div style={{ marginTop: '10px' }}>
+          <div aria-hidden="true" style={{ fontSize: '0.7em', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '5px' }}>
+            Explore ▸
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            {msg.followOns.map((chip, i) => chip.kind === 'vfb' ? (
+              <a
+                key={`fo-${i}`}
+                href={chip.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={chip.title || `Open in Virtual Fly Brain (new tab)`}
+                style={{
+                  padding: '4px 10px', fontSize: '0.75em', borderRadius: '999px',
+                  background: '#101820', color: '#9ecbff', border: '1px solid #284a6b',
+                  textDecoration: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px'
+                }}
+              >
+                {chip.label} <span aria-hidden="true">↗</span>
+              </a>
+            ) : (
+              <button
+                key={`fo-${i}`}
+                type="button"
+                onClick={() => onAskFollowOn && onAskFollowOn(chip.query)}
+                title={chip.title || `Ask VFB: ${chip.query}`}
+                style={{
+                  padding: '4px 10px', fontSize: '0.75em', borderRadius: '999px',
+                  background: '#173522', color: '#dff7e7', border: '1px solid #29543a',
+                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px'
+                }}
+              >
+                <span aria-hidden="true">↩</span> {chip.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Sources: clickable provenance — the VFB term pages backing the answer. */}
+      {msg.role === 'assistant' && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+        <div style={{ marginTop: '8px', fontSize: '0.72em', color: '#888' }}>
+          Sources:{' '}
+          {msg.sources.map((s, i) => (
+            <span key={`src-${i}`}>
+              {i > 0 ? ', ' : ''}
+              <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.id ? `Open ${s.label} term info in VFB (new tab)` : `Open ${s.label} (new tab)`} style={{ color: '#7fb2e6' }}>
+                {s.label}
+              </a>
+            </span>
+          ))}
         </div>
       )}
     </div>
@@ -544,6 +701,7 @@ export default function Home() {
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
+  const streamingMsgIdRef = useRef(null) // id of the assistant bubble being streamed
   const initialSendFired = useRef(false) // prevent double-send from StrictMode
 
   // Helper: inject VFB term links into responses, so IDs like FBbt_00003748 or VFB_00102107
@@ -773,6 +931,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     submitFeedback(msg, 'down', reasonCode, { attachConversation })
   }, [submitFeedback])
 
+  // Stable callback for follow-on chips → run the chip's query as a new message.
+  // Uses a ref so ChatMessage's memo isn't busted every render.
+  const handleSendRef = useRef(null)
+  const handleAskFollowOn = useCallback((query) => {
+    if (typeof query === 'string' && query.trim() && handleSendRef.current) handleSendRef.current(query)
+  }, [])
+
   const handleSend = async (messageText = null) => {
     const textToSend = (typeof messageText === 'string' ? messageText : null) || input
     if (!textToSend.trim()) return
@@ -797,6 +962,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const decoder = new TextDecoder()
       let buffer = ''
       let currentEvent = ''
+      streamingMsgIdRef.current = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -822,18 +988,47 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                 })
               } else if (currentEvent === 'reasoning') {
                 setMessages(prev => [...prev, makeMsg('reasoning', data.text)])
+              } else if (currentEvent === 'delta') {
+                // Stream synthesis tokens into a single live assistant bubble.
+                const chunk = data.text || ''
+                if (!chunk) { /* nothing to append */ }
+                else if (streamingMsgIdRef.current == null) {
+                  const msg = { id: ++msgIdRef.current, role: 'assistant', content: chunk, streaming: true }
+                  streamingMsgIdRef.current = msg.id
+                  setMessages(prev => [...prev, msg])
+                  setThinkingSteps(prev => prev.map(s => ({ ...s, done: true })))
+                } else {
+                  const id = streamingMsgIdRef.current
+                  setMessages(prev => prev.map(m => m.id === id ? { ...m, content: m.content + chunk } : m))
+                }
               } else if (currentEvent === 'result') {
-                setMessages(prev => [...prev, makeMsg('assistant', data.response, {
+                // Finalise: replace the streamed bubble (linkified, with images/graphs)
+                // or, if nothing streamed, append a fresh assistant message.
+                const finalMsg = makeMsg('assistant', data.response, {
                   images: data.images,
                   graphs: data.graphs,
+                  tables: data.tables,
+                  followOns: data.followOns,
+                  sources: data.sources,
+                  terms: data.terms,
                   requestId: data.requestId,
                   responseId: data.responseId
-                })])
+                })
+                const streamId = streamingMsgIdRef.current
+                if (streamId != null) {
+                  setMessages(prev => prev.map(m => m.id === streamId
+                    ? { ...finalMsg, id: streamId }
+                    : m))
+                } else {
+                  setMessages(prev => [...prev, finalMsg])
+                }
+                streamingMsgIdRef.current = null
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
                 fetchRateInfo()
                 return
               } else if (currentEvent === 'error') {
+                streamingMsgIdRef.current = null
                 setMessages(prev => [...prev, makeMsg('assistant', data.message, {
                   requestId: data.requestId,
                   responseId: data.responseId
@@ -856,6 +1051,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       fetchRateInfo()
     }
   }
+  // Keep the ref pointing at the latest handleSend for follow-on chips.
+  handleSendRef.current = handleSend
 
   // Custom renderers for react-markdown
   const normalizeMarkdownHref = (rawHref) => {
@@ -876,10 +1073,10 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     return href
   }
 
-  const renderLink = ({ href, children }) => {
+  const renderLink = ({ href, children, title: mdTitle }) => {
     const normalizedHref = normalizeMarkdownHref(href)
     let url = normalizedHref
-    let title = undefined
+    let title = mdTitle   // honour the markdown link's own title (hover tooltip)
     let isQueryLink = false
     
     // Handle chat.virtualflybrain.org query links
@@ -1250,13 +1447,24 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             key={msg.id}
             msg={msg}
             markdownComponents={markdownComponents}
-            feedbackState={feedbackStateByResponseId[msg.responseId]}
-            onSubmitHelpful={handleSubmitHelpful}
-            onSelectNeedsWork={handleSelectNeedsWork}
-            onSubmitFeedbackReason={handleSubmitFeedbackReason}
-            onToggleIncludeConversation={handleToggleIncludeConversation}
+            onAskFollowOn={handleAskFollowOn}
           />
         ))}
+        {/* One feedback prompt for the whole conversation (latest assistant reply). */}
+        {!isThinking && (() => {
+          const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.requestId && m.responseId)
+          if (!lastAssistant) return null
+          return (
+            <FeedbackPrompt
+              msg={lastAssistant}
+              feedbackState={feedbackStateByResponseId[lastAssistant.responseId]}
+              onSubmitHelpful={handleSubmitHelpful}
+              onSelectNeedsWork={handleSelectNeedsWork}
+              onSubmitFeedbackReason={handleSubmitFeedbackReason}
+              onToggleIncludeConversation={handleToggleIncludeConversation}
+            />
+          )
+        })()}
         {isThinking && (
           <div
             role="status"

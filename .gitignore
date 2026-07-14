@@ -93,3 +93,9 @@ Thumbs.db
 
 data/
 logs/
+
+# Local LLM-as-judge grader output (scripts/grade-battery.mjs). The task-battery
+# RUN results under test-results/task-battery/ are intentionally tracked and
+# committed by .github/workflows/task-battery.yml, so do NOT ignore those — only
+# the local .graded.json the grader writes alongside them.
+test-results/**/*.graded.json

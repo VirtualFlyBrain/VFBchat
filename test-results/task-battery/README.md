@@ -1,0 +1,40 @@
+# VFB Task Battery Results
+
+This folder stores JSON outputs from the VFB MCP evaluation task battery.
+
+Local quick run:
+
+```sh
+npm run benchmark:task-battery -- --limit 1
+```
+
+Full local run, using the vendored question snapshot and four parallel requests:
+
+```sh
+npm run benchmark:task-battery -- --concurrency 4 --timeout-ms 240000
+```
+
+Run directly from a sibling paper checkout when you want the latest paper version:
+
+```sh
+npm run benchmark:task-battery -- --task-file ../vfb-paper/task_battery.md
+```
+
+Run against an already deployed server:
+
+```sh
+VFBCHAT_BENCHMARK_BASE_URL=https://chat.virtualflybrain.org npm run benchmark:task-battery -- --no-start-server
+```
+
+The runner writes a timestamped JSON file plus `latest.json`. It records questions, final answers, request IDs, response IDs, graph/image counts, status messages, and timing. It does not write API keys or environment variable values.
+
+The runner writes checkpoint results after each completed request, so partial JSON is preserved when later questions fail. In CI the default is four parallel questions with a four-minute per-question hard timeout and an 80-minute benchmark-step timeout.
+
+GitHub Actions uses repository secrets/variables for model access:
+
+- `ELM_API_KEY` as a secret.
+- `ELM_BASE_URL` as a repository variable or secret, defaulting to the EDINA ELM endpoint when unset.
+- `ELM_MODEL` as a repository variable or secret, defaulting to `meta-llama/Llama-3.3-70B-Instruct` when unset.
+- `VFB_MCP_URL` as an optional repository variable or secret, defaulting to `https://vfb3-mcp-preview.virtualflybrain.org/`.
+
+When credentials are available, CI can commit generated JSON results back to this folder so prompt/tool-routing changes have visible before/after artefacts.
