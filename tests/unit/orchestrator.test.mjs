@@ -11,6 +11,7 @@ import {
 import { PLAN_SCHEMA, INTENTS, buildPlannerMessages, normalizePlan, detectFastPath } from '../../lib/planner.mjs'
 import { nextAction, decideRetrieval, statusSummary } from '../../lib/controller.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
+import { pickBestQueryForQuestion, maybeInjectCountQueryStep } from '../../lib/orchestrator.mjs'
 
 const PLAN = {
   intent: 'connectivity',
@@ -218,4 +219,48 @@ test('statusSummary: compact and complete flag', () => {
   assert.equal(s.complete, true)
   assert.equal(s.evidence, 1)
   assert.match(s.steps, /s1:satisfied/)
+})
+
+// ---- count-question auto-run (surface the number, don't tell the user to run it) ----
+
+const MEDULLA_DIGEST = {
+  name: 'medulla',
+  queries: [
+    { query_type: 'ImagesNeurons', label: 'Images of neurons with some part in medulla', count: -1 },
+    { query_type: 'NeuronsPartHere', label: 'Neurons with some part in medulla', count: -1 },
+    { query_type: 'SubclassesOf', label: 'Subclasses of medulla', count: 4 }
+  ]
+}
+
+test('pickBestQueryForQuestion: unambiguous best match wins, ambiguous/none returns null', () => {
+  assert.equal(
+    pickBestQueryForQuestion('how many images of neurons with a part in the medulla are available?', MEDULLA_DIGEST)?.query_type,
+    'ImagesNeurons')
+  assert.equal(
+    pickBestQueryForQuestion('how many subclasses of the medulla?', MEDULLA_DIGEST)?.query_type,
+    'SubclassesOf')
+  // a question with no distinctive overlap returns null (don't guess)
+  assert.equal(pickBestQueryForQuestion('how many kittens of the medulla?', MEDULLA_DIGEST), null)
+})
+
+test('maybeInjectCountQueryStep: injects a run_query step for the matched query on a count question', () => {
+  const l = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] })
+  addTerm(l, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
+  maybeInjectCountQueryStep(l, 'how many images of neurons with a part in the medulla are available?')
+  assert.equal(l.plan.length, 1)
+  assert.equal(l.plan[0].tool, 'vfb_run_query')
+  assert.deepEqual(l.plan[0].args, { id: 'FBbt_00003748', query_type: 'ImagesNeurons' })
+})
+
+test('maybeInjectCountQueryStep: no-op for non-count questions and when a run_query step already exists', () => {
+  // not a count question
+  const l1 = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] })
+  addTerm(l1, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
+  maybeInjectCountQueryStep(l1, 'what is the medulla?')
+  assert.equal(l1.plan.length, 0)
+  // already has a run_query step → don't duplicate
+  const l2 = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['x'] }] })
+  addTerm(l2, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
+  maybeInjectCountQueryStep(l2, 'how many images of neurons in the medulla?')
+  assert.equal(l2.plan.length, 1)
 })
