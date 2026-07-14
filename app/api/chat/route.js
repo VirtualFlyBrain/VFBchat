@@ -1198,7 +1198,7 @@ function getToolConfig() {
   tools.push({
     type: 'function',
     name: 'vfb_run_query',
-    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only exact query_type values returned by vfb_get_term_info for the same ID.',
+    description: 'Run VFB analyses such as PaintedDomains, NBLAST, or connectivity. Use only exact query_type values returned by vfb_get_term_info for the same ID. Results are PAGED: by default you get the first 25 rows plus the true total row count (the response reports count/offset/limit and a _note). To read further pages, re-run with offset increased by limit; pass limit:0 to fetch the whole result set at once. Image/thumbnail columns are omitted by default to save space — set include_images:true only when the user actually wants thumbnails.',
     parameters: {
       type: 'object',
       properties: {
@@ -1210,6 +1210,9 @@ function getToolConfig() {
           description: 'One or more plain VFB short-form IDs (not markdown links or IRIs)'
         },
         query_type: { type: 'string', description: 'Exact Queries[].query value returned by vfb_get_term_info for that term, e.g. SubclassesOf or ref_downstream_class_connectivity_query' },
+        limit: { type: 'number', description: 'Optional. Rows to return per page (default 25). Pass 0 for the complete result set — use this when the user asks for a full/exhaustive list.' },
+        offset: { type: 'number', description: 'Optional. Row offset for paging (default 0). To read the next page, set offset to the previous offset plus limit.' },
+        include_images: { type: 'boolean', description: 'Optional. Include thumbnail/image columns in the rows (default false). Set true only when the user wants images.' },
         queries: {
           type: 'array',
           description: 'Optional mixed batch input: each item has {id, query_type}. If provided, id/query_type are ignored.',
@@ -4981,9 +4984,13 @@ async function getDownstreamRowsForComparison(client, source = {}, queryType = '
 async function getConnectivityRowsForComparison(client, source = {}, queryType = '') {
   if (!source.id || !queryType) return { rows: [], count: 0, used_cached_recovery: false }
 
+  // limit:0 requests the full result set (run_query now pages to 25 rows by
+  // default in VFB3-MCP 1.9.1). The comparison ranks/filters over every partner,
+  // so a truncated page would silently drop the lower-ranked targets.
   const outputText = await callVfbToolTextWithFallback(client, 'run_query', {
     id: source.id,
-    query_type: queryType
+    query_type: queryType,
+    limit: 0
   })
   const rows = extractRowsFromRunQueryPayload(outputText)
   const usedCachedRecovery = false   // cache recovery removed — MCP is the only source
@@ -5013,15 +5020,16 @@ async function compareDownstreamTargetsTool(client, args = {}) {
   }
 
   const warnings = []
-  const sources = []
 
-  for (const rawType of upstreamTypes) {
+  // Populate each upstream type's downstream targets in parallel — the per-type
+  // resolve + query-type discovery + connectivity fetch are independent. Map
+  // preserves input order so the comparison output stays deterministic.
+  const sources = await Promise.all(upstreamTypes.map(async rawType => {
     try {
       const source = await resolveComparisonUpstreamType(client, rawType)
       if (!source.id) {
         warnings.push(source.error || `Could not resolve upstream type "${rawType}".`)
-        sources.push(source)
-        continue
+        return source
       }
 
       if (source.is_neuron_class === false) {
@@ -5031,15 +5039,14 @@ async function compareDownstreamTargetsTool(client, args = {}) {
       const { queryType, queryTypes, queryTypeSource } = await getDownstreamQueryTypeForComparison(client, source)
       if (!queryType) {
         warnings.push(`No downstream class-connectivity query was available for ${source.label} (${source.id}).`)
-        sources.push({
+        return {
           ...source,
           available_query_types: queryTypes,
           query_type: null,
           total_downstream_rows: 0,
           filtered_downstream_rows: 0,
           targets: []
-        })
-        continue
+        }
       }
 
       const { rows, count, used_cached_recovery: usedCachedRecovery } = await getDownstreamRowsForComparison(client, source, queryType)
@@ -5060,7 +5067,7 @@ async function compareDownstreamTargetsTool(client, args = {}) {
       }
 
       const targets = Array.from(targetsById.values()).sort(compareConnectivityRowStrength)
-      sources.push({
+      return {
         input: source.input,
         id: source.id,
         label: source.label,
@@ -5071,17 +5078,17 @@ async function compareDownstreamTargetsTool(client, args = {}) {
         filtered_downstream_rows: targets.length,
         used_cached_recovery: usedCachedRecovery || undefined,
         targets
-      })
+      }
     } catch (error) {
       warnings.push(`Failed to compare downstream targets for "${rawType}": ${error?.message || error}`)
-      sources.push({
+      return {
         input: String(rawType || ''),
         id: null,
         label: String(rawType || ''),
         error: error?.message || String(error)
-      })
+      }
     }
-  }
+  }))
 
   const resolvedSources = sources.filter(source => source.id && Array.isArray(source.targets))
   const targetMap = new Map()
@@ -5883,22 +5890,31 @@ async function findGeneticToolsTool(client, args = {}, context = {}) {
 
   const rowsByQuery = []
   const warnings = []
-  for (const queryType of Array.from(new Set(selectedQueries))) {
+  // Populate the expression/transgene queries in parallel — independent run_query
+  // calls on the same term. limit:0 returns the full result set so the
+  // genetic-tool de-duplication below sees every row, not just the first 25.
+  const uniqueQueryTypes = Array.from(new Set(selectedQueries))
+  const geneticToolResults = await Promise.all(uniqueQueryTypes.map(async queryType => {
     try {
       const outputText = await callVfbToolTextWithFallback(client, 'run_query', {
         id: focusTerm.id,
-        query_type: queryType
+        query_type: queryType,
+        limit: 0
       })
       const rows = extractRowsFromRunQueryPayload(outputText)
       const parsed = parseJsonPayload(outputText)
-      rowsByQuery.push({
+      return {
         query_type: queryType,
         count: Number.isFinite(Number(parsed?.count)) ? Number(parsed.count) : rows.length,
         rows
-      })
+      }
     } catch (error) {
       warnings.push(`Failed to run ${queryType} for ${focusTerm.label || focusTerm.id}: ${error?.message || error}`)
+      return null
     }
+  }))
+  for (const entry of geneticToolResults) {
+    if (entry) rowsByQuery.push(entry)
   }
 
   const seenIds = new Set()
@@ -6989,14 +7005,20 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   }
   // Hop 1: scRNA-seq clusters for this cell type.
   let clusters = []
-  try { clusters = parseScrnaseqClusters(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'anatScRNAseqQuery' }))) } catch { clusters = [] }
+  // limit:0 returns the full cluster/gene tables — run_query pages to 25 rows by
+  // default in VFB3-MCP 1.9.1, which would truncate the cluster list and, worse,
+  // cap each cluster's expression table at 25 genes and drop the queried gene.
+  try { clusters = parseScrnaseqClusters(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'anatScRNAseqQuery', limit: 0 }))) } catch { clusters = [] }
   // Bound cost: prefer adult clusters, cap the number queried for expression.
   const picked = clusters.filter(c => !(c.tags || []).includes('Larva')).slice(0, 4)
-  // Hop 2: per-cluster expression tables.
+  // Hop 2: per-cluster expression tables — fetched in parallel (independent calls).
   const perCluster = new Map()
-  for (const c of picked) {
-    try { perCluster.set(c.id, parseClusterExpression(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id: c.id, query_type: 'clusterExpression' })))) } catch { /* skip a failed cluster */ }
-  }
+  await Promise.all(picked.map(async c => {
+    try {
+      const table = parseClusterExpression(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id: c.id, query_type: 'clusterExpression', limit: 0 })))
+      perCluster.set(c.id, table)
+    } catch { /* skip a failed cluster */ }
+  }))
   const requestedGenes = extractRequestedGenes(context.userMessage || requested)
   const matrix = buildExpressionMatrix(picked, perCluster, requestedGenes)
   return JSON.stringify({
@@ -8404,18 +8426,19 @@ async function executeFunctionTool(name, args, context = {}) {
         })
       }
 
-      const endpointChecks = [
-        await assessConnectivityEndpointForNeuronClass({
+      // Assess both endpoints in parallel — independent resolve/lookup calls.
+      const endpointChecks = await Promise.all([
+        assessConnectivityEndpointForNeuronClass({
           client,
           side: 'upstream',
           rawValue: cleanArgs.upstream_type
         }),
-        await assessConnectivityEndpointForNeuronClass({
+        assessConnectivityEndpointForNeuronClass({
           client,
           side: 'downstream',
           rawValue: cleanArgs.downstream_type
         })
-      ]
+      ])
 
       const upstreamCheck = endpointChecks.find(check => check.side === 'upstream')
       const downstreamCheck = endpointChecks.find(check => check.side === 'downstream')
@@ -8442,8 +8465,23 @@ async function executeFunctionTool(name, args, context = {}) {
       }
     }
 
+    // FlyBase stocks and split-GAL4 combination publications are run_query
+    // query_types on the MCP; the dedicated find_stocks / find_combo_publications
+    // tools were removed in VFB3-MCP 1.9.1. Translate the retained wrapper tools
+    // into the equivalent run_query call (limit:0 = full result set). The wrapper
+    // tool names stay the same, so the model's usage is unchanged.
+    let mcpName = routing.mcpName
+    let mcpArgs = cleanArgs
+    if (name === 'vfb_find_stocks') {
+      mcpName = 'run_query'
+      mcpArgs = { id: sanitizeVfbIdParam(cleanArgs.feature_id), query_type: 'FindStocks', limit: 0 }
+    } else if (name === 'vfb_find_combo_publications') {
+      mcpName = 'run_query'
+      mcpArgs = { id: sanitizeVfbIdParam(cleanArgs.fbco_id), query_type: 'FindComboPublications', limit: 0 }
+    }
+
     try {
-      const result = await callMcpToolWithRetry(client, routing.mcpName, cleanArgs)
+      const result = await callMcpToolWithRetry(client, mcpName, mcpArgs)
       if (result?.content) {
         const texts = result.content
           .filter(item => item.type === 'text')
@@ -8755,6 +8793,23 @@ function normalizeVfbRunQueryType(value = '') {
 function normalizeVfbRunQueryArgs(cleanArgs = {}) {
   if (typeof cleanArgs.query_type === 'string') {
     cleanArgs.query_type = normalizeVfbRunQueryType(cleanArgs.query_type)
+  }
+
+  // Coerce the paging/image controls the model may pass as strings: limit/offset
+  // to finite numbers, include_images to a strict boolean (the MCP tests
+  // include_images === true, so "true" as a string would be ignored).
+  if (cleanArgs.limit !== undefined) {
+    const parsedLimit = Number(cleanArgs.limit)
+    if (Number.isFinite(parsedLimit)) cleanArgs.limit = parsedLimit
+    else delete cleanArgs.limit
+  }
+  if (cleanArgs.offset !== undefined) {
+    const parsedOffset = Number(cleanArgs.offset)
+    if (Number.isFinite(parsedOffset) && parsedOffset >= 0) cleanArgs.offset = parsedOffset
+    else delete cleanArgs.offset
+  }
+  if (cleanArgs.include_images !== undefined) {
+    cleanArgs.include_images = cleanArgs.include_images === true || cleanArgs.include_images === 'true'
   }
 
   if (Array.isArray(cleanArgs.queries)) {
