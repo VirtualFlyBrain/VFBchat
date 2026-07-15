@@ -266,9 +266,13 @@ test('maybeInjectCountQueryStep: no-op for non-count questions and when a run_qu
   addTerm(l1, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
   maybeInjectCountQueryStep(l1, 'what is the medulla?')
   assert.equal(l1.plan.length, 0)
-  // already has a run_query step → don't duplicate
-  const l2 = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['x'] }] })
+  // a planner run_query with the WRONG query_type is RETARGETED (not duplicated)
+  // to the semantically-correct one — this is the "28 images" (PartsOf) fix.
+  const l2 = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['x'], args: { id: 'FBbt_00003748', query_type: 'PartsOf' } }] })
   addTerm(l2, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
   maybeInjectCountQueryStep(l2, MEDULLA_Q)
   assert.equal(l2.plan.length, 1)
+  assert.equal(l2.plan[0].tool, 'vfb_run_query')
+  assert.equal(l2.plan[0].args.query_type, 'ImagesNeurons')
+  assert.equal(l2.plan[0].count_query, true)
 })
