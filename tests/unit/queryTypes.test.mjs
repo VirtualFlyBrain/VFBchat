@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { querySemantics, isIndividualImageQuery, QUERY_SEMANTICS } from '../../lib/queryTypes.mjs'
+import { querySemantics, isIndividualImageQuery, queryTypeTag, QUERY_SEMANTICS } from '../../lib/queryTypes.mjs'
 
 test('individual-image queries are classified as image queries (count = images)', () => {
   for (const qt of ['ImagesNeurons', 'ListAllAvailableImages', 'AllAlignedImages']) {
@@ -32,4 +32,13 @@ test('every entry has a kind and a countNoun', () => {
     assert.ok(s.kind, `${qt} missing kind`)
     assert.ok(s.countNoun, `${qt} missing countNoun`)
   }
+})
+
+test('queryTypeTag types a query: kind + count meaning (+ use when defined)', () => {
+  const img = queryTypeTag('ImagesNeurons')
+  assert.match(img, /^ImagesNeurons — individual images; count = images of neurons; use for /)
+  const cls = queryTypeTag('PartsOf')
+  assert.match(cls, /^PartsOf — ontology classes; thumbnails are examples; count = subparts/)
+  // unknown types still tag safely
+  assert.match(queryTypeTag('Mystery'), /^Mystery — results; count = results$/)
 })
