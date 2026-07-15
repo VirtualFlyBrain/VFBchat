@@ -218,6 +218,37 @@ test('fast-path definitional question skips the planner call', async () => {
   assert.ok(deps.calls.tools.some(t => t.name === 'vfb_search_terms'))
 })
 
+test('count question: auto-runs the individual-image query and reports the count deterministically', async () => {
+  // The exact failing case (deliberate "medualla" typo). The digest offers both
+  // ImagesNeurons (images, count -1) and PartsOf (class, 28). The chat must run
+  // ImagesNeurons and state its count — never PartsOf, never "you can run it".
+  const termInfo = {
+    Name: 'medulla', Id: 'FBbt_00003748',
+    SuperTypes: ['Class', 'Anatomy', 'Synaptic_neuropil'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Optic-lobe neuropil.' },
+    Queries: [
+      { query: 'ImagesNeurons', label: 'Images of neurons with some part in medulla', count: -1, preview_results: { rows: [] } },
+      { query: 'PartsOf', label: 'Parts of medulla', count: 28, preview_results: { rows: [] } }
+    ],
+    Publications: []
+  }
+  const plan = { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] }
+  const deps = makeDeps({
+    plan,
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: (a) => ({ count: a.query_type === 'ImagesNeurons' ? 226524 : 28, headers: {}, rows: [] })
+    }
+  })
+  const r = await runHarness('how many images of neurons with a part in the medualla are available?', deps)
+  const ran = deps.calls.tools.filter(t => t.name === 'vfb_run_query').map(t => t.args.query_type)
+  assert.ok(ran.includes('ImagesNeurons'), `expected ImagesNeurons to run, ran: ${ran.join(',') || 'none'}`)
+  assert.ok(!ran.includes('PartsOf'), 'must never run the class query PartsOf for an images question')
+  const claims = r.ledger.evidence.map(e => e.claim).join(' | ')
+  assert.match(claims, /226,524 images/)
+})
+
 test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () => {
   // "DAN" must bind to dopaminergic neuron (which carries the synonym), not the
   // first fuzzy result (mushroom body) — the bug seen live.
