@@ -156,10 +156,26 @@ test('uncounted (-1) queries are kept and flagged to be run, not dropped as "no 
   assert.ok(!labels.includes('Nothing here'))
 
   const text = termInfoToDigestText(UNCOUNTED)
-  // The image query is surfaced with an explicit "run this query" instruction
-  // naming the query_type and what its count is (images), not hidden / bare -1.
-  assert.match(text, /Images of neurons with some part in the medulla: run this query — call vfb_run_query with query_type ImagesNeurons to get the number of images of neurons/)
+  // The image query is surfaced (not hidden / bare -1) and typed as an individual-
+  // image query so the model reads its count as images, not classes.
+  assert.match(text, /Images of neurons with some part in the medulla: not pre-counted — run this query to get its count of images of neurons \[ImagesNeurons — individual images/)
   assert.doesNotMatch(text, /-1/)
-  // counted query renders its number with the right unit (subclasses, not images)
+  // the counted CLASS query is typed as ontology classes, so its count can't be
+  // mistaken for an image count — this is the "28 images" fix at source
   assert.match(text, /Subclasses of medulla: 4 subclasses/)
+  assert.match(text, /\[SubclassesOf — ontology classes; thumbnails are examples; count = subclasses/)
+})
+
+test('digest typing distinguishes an image query from a class query on the same term', () => {
+  const term = {
+    Name: 'medulla', Id: 'FBbt_00003748', Meta: { Name: '[medulla](FBbt_00003748)' },
+    Queries: [
+      { query: 'ImagesNeurons', label: 'Images of neurons with some part in medulla', count: 226524, preview_results: { rows: [] } },
+      { query: 'PartsOf', label: 'Parts of medulla', count: 28, preview_results: { rows: [] } }
+    ]
+  }
+  const text = termInfoToDigestText(term)
+  assert.match(text, /Images of neurons with some part in medulla: 226524 images of neurons \[ImagesNeurons — individual images/)
+  // PartsOf's 28 is explicitly typed as classes/subparts, not images
+  assert.match(text, /Parts of medulla: 28 subparts \[PartsOf — ontology classes; thumbnails are examples; count = subparts/)
 })
