@@ -6,6 +6,14 @@ on:
     tags: 'v*'
   pull_request:
     branches: [ main ]
+  # Release + manual triggers are NOT subject to a tagged commit's [skip ci], so
+  # the versioned image (e.g. :3.3, the tag prod pulls) always rebuilds on a
+  # release. Version tags land on the task-battery "[skip ci]" commit on main, so
+  # a plain tag push would skip this build — publish a GitHub Release (or run the
+  # workflow manually on the tag) to force it.
+  release:
+    types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
