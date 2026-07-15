@@ -223,30 +223,38 @@ test('statusSummary: compact and complete flag', () => {
 
 // ---- count-question auto-run (surface the number, don't tell the user to run it) ----
 
+// PartsOf (28 subparts, a CLASS query) is the trap: the deployed chat picked it
+// for "how many images …" and reported "28 images". The image-aware routing must
+// pick the individual-image query (ImagesNeurons) and never a class query.
 const MEDULLA_DIGEST = {
   name: 'medulla',
   queries: [
     { query_type: 'ImagesNeurons', label: 'Images of neurons with some part in medulla', count: -1 },
     { query_type: 'NeuronsPartHere', label: 'Neurons with some part in medulla', count: -1 },
+    { query_type: 'PartsOf', label: 'Parts of medulla', count: 28 },
     { query_type: 'SubclassesOf', label: 'Subclasses of medulla', count: 4 }
   ]
 }
 
-test('pickBestQueryForQuestion: unambiguous best match wins, ambiguous/none returns null', () => {
-  assert.equal(
-    pickBestQueryForQuestion('how many images of neurons with a part in the medulla are available?', MEDULLA_DIGEST)?.query_type,
-    'ImagesNeurons')
-  assert.equal(
-    pickBestQueryForQuestion('how many subclasses of the medulla?', MEDULLA_DIGEST)?.query_type,
-    'SubclassesOf')
-  // a question with no distinctive overlap returns null (don't guess)
+// The user's exact question — the "medualla" misspelling is deliberate: the term
+// still resolves to the medulla, and query matching keys off "images"/"neurons",
+// not the (mis-spelled) term word.
+const MEDULLA_Q = 'how many images of neurons with a part in the medualla are available?'
+
+test('pickBestQueryForQuestion: image question picks the individual-image query, never a class query', () => {
+  const picked = pickBestQueryForQuestion(MEDULLA_Q, MEDULLA_DIGEST)
+  assert.equal(picked?.query_type, 'ImagesNeurons')
+  assert.notEqual(picked?.query_type, 'PartsOf')
+  // a non-image count question is unrestricted and picks the unique match
+  assert.equal(pickBestQueryForQuestion('how many subclasses of the medulla?', MEDULLA_DIGEST)?.query_type, 'SubclassesOf')
+  // no distinctive overlap → null (don't guess)
   assert.equal(pickBestQueryForQuestion('how many kittens of the medulla?', MEDULLA_DIGEST), null)
 })
 
-test('maybeInjectCountQueryStep: injects a run_query step for the matched query on a count question', () => {
+test('maybeInjectCountQueryStep: auto-runs ImagesNeurons for the medulla image question (deliberate typo)', () => {
   const l = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] })
   addTerm(l, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
-  maybeInjectCountQueryStep(l, 'how many images of neurons with a part in the medulla are available?')
+  maybeInjectCountQueryStep(l, MEDULLA_Q)
   assert.equal(l.plan.length, 1)
   assert.equal(l.plan[0].tool, 'vfb_run_query')
   assert.deepEqual(l.plan[0].args, { id: 'FBbt_00003748', query_type: 'ImagesNeurons' })
@@ -261,6 +269,6 @@ test('maybeInjectCountQueryStep: no-op for non-count questions and when a run_qu
   // already has a run_query step → don't duplicate
   const l2 = setPlan(createLedger('q'), { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['x'] }] })
   addTerm(l2, 'medulla', { id: 'FBbt_00003748', digest: MEDULLA_DIGEST })
-  maybeInjectCountQueryStep(l2, 'how many images of neurons in the medulla?')
+  maybeInjectCountQueryStep(l2, MEDULLA_Q)
   assert.equal(l2.plan.length, 1)
 })
