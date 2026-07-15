@@ -124,9 +124,10 @@ test('digest name uses the full canonical label, not a short symbol', () => {
 test('digestToText renders the available-data block with counts (answers "inputs to X")', () => {
   const text = termInfoToDigestText(MB)
   assert.match(text, /Available VFB data/)
-  assert.match(text, /Neurons with presynaptic terminals in mushroom body: 367 \(e\.g\. Li38, Li39\)/)
-  assert.match(text, /Expression patterns overlapping mushroom body: 23/)
-  assert.match(text, /Subclasses of mushroom body: 2/)
+  // each count carries its unit (countNoun) so the model words it correctly
+  assert.match(text, /Neurons with presynaptic terminals in mushroom body: 367 neuron types \(e\.g\. Li38, Li39\)/)
+  assert.match(text, /Expression patterns overlapping mushroom body: 23 anatomy terms/)
+  assert.match(text, /Subclasses of mushroom body: 2 subclasses/)
   // compact: must be far smaller than a raw 25 KB payload
   assert.ok(text.length < 4000, `digest should be compact, got ${text.length}`)
 })
@@ -156,9 +157,9 @@ test('uncounted (-1) queries are kept and flagged to be run, not dropped as "no 
 
   const text = termInfoToDigestText(UNCOUNTED)
   // The image query is surfaced with an explicit "run this query" instruction
-  // naming the query_type, not hidden and not shown as a bare -1.
-  assert.match(text, /Images of neurons with some part in the medulla: run this query — call vfb_run_query with query_type ImagesNeurons/)
+  // naming the query_type and what its count is (images), not hidden / bare -1.
+  assert.match(text, /Images of neurons with some part in the medulla: run this query — call vfb_run_query with query_type ImagesNeurons to get the number of images of neurons/)
   assert.doesNotMatch(text, /-1/)
-  // counted query still renders its number
-  assert.match(text, /Subclasses of medulla: 4/)
+  // counted query renders its number with the right unit (subclasses, not images)
+  assert.match(text, /Subclasses of medulla: 4 subclasses/)
 })
