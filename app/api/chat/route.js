@@ -26,6 +26,13 @@ import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
+import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
+import {
+  annotateFailedRunQuery,
+  createForceRefreshBudget,
+  forceRefreshKey,
+  isFailedRunQueryPayload
+} from '../../../lib/runQueryRetry.mjs'
 import {
   parseThumbnailEntity,
   PREVIEW_COUNT_CAP,
@@ -1087,12 +1094,74 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
   throw lastError
 }
 
+function mcpResultToText(result) {
+  if (result?.content) {
+    const texts = result.content
+      .filter(item => item.type === 'text')
+      .map(item => item.text)
+    return texts.join('\n') || JSON.stringify(result.content)
+  }
+  return JSON.stringify(result)
+}
+
+// Only run_query carries the count -1 failure signal; nothing else has a payload
+// shape where a forced recompute is the right response.
+const FORCE_REFRESH_RETRY_TOOLS = new Set(['run_query'])
+
+/**
+ * Call an MCP tool and return its text, recovering once from a CACHED FAILURE.
+ *
+ * A count of -1 means the query did not run. Because VFBquery reports that over
+ * HTTP 200, the cache in front of it stores the failure and can keep serving it
+ * long after the underlying service recovered, so re-running the identical call
+ * gets the identical wrong answer. One forced recompute is the only way out.
+ *
+ * The budget is threaded from the request so a single conversation cannot
+ * stampede the upstream; without one, the call still gets its own single-shot
+ * allowance. If the retry also fails — or the MCP is too old to accept the
+ * argument — the payload is annotated so the model states the failure instead of
+ * reading an empty rows array as "there are none".
+ */
+// One allowance per request, created on first use and hung off the tool state
+// that already travels with the request. Contexts that predate a tool state (or
+// never had one) simply fall back to the per-call single shot.
+function getForceRefreshBudget(context) {
+  const state = context?.toolState
+  if (!state) return null
+  if (!state.forceRefreshBudget) state.forceRefreshBudget = createForceRefreshBudget()
+  return state.forceRefreshBudget
+}
+
+async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = {}) {
+  const text = mcpResultToText(await callMcpToolWithRetry(client, name, args))
+  if (!FORCE_REFRESH_RETRY_TOOLS.has(name) || !isFailedRunQueryPayload(text)) return text
+
+  const allowance = budget || createForceRefreshBudget(1)
+  if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
+
+  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${JSON.stringify(args).slice(0, 300)}`)
+  try {
+    const retryText = mcpResultToText(
+      await callMcpToolWithRetry(client, name, { ...args, force_refresh: true })
+    )
+    if (!isFailedRunQueryPayload(retryText)) return retryText
+    return annotateFailedRunQuery(retryText)
+  } catch (error) {
+    console.error(`[VFBchat] force_refresh retry for ${name} failed: ${error?.message || error}`)
+    return annotateFailedRunQuery(text)
+  }
+}
+
+// The version sent here is what the MCP server records against every call this
+// client makes, so it comes from the one source in lib/appVersion.mjs. A
+// hard-coded copy goes stale at the first release nobody remembers to edit it
+// in, and then misattributes this client's traffic to an old version.
 function getMcpClientConfig(server) {
   if (server === 'vfb') {
     return {
       url: VFB_MCP_URL,
-      name: 'vfb-chat-client',
-      version: '3.2.3'
+      name: APP_CLIENT_NAME,
+      version: APP_VERSION
     }
   }
 
@@ -1100,7 +1169,7 @@ function getMcpClientConfig(server) {
     return {
       url: BIORXIV_MCP_URL,
       name: 'vfb-chat-biorxiv',
-      version: '3.2.3'
+      version: APP_VERSION
     }
   }
 
@@ -4248,25 +4317,6 @@ function rememberTermInfoResult(context = {}, outputText = '', requestedId = '')
   }
 }
 
-function getRememberedRunQueryCount(context = {}, id = '', queryType = '') {
-  const termId = extractCanonicalVfbTermId(id || '')
-  const queryName = String(queryType || '').trim()
-  if (!termId || !queryName) return null
-
-  const remembered = context.toolState?.termInfoById?.get?.(termId.toLowerCase())
-  const count = remembered?.queryCounts?.[queryName]
-  return Number.isFinite(Number(count)) ? Number(count) : null
-}
-
-function isEmptyRunQueryOutput(outputText = '') {
-  const parsed = parseJsonPayload(outputText)
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-  const count = Number(parsed.count)
-  const hasZeroCount = Number.isFinite(count) && count === 0
-  const hasNoRows = Array.isArray(parsed.rows) && parsed.rows.length === 0
-  return hasZeroCount && hasNoRows
-}
-
 function chooseAvailableQueryType(availableQueryTypes = [], preferredQueryTypes = []) {
   const available = availableQueryTypes
     .map(queryType => String(queryType || '').trim())
@@ -4568,15 +4618,8 @@ function getReadableTermName(termRecord, fallback = '') {
 // Call a VFB MCP tool and return its text. The v3-cached HTTP fallback was
 // removed — the MCP is the single source of truth; errors propagate to the
 // caller (which degrades gracefully) rather than risk stale/incorrect cache data.
-async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}) {
-  const result = await callMcpToolWithRetry(client, toolName, toolArguments)
-  if (result?.content) {
-    const texts = result.content
-      .filter(item => item.type === 'text')
-      .map(item => item.text)
-    return texts.join('\n') || JSON.stringify(result.content)
-  }
-  return JSON.stringify(result)
+async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}, options = {}) {
+  return callMcpToolTextWithForceRefresh(client, toolName, toolArguments, options)
 }
 
 async function resolveConnectivityEndpointValue(client, rawValue = '') {
@@ -8543,30 +8586,24 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     try {
-      const result = await callMcpToolWithRetry(client, mcpName, mcpArgs)
-      if (result?.content) {
-        const texts = result.content
-          .filter(item => item.type === 'text')
-          .map(item => item.text)
-        const outputText = texts.join('\n') || JSON.stringify(result.content)
-        if (name === 'vfb_get_term_info') {
-          const mismatchResponse = await buildTermInfoMismatchResponseIfNeeded({
-            client,
-            cleanArgs,
-            context,
-            outputText
-          })
-          if (mismatchResponse) return mismatchResponse
-          const scopedOutputText = addStageScopeNoteToTermInfoOutput(outputText, context.userMessage || '')
-          rememberTermInfoResult(context, scopedOutputText, cleanArgs.id)
-          return scopedOutputText
-        }
-        return name === 'vfb_search_terms'
-          ? postprocessVfbSearchTermsOutput(outputText, cleanArgs, context, client)
-          : outputText
+      const outputText = await callMcpToolTextWithForceRefresh(client, mcpName, mcpArgs, {
+        budget: getForceRefreshBudget(context)
+      })
+      if (name === 'vfb_get_term_info') {
+        const mismatchResponse = await buildTermInfoMismatchResponseIfNeeded({
+          client,
+          cleanArgs,
+          context,
+          outputText
+        })
+        if (mismatchResponse) return mismatchResponse
+        const scopedOutputText = addStageScopeNoteToTermInfoOutput(outputText, context.userMessage || '')
+        rememberTermInfoResult(context, scopedOutputText, cleanArgs.id)
+        return scopedOutputText
       }
-
-      return JSON.stringify(result)
+      return name === 'vfb_search_terms'
+        ? postprocessVfbSearchTermsOutput(outputText, cleanArgs, context, client)
+        : outputText
     } catch (error) {
       // The v3-cached fallback was removed: the MCP is the single source of truth.
       // A failed MCP call propagates and the harness degrades gracefully rather
@@ -9052,6 +9089,7 @@ function buildVfbQueryLinkSkill() {
 - If Queries[].count is present and equals 0, do not construct or offer a query-result link for that query.
 - COUNTS: read Queries[].count together with Queries[].count_status. count_status "exact" means count is the real total — state it. count_status "many" means the results ARE known and there are MORE THAN ${PREVIEW_COUNT_CAP} of them; count is deliberately omitted — write "more than ${PREVIEW_COUNT_CAP}", never a made-up figure and never "unknown". count_status "unknown" means the total was not pre-computed; the data may well exist, so offer the query link and say the query needs to be run — never say there is no data. NEVER write a count of -1: if you ever see -1 as a count anywhere in a tool result, it means "not counted", never "minus one" and never "zero".
 - If Queries[].count is missing, use count_status and preview_results to decide whether a query link is useful; avoid links only for queries with count_status "exact", count 0 and no preview rows.
+- FAILED QUERIES: a vfb_run_query result with count_status "unavailable" (count -1) means the query DID NOT RUN. It is not an empty result and says nothing about whether data exists. Read the "_note" in that result, tell the user the query is temporarily unavailable, and offer the query link — never report it as "0", "none", "no results" or "no data found", and never fall back to answering from memory.
 - Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
 - When you answer with query findings, include matching query-result links when useful.
 - Example templates:
@@ -10758,7 +10796,8 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     mismatchedTermSuggestions: new Map(),
     termInfoById: new Map(),
     lastTermInfo: null,
-    lastTermSearch: null
+    lastTermSearch: null,
+    forceRefreshBudget: createForceRefreshBudget()
   }
   // fromHarness marks every tool call as harness-originated. The role-loop
   // harness resolves term ids authoritatively via pickBestTermId (VFB search),
