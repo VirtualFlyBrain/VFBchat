@@ -26,7 +26,12 @@ import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
-import { parseThumbnailEntity } from '../../../lib/termInfoDigest.mjs'
+import {
+  parseThumbnailEntity,
+  PREVIEW_COUNT_CAP,
+  PREVIEW_STATUS_COMPLETE,
+  PREVIEW_STATUS_PENDING
+} from '../../../lib/termInfoDigest.mjs'
 import { orderImagesByTemplate, requestedTemplateFromScene } from '../../../lib/resultTables.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
@@ -2897,7 +2902,10 @@ function buildTermInfoKeyFieldsForOverview(parsedPayload) {
     keyFields.Queries = record.Queries.slice(0, 25).map(query => ({
       query: query?.query,
       label: query?.label || query?.description,
-      count: Number.isFinite(Number(query?.count)) ? Number(query.count) : undefined,
+      // count/count_status/count_note, not a raw count: this compaction is what
+      // the model actually sees, so a -1 arriving here would be read as a
+      // figure. describePreviewCount drops it and says which kind of -1 it was.
+      ...describePreviewCount(query),
       preview_columns: Array.isArray(query?.preview_columns) ? query.preview_columns.slice(0, 12) : undefined,
       preview_rows: Array.isArray(query?.preview_results?.rows)
         ? query.preview_results.rows.slice(0, 3).map(row => {
@@ -6035,12 +6043,50 @@ function summarizeEvidenceRow(row = {}) {
   })
 }
 
+// VFB reports count -1 when it did not establish an exact total, and
+// preview_results.status says which of two things that means (VFBquery
+// 1.22.37+; absent status means 'complete', as it always has). Everything that
+// puts a count in front of the model goes through here, so a -1 can never be
+// presented as a real figure.
+//
+//   status 'complete' + count -1 -> the rows are final and there are more than
+//                                   PREVIEW_COUNT_CAP of them ("many")
+//   status 'pending'  + count -1 -> the query has not been run yet ("unknown")
+//   count >= 0                   -> exact
+function describePreviewCount(queryEntry = {}) {
+  const raw = Number(queryEntry?.count)
+  const exact = Number.isFinite(raw) && raw >= 0
+  if (exact) return { count: raw, count_status: 'exact' }
+  const status = queryEntry?.preview_results?.status
+  // Absent status keeps its long-standing meaning: complete.
+  const resolved = status === PREVIEW_STATUS_COMPLETE
+    ? true
+    : status === PREVIEW_STATUS_PENDING ? false : Number.isFinite(raw)
+  if (resolved) {
+    return {
+      count: undefined,
+      count_status: 'many',
+      count_note: queryEntry?.preview_results?.message ||
+        `Results are complete but the exact total was not computed: more than ${PREVIEW_COUNT_CAP} matches. Report this as "more than ${PREVIEW_COUNT_CAP}", never as an exact number and never as unknown.`
+    }
+  }
+  return {
+    count: undefined,
+    count_status: 'unknown',
+    count_note: queryEntry?.preview_results?.message ||
+      'This total was not pre-computed. Run this query to get the count. This does NOT mean there is no data.'
+  }
+}
+
 function summarizeQueryEntry(queryEntry = {}, limit = 5) {
   if (!queryEntry?.query) return null
+  const { count, count_status, count_note } = describePreviewCount(queryEntry)
   return {
     query_type: queryEntry.query,
     label: queryEntry.label,
-    count: Number.isFinite(Number(queryEntry.count)) ? Number(queryEntry.count) : undefined,
+    count,
+    count_status,
+    count_note,
     preview_rows: getRowsFromQueryEntryPreview(queryEntry, limit).map(summarizeEvidenceRow)
   }
 }
@@ -7157,12 +7203,16 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
       {
         label: 'neurons with presynaptic terminals in mushroom body',
         count: presynapticSummary?.count,
+        count_status: presynapticSummary?.count_status,
+        count_note: presynapticSummary?.count_note,
         examples: Array.isArray(presynapticSummary?.preview_rows) ? presynapticSummary.preview_rows : [],
         evidence: 'VFB NeuronsPresynapticHere rows are region-level input evidence for neurons with presynaptic terminals in the mushroom body.'
       },
       {
         label: 'tracts innervating the mushroom body',
         count: tractsSummary?.count,
+        count_status: tractsSummary?.count_status,
+        count_note: tractsSummary?.count_note,
         examples: Array.isArray(tractsSummary?.preview_rows) ? tractsSummary.preview_rows : [],
         evidence: 'VFB TractsNervesInnervatingHere rows provide tract-level context for input routes.'
       }
@@ -7256,7 +7306,9 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
         category: 'anatomy and hierarchy',
         evidence: 'The subesophageal zone term describes a neuropil mass below the esophagus and is part of the central nervous system.',
         parts_count: partsOf?.count,
+        parts_count_status: partsOf?.count_status,
         subclass_count: subclassesOf?.count,
+        subclass_count_status: subclassesOf?.count_status,
         examples: compactDefinedToolArgs({
           subclasses: subclassesOf?.preview_rows,
           parts: partsOf?.preview_rows
@@ -7266,19 +7318,25 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
         category: 'annotated neuron coverage',
         evidence: 'VFB has neurons with some part in the SEZ; these rows can include image-backed connectome or light-microscopy examples depending on the row.',
         count: neuronsPartHere?.count,
+        count_status: neuronsPartHere?.count_status,
+        count_note: neuronsPartHere?.count_note,
         examples: neuronsPartHere?.preview_rows
       },
       {
         category: 'region images',
         evidence: 'Template or painted-domain images are available through the term examples and image queries when present.',
         count: imageSummary?.count,
+        count_status: imageSummary?.count_status,
+        count_note: imageSummary?.count_note,
         examples: imageSummary?.preview_rows
       },
       {
         category: 'genetic tools and expression',
         evidence: 'Expression-overlap and transgene-expression rows indicate tools or expression patterns overlapping the SEZ. Dedicated genetic-tool search results may add broader driver/expression-pattern rows.',
         expression_overlap_count: expressionOverlaps?.count,
+        expression_overlap_count_status: expressionOverlaps?.count_status,
         transgene_expression_count: transgeneExpression?.count,
+        transgene_expression_count_status: transgeneExpression?.count_status,
         examples: expressionOverlaps?.preview_rows || transgeneExpression?.preview_rows
       },
       {
@@ -7409,10 +7467,14 @@ function extractGlomerulusCountPhrase(description = '') {
   return match ? match[0] : ''
 }
 
+// Null unless the count is EXACT. -1 is not a count: it means either "more than
+// the counting cap" or "not run yet" (see describePreviewCount), and every
+// caller here wants a number it can state. Previously Number.isFinite(-1) was
+// true, so -1 leaked out as if it were a real total.
 function getQueryCountFromTermRecord(termRecord = {}, queryName = '') {
   const entry = getTermQueryEntry(termRecord, [queryName])
   const count = Number(entry?.count)
-  return Number.isFinite(count) ? count : null
+  return Number.isFinite(count) && count >= 0 ? count : null
 }
 
 async function summarizeOrganizationTerm(client, { id, stage, limit }) {
@@ -8988,7 +9050,8 @@ function buildVfbQueryLinkSkill() {
 - Only use query names returned by vfb_get_term_info for that specific term.
 - In term-info JSON, read short names from Queries[].query and user-facing descriptions from Queries[].label.
 - If Queries[].count is present and equals 0, do not construct or offer a query-result link for that query.
-- If Queries[].count is missing, use preview_results to decide whether a query link is useful; avoid links for queries with no preview rows.
+- COUNTS: read Queries[].count together with Queries[].count_status. count_status "exact" means count is the real total — state it. count_status "many" means the results ARE known and there are MORE THAN ${PREVIEW_COUNT_CAP} of them; count is deliberately omitted — write "more than ${PREVIEW_COUNT_CAP}", never a made-up figure and never "unknown". count_status "unknown" means the total was not pre-computed; the data may well exist, so offer the query link and say the query needs to be run — never say there is no data. NEVER write a count of -1: if you ever see -1 as a count anywhere in a tool result, it means "not counted", never "minus one" and never "zero".
+- If Queries[].count is missing, use count_status and preview_results to decide whether a query link is useful; avoid links only for queries with count_status "exact", count 0 and no preview rows.
 - Treat Queries[] from vfb_get_term_info as authoritative for the current term; use the static list below as a fallback reference.
 - When you answer with query findings, include matching query-result links when useful.
 - Example templates:

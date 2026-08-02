@@ -16,6 +16,32 @@ const FEEDBACK_REASON_LABELS = {
   out_of_scope_refusal: 'Out of scope/refusal'
 }
 
+// VFB reports count -1 when it did not establish an exact total. That is two
+// different situations (see lib/termInfoDigest.mjs): 'many' — the rows are
+// final but there are more than the counting cap of them — and 'unknown' — the
+// query has not been run yet. Neither may be printed as a number; before this,
+// a -1 rendered literally as "— -1 results".
+function tableCountLabel(tbl) {
+  const kind = tbl?.countKind || (typeof tbl?.count === 'number' && tbl.count < 0 ? 'unknown' : 'exact')
+  if (kind === 'many') return ` — more than ${tbl.countCap || 1000} results`
+  if (kind === 'unknown') return ''
+  if (typeof tbl?.count !== 'number') return ''
+  return ` — ${tbl.count} result${tbl.count === 1 ? '' : 's'}`
+}
+
+// Whether the "view all" footer link should appear, and what it should say. A
+// 'many' table always has more rows than the preview shows; an 'unknown' one
+// might, and the honest offer there is to run the query rather than to promise
+// a total.
+function tableViewAllLabel(tbl) {
+  const shown = tbl?.rows ? tbl.rows.length : 0
+  const kind = tbl?.countKind || (typeof tbl?.count === 'number' && tbl.count < 0 ? 'unknown' : 'exact')
+  if (kind === 'many') return 'View all in VFB'
+  if (kind === 'unknown') return 'Run this query in VFB'
+  if (typeof tbl?.count === 'number' && tbl.count > shown) return `View all ${tbl.count} in VFB`
+  return ''
+}
+
 const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
 const GRAPH_ROLE_STYLES = {
   source: { label: 'Source side', color: '#4a9eff' },
@@ -578,7 +604,7 @@ const ChatMessage = memo(function ChatMessage({
           {msg.tables.map((tbl, ti) => (
             <div key={`tbl-${ti}`} style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
               <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
-                {tbl.title}{typeof tbl.count === 'number' ? ` — ${tbl.count} result${tbl.count === 1 ? '' : 's'}` : ''}
+                {tbl.title}{tableCountLabel(tbl)}
               </div>
               <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
@@ -599,10 +625,10 @@ const ChatMessage = memo(function ChatMessage({
                   </tbody>
                 </table>
               </div>
-              {tbl.queryUrl && typeof tbl.count === 'number' && tbl.count > (tbl.rows ? tbl.rows.length : 0) && (
+              {tbl.queryUrl && tableViewAllLabel(tbl) && (
                 <div style={{ padding: '6px 10px', borderTop: '1px solid #222', fontSize: '0.75em' }}>
                   <a href={tbl.queryUrl} target="_blank" rel="noopener noreferrer" title="Run this query in Virtual Fly Brain (new tab)" style={{ color: '#9ecbff' }}>
-                    View all {tbl.count} in VFB ↗
+                    {tableViewAllLabel(tbl)} ↗
                   </a>
                 </div>
               )}
