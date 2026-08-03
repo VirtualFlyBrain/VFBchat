@@ -12,6 +12,23 @@ test('connectivity card fires for connectivity/graph questions only', () => {
   assert.ok(!ids('What is the mushroom body?').includes('connectivity'))
 })
 
+test('connectivity card stands down for the software sense of "connect"', () => {
+  // "How do I connect Claude to the VFB MCP server?" is a documentation
+  // question. It matched on the word "connect", was handed the synaptic-partner
+  // playbook, and — because connectivity is a COMPLEX card — was also promoted
+  // to three planner votes and 24 tool rounds it had no use for.
+  const ids = (q) => selectCards(q).map(c => c.id)
+  assert.ok(!ids('How do I connect Claude to the VFB MCP server?').includes('connectivity'))
+  assert.ok(!ids('How do I connect a client to the API endpoint?').includes('connectivity'))
+  assert.ok(!ids('What is the URL of the connectome server?').includes('connectivity'))
+  assert.equal(classifyComplexity('How do I connect Claude to the VFB MCP server?').tier, 'simple')
+
+  // …but the neural sense is untouched, including where the two vocabularies
+  // are closest: a connectome question that never mentions wiring up software.
+  assert.ok(ids('What is downstream of DA1 lPN in the hemibrain connectome?').includes('connectivity'))
+  assert.ok(ids('Which neurons connect to the giant fiber?').includes('connectivity'))
+})
+
 test('genetic-tools and taxonomy cards fire on their intents', () => {
   assert.ok(selectCards('What GAL4 lines label mushroom body neurons?').some(c => c.id === 'genetic-tools'))
   assert.ok(selectCards('What types of Kenyon cells exist?').some(c => c.id === 'taxonomy'))
