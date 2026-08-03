@@ -113,7 +113,11 @@ test('normalizePlan: "what specific aspect" is an abstention, not a clarificatio
     'What specific aspect of the Virtual Fly Brain Model Context Protocol tool do you need help with?',
     'Which parts of the 3D viewer do you mean?',
     'Could you be more specific?',
-    'What kind of information are you looking for?'
+    'What kind of information are you looking for?',
+    // D5, verbatim: "How do I report a problem or contribute data to VFB?" is
+    // a whole question already. The same stall in a different noun.
+    'What specific type of problem or data are you trying to report or contribute to Virtual Fly Brain?',
+    'What sort of help do you need?'
   ]) {
     const p = normalizePlan({ intent: 'documentation', underspecified: true, clarifying_question: q, steps: [] })
     assert.equal(p.underspecified, false, q)
@@ -121,11 +125,30 @@ test('normalizePlan: "what specific aspect" is an abstention, not a clarificatio
   }
 })
 
+test('normalizePlan: a question about VFB itself is never clarified', () => {
+  // The stalls kept arriving in new grammar. This one offers a choice between
+  // the two halves of a question that had already asked for both, so it slips
+  // past a phrasing rule anchored on "what"/"which" — but a documentation
+  // question always has something to do, and clarifying suppresses the doc
+  // search on top of costing a turn.
+  const q = 'Are you looking to report a problem with Virtual Fly Brain or contribute new data?'
+  const p = normalizePlan({ intent: 'documentation', underspecified: true, clarifying_question: q, steps: [] })
+  assert.equal(p.underspecified, false)
+  assert.equal(p.clarifying_question, '')
+
+  // The same question under an intent that can genuinely be blocked on a name.
+  const q2 = normalizePlan({ intent: 'term_info', underspecified: true, clarifying_question: 'Which neuron do you mean?', steps: [] })
+  assert.equal(q2.underspecified, true)
+})
+
 test('normalizePlan: a clarification that names the missing ENTITY survives', () => {
   for (const q of [
     'Which neuron do you mean?',
     'Which dataset should I compare against?',
-    'What is the name of the neuron you are asking about?'
+    'What is the name of the neuron you are asking about?',
+    // The noun is what separates a stall from a real question: "what kind of
+    // problem" is a stall, "what kind of neuron" names the thing that is missing.
+    'What kind of neuron are you asking about?'
   ]) {
     const p = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: q, steps: [] })
     assert.equal(p.underspecified, true, q)

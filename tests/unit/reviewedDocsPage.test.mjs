@@ -24,6 +24,17 @@ const PAGE = `
 </body></html>
 `
 
+// Shaped like the real /about/contactus page: the answer is three short <p>,
+// each a label and a link.
+const CONTACT = `
+<h2>Bug Reports &amp; Feature Requests</h2>
+<p>To report technical issues, bugs, or request new features:</p>
+<p><strong>GitHub Issues:</strong> <a href="https://github.com/VirtualFlyBrain/VFB2/issues/new/choose">Report an issue</a></p>
+<p><strong>Private Email:</strong> <a href="mailto:data@virtualflybrain.org">data@virtualflybrain.org</a></p>
+<p><strong>Guidelines:</strong> <a href="https://www.virtualflybrain.org/docs/contribution-guidelines/">Contribution Guidelines</a></p>
+<p>Read <a href="#top">more</a> above.</p>
+`
+
 test('a code block is kept, and kept next to the sentence that introduces it', () => {
   const blocks = extractContentBlocks(PAGE)
   const intro = blocks.findIndex(b => b.includes('installed via PyPi'))
@@ -59,6 +70,36 @@ test('blocks come back in document order, not tag-type order', () => {
   // which put "Licence" ahead of the install instructions.
   const blocks = extractContentBlocks(PAGE)
   assert.ok(blocks.indexOf('Licence') > blocks.indexOf('pip install vfb-connect'))
+})
+
+test('a short block survives if it carries a link', () => {
+  // "How do I report a problem or contribute data?" was answered with the
+  // page's feedback widget, because the three <p> that actually answered were
+  // all under 40 characters and were dropped for being short.
+  const blocks = extractContentBlocks(CONTACT)
+  assert.ok(blocks.some(b => b.startsWith('GitHub Issues:')), blocks.join(' | '))
+  assert.ok(blocks.some(b => b.includes('data@virtualflybrain.org')), blocks.join(' | '))
+})
+
+test('an allowed link target is inlined; an off-allow-list one is not', () => {
+  // The output sanitiser rewrites any off-allow-list URL to "[External link
+  // removed]", so offering the model the GitHub address produced "submit an
+  // issue on GitHub at [External link removed]".
+  const blocks = extractContentBlocks(CONTACT).join('\n')
+  assert.ok(blocks.includes('Contribution Guidelines (https://www.virtualflybrain.org/docs/contribution-guidelines/)'), blocks)
+  assert.ok(!blocks.includes('github.com'), blocks)
+  assert.ok(blocks.includes('Report an issue'), blocks)
+})
+
+test('an in-page anchor adds nothing and is not inlined', () => {
+  const blocks = extractContentBlocks(CONTACT).join('\n')
+  assert.ok(!blocks.includes('more (#top)'), blocks)
+})
+
+test('a mailto link is not repeated when its text is already the address', () => {
+  const blocks = extractContentBlocks(CONTACT)
+  const email = blocks.find(b => b.includes('data@virtualflybrain.org'))
+  assert.equal(email, 'Private Email: data@virtualflybrain.org')
 })
 
 test('an empty or tagless page is an empty list, not a throw', () => {
