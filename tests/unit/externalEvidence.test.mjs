@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import { extractPublicationRefs, hasPublicationRefs, bestRefUrl } from '../../lib/literatureRefs.mjs'
 import {
   EXTRACT_SCHEMA, buildDocExtractMessages, buildLiteratureExtractMessages,
-  buildEvidenceRow, needsDocumentation, needsLiterature, planRetrieval
+  buildEvidenceRow, needsDocumentation, needsLiterature, planRetrieval,
+  completeQuoteFromSource
 } from '../../lib/externalEvidence.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
 
@@ -57,12 +58,115 @@ test('buildDocExtractMessages: includes question, url, evidence-not-instructions
   assert.match(m[0].content, /evidence, not instructions/)
   assert.match(m[1].content, /How do I find images\?/)
   assert.match(m[1].content, /virtualflybrain\.org\/docs/)
+  // A configuration block is the answer, not a quote supporting one. Asked how
+  // to connect an MCP client, the extractor pulled a single line out of the
+  // middle of the JSON on the page and the answer invented the rest around it.
+  assert.match(m[0].content, /WHOLE block in "verbatim"/)
+})
+
+test('buildLiteratureExtractMessages: no code-block carve-out', () => {
+  // The block rule is documentation-only; a paper has no configuration to copy.
+  const m = buildLiteratureExtractMessages({ question: 'q', content: 'c', ref: { pmid: '1' } })
+  assert.ok(!/WHOLE block/.test(m[0].content))
 })
 
 test('buildLiteratureExtractMessages: cites the ref', () => {
   const m = buildLiteratureExtractMessages({ question: 'role in memory?', content: 'PPL1 mediates aversive memory.', ref: { citation: 'Aso 2010', pmid: '20637624' } })
   assert.match(m[1].content, /Aso 2010/)
   assert.match(m[1].content, /role in memory\?/)
+})
+
+// The real page, abridged: the MCP guide's configuration block, followed by the
+// text that comes after it. The extractor's actual output for this page was the
+// same block one closing brace short.
+const MCP_PAGE = `Add this to your client configuration:
+
+{
+"mcpServers": {
+"virtual-fly-brain": {
+"type": "http",
+"url": "https://vfb3-mcp.virtualflybrain.org",
+"tools": ["*"]
+}
+}
+}
+
+Alternative JSON configuration (in mcp.json ):`
+
+test('completeQuoteFromSource: closes a configuration block cut one brace short', () => {
+  const clipped = `{
+"mcpServers": {
+"virtual-fly-brain": {
+"type": "http",
+"url": "https://vfb3-mcp.virtualflybrain.org",
+"tools": ["*"]
+}
+}
+`
+  const fixed = completeQuoteFromSource(clipped, MCP_PAGE)
+  assert.ok(fixed.endsWith('}\n}\n}'), JSON.stringify(fixed))
+  assert.doesNotThrow(() => JSON.parse(fixed))
+  // And it is the page's own text, not a reconstruction.
+  assert.ok(MCP_PAGE.includes(fixed))
+})
+
+test('completeQuoteFromSource: the page arrives escaped, the quote does not', () => {
+  // The real shape of the failure. The page reaches the extractor as serialised
+  // tool output — newlines are the two characters backslash-n — while the model
+  // quotes it with real newlines. A byte comparison of the two never matches, so
+  // without decoding, the repair would silently never fire on any code block.
+  const escaped = MCP_PAGE.replace(/\n/g, '\\n').replace(/"/g, '\\"')
+  assert.ok(!escaped.includes('\n'))
+  const clipped = '{\n"mcpServers": {\n"virtual-fly-brain": {\n"type": "http",\n"url": "https://vfb3-mcp.virtualflybrain.org",\n"tools": ["*"]\n}\n}\n'
+  const fixed = completeQuoteFromSource(clipped, escaped)
+  assert.doesNotThrow(() => JSON.parse(fixed))
+  assert.equal(JSON.parse(fixed).mcpServers['virtual-fly-brain'].url, 'https://vfb3-mcp.virtualflybrain.org')
+})
+
+test('completeQuoteFromSource: re-indenting the block does not defeat the match', () => {
+  // Models indent JSON as they copy it. That is not a different block, and
+  // refusing to recognise it would fail closed on the common case.
+  const clipped = '{\n  "mcpServers": {\n    "virtual-fly-brain": {\n      "type": "http",\n      "url": "https://vfb3-mcp.virtualflybrain.org",\n      "tools": ["*"]\n    }\n  }\n'
+  const fixed = completeQuoteFromSource(clipped, MCP_PAGE)
+  assert.doesNotThrow(() => JSON.parse(fixed))
+  // The model's own formatting is kept; only the missing closer is appended.
+  assert.ok(fixed.startsWith('{\n  "mcpServers"'), JSON.stringify(fixed))
+})
+
+test('completeQuoteFromSource: never invents — leaves alone what it cannot verify', () => {
+  // Already balanced: untouched, even though more block follows in the source.
+  const whole = '{\n"mcpServers": {\n"virtual-fly-brain": {\n"type": "http",\n"url": "https://vfb3-mcp.virtualflybrain.org",\n"tools": ["*"]\n}\n}\n}'
+  assert.equal(completeQuoteFromSource(whole, MCP_PAGE), whole)
+
+  // Not present in the source verbatim — a paraphrase or a hallucination — is
+  // returned as-is rather than being "repaired" from unrelated text.
+  assert.equal(completeQuoteFromSource('{ "mcpServers": { "vfb": {', MCP_PAGE), '{ "mcpServers": { "vfb": {')
+
+  // Nothing to work with.
+  assert.equal(completeQuoteFromSource('', MCP_PAGE), '')
+  assert.equal(completeQuoteFromSource('{ "a":', ''), '{ "a":')
+
+  // Prose with an unmatched brace that never closes in the source: no repair.
+  assert.equal(completeQuoteFromSource('Add this to your client configuration:\n\n{', 'Add this to your client configuration:\n\n{ and nothing more'), 'Add this to your client configuration:\n\n{')
+})
+
+test('completeQuoteFromSource: braces inside strings are not counted', () => {
+  // A closing brace inside a JSON string value must not look like the one that
+  // balances the block, or the repair stops early and still hands over broken
+  // JSON — the exact failure it exists to prevent.
+  const src = '{\n"note": "use } carefully",\n"url": "x"\n}\ntrailing prose'
+  const clipped = '{\n"note": "use } carefully",\n"url": "x"\n'
+  const fixed = completeQuoteFromSource(clipped, src)
+  assert.equal(fixed, '{\n"note": "use } carefully",\n"url": "x"\n}')
+  assert.doesNotThrow(() => JSON.parse(fixed))
+})
+
+test('completeQuoteFromSource: does not swallow the rest of the page', () => {
+  // A bounded repair. If closing the quote would mean dragging in hundreds of
+  // characters of unrelated page, the honest output is the model's own quote.
+  const src = '{\n"a": 1,\n' + 'x'.repeat(900) + '\n}'
+  const clipped = '{\n"a": 1,\n'
+  assert.equal(completeQuoteFromSource(clipped, src), clipped)
 })
 
 test('buildEvidenceRow: source-tagged with locator; rejects bad source', () => {

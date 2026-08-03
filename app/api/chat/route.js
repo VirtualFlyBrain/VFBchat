@@ -23,6 +23,7 @@ import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSe
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
+import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
@@ -11162,7 +11163,12 @@ async function requestNoToolFallbackResponse({
 
 // Stream a tool-free synthesis completion, emitting `delta` events so the answer
 // types out in the UI, and return the full text. Captures the upstream response id.
-async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId }) {
+async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId, sourceQuotes }) {
+  // Fenced code blocks are held until their closing fence and released closed —
+  // the synthesiser re-indents a copied configuration often enough to lose its
+  // last brace, and a streamed answer has no afterwards in which to fix that.
+  // Inert outside a fence, and outside blocks that came from the documentation.
+  const fences = createFenceRepairer(sourceQuotes)
   let res
   try {
     res = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
@@ -11179,6 +11185,7 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
     const text = await res.text().catch(() => '')
     let content = ''
     try { content = JSON.parse(text)?.choices?.[0]?.message?.content || '' } catch { content = '' }
+    if (content) content = fences.push(content) + fences.flush()
     if (content) sendEvent('delta', { text: content })
     return content
   }
@@ -11203,10 +11210,15 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
         const obj = JSON.parse(payload)
         if (!idSent && obj.id && onResponseId) { onResponseId(obj.id); idSent = true }
         const delta = obj?.choices?.[0]?.delta?.content || obj?.choices?.[0]?.message?.content || ''
-        if (delta) { full += delta; sendEvent('delta', { text: delta }) }
+        // `full` accumulates what was EMITTED, not what arrived, so the answer
+        // returned for linking and sanitising is the same text the reader saw.
+        const out = delta ? fences.push(delta) : ''
+        if (out) { full += out; sendEvent('delta', { text: out }) }
       } catch { /* keep-alive or partial chunk */ }
     }
   }
+  const tail = fences.flush()
+  if (tail) { full += tail; sendEvent('delta', { text: tail }) }
   return full
 }
 
@@ -11289,8 +11301,8 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         if (typeof out === 'string') { try { parsed = JSON.parse(out) } catch { parsed = null } }
         return buildConnectivityGraphs(parsed).map(normalizeGraphSpec).filter(Boolean)
       },
-      streamText: ({ messages, model }) => streamSynthCompletion({
-        messages, model, apiBaseUrl, apiKey, sendEvent,
+      streamText: ({ messages, model, sourceQuotes }) => streamSynthCompletion({
+        messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes,
         onResponseId: (id) => { if (!responseId) responseId = id }
       }),
       onStatus: (status) => sendEvent('status', status),
