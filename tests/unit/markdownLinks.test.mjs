@@ -186,3 +186,55 @@ test('a name already linked in the prose is left alone', () => {
   const text = `[${NESTED_NAME}](https://vfb.test/VFBexp_FBti0144014) is one.`
   assert.equal(linkifyKnownTerms(text, TERMS), text)
 })
+
+// ------------------------------------------------- links inside link titles ---
+// Every link this codebase writes carries a hover title built from a VFB label,
+// so a label with parentheses puts a ")" inside the target. "What types of Kenyon
+// cells exist in the adult Drosophila brain?" answered with a link nested inside
+// another link's title, twice in one sentence.
+
+const TITLED = '[KCab-c(i)](https://www.virtualflybrain.org/reports/FBbt_00049111 "Open KCab-c(i) in Virtual Fly Brain")'
+
+test('a link whose title contains parentheses parses to the whole link', () => {
+  const m = matchMarkdownLinkAt(TITLED, 0)
+  assert.equal(m.text, 'KCab-c(i)')
+  assert.equal(m.end, TITLED.length, 'the link ends at its own closing bracket, not inside its title')
+  assert.ok(m.target.endsWith('in Virtual Fly Brain"'))
+})
+
+test('a quoted title may hold an unbalanced bracket of its own', () => {
+  const s = '[x](https://example.org/a "Open x) in Virtual Fly Brain")'
+  assert.equal(matchMarkdownLinkAt(s, 0).end, s.length)
+})
+
+test('a titled link is protected whole, so nothing linkifies its title', () => {
+  const parts = splitProtectedSpans(`before ${TITLED} after`)
+  assert.equal(parts[1], TITLED)
+  assert.equal(parts[2], ' after')
+})
+
+test('a term name is not linked inside the title of a link just written', () => {
+  // Names arrive longest-first, so the shorter name is a substring of the longer
+  // one's title the moment that title exists.
+  const termLinks = [
+    { name: 'KCab-c(i)', id: 'FBbt_00049111', url: 'https://www.virtualflybrain.org/reports/FBbt_00049111' },
+    { name: 'KCab-c', id: 'FBbt_00110929', url: 'https://www.virtualflybrain.org/reports/FBbt_00110929' }
+  ]
+  const out = linkifyKnownTerms('There are KCab-c(i) cells in the brain.', termLinks)
+  assert.equal(out.match(/\]\(/g).length, 1, 'exactly one link was written')
+  assert.ok(!/"Open \[/.test(out), 'no link opens inside a title')
+  assert.match(out, /^There are \[KCab-c\(i\)\]\(\S+ "Open KCab-c\(i\) in Virtual Fly Brain"\) cells in the brain\.$/)
+})
+
+test('a shorter name still links where it genuinely appears in prose', () => {
+  // The fix must not cost the second link — only the one inside the title.
+  const termLinks = [
+    { name: 'Kenyon cell of main calyx', id: 'FBbt_00047926', url: 'https://www.virtualflybrain.org/reports/FBbt_00047926' },
+    { name: 'Kenyon cell', id: 'FBbt_00003686', url: 'https://www.virtualflybrain.org/reports/FBbt_00003686' }
+  ]
+  const out = linkifyKnownTerms('The Kenyon cell of main calyx is one Kenyon cell type.', termLinks)
+  assert.equal(out.match(/\]\(/g).length, 2)
+  assert.ok(!/"Open \[/.test(out))
+  assert.match(out, /FBbt_00047926/)
+  assert.match(out, /is one \[Kenyon cell\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003686/)
+})
