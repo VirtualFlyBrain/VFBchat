@@ -83,3 +83,35 @@ test('the candidates are exactly the near misses pickBestTermId refused to bind'
   assert.deepEqual(searchCandidateLabels(search),
     ['mushroom body output neuron', 'adult mushroom body'], 'but the near misses survive')
 })
+
+test('sharing only the word "neuron" is not enough to bind a name', () => {
+  // Live failure (P-EN): the distinctive part of the name is two letters, which
+  // the fallback drops as too short, leaving "neuron" as the only surviving
+  // token. Every neuron label contains it, so the picker bound the top hit —
+  // an unrelated larval VUM neuron — and the answer became "VFB does not
+  // currently hold data on P-EN neurons". A category word says what KIND of
+  // thing it is, never WHICH one.
+  const search = solr([
+    { short_form: 'FBbt_00001592', label: 'larval VUM neuron' },
+    { short_form: 'FBbt_00001593', label: 'multidendritic neuron' }
+  ])
+  assert.equal(pickBestTermId(search, 'P-EN neurons'), null)
+  assert.deepEqual(searchCandidateLabels(search), ['larval VUM neuron', 'multidendritic neuron'])
+})
+
+test('a category word alongside a real one still binds', () => {
+  // The gate must not make the picker useless: "lateral horn neurons" shares
+  // "lateral" and "horn" as well as "neuron", so it binds exactly as before.
+  const search = solr([
+    { short_form: 'FBbt_00007053', label: 'adult lateral horn neuron' },
+    { short_form: 'FBbt_00040033', label: 'larval VUM neuron' }
+  ])
+  assert.equal(pickBestTermId(search, 'lateral horn neurons'), 'FBbt_00007053')
+})
+
+test('a name that is nothing but a category word never binds', () => {
+  // "neurons" on its own identifies no term, and the top search hit for it is
+  // arbitrary. Abstaining is the only honest answer.
+  const search = solr([{ short_form: 'FBbt_00005106', label: 'neuron' }, { short_form: 'FBbt_1', label: 'larval VUM neuron' }])
+  assert.equal(pickBestTermId(search, 'cells'), null)
+})
