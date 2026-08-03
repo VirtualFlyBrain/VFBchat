@@ -186,3 +186,45 @@ test('a retry that finds no exact match either is discarded, not preferred', asy
   assert.equal(r.ledger.terms['medulla neurons'].id, 'FBbt_00003748')
   assert.ok(!r.trace.some(e => e.resolve_retry))
 })
+
+// --- database accessions are provenance, not name ----------------------------
+
+// Verbatim shape of what search_terms returns for "FANC": four unrelated human
+// FANC-family genes, and one VFB individual whose label carries the string only
+// inside its accession. The neuron is the ONLY document any token rule can bind
+// "FANC" to, which is exactly why it used to win.
+const FANC_SEARCH = { results: [
+  { label: 'Fancl (FBgn0037781)', short_form: 'FBgn0037781', original_label: 'Fancl', facets_annotation: ['Entity', 'Gene'] },
+  { label: 'FANCI (FBgn0033354)', short_form: 'FBgn0033354', original_label: 'FANCI', facets_annotation: ['Entity', 'Gene'] },
+  { label: 'neuron 464 (FANC:494748)', short_form: 'VFB_001027ns', original_label: 'neuron 464 (FANC:494748)', facets_annotation: ['Entity', 'Individual', 'Neuron', 'Anatomy'] }
+] }
+
+test('a dataset acronym does not resolve to a neuron that carries it in an accession', () => {
+  // "Where can I access the FAFB or FANC CATMAID datasets?" answered "Virtual
+  // Fly Brain has detailed information available on neuron 464 (FANC:494748)".
+  // Nobody who types FANC means neuron 494748.
+  assert.equal(pickBestTermId(FANC_SEARCH, 'FANC'), null)
+  assert.equal(pickBestTermId(FANC_SEARCH, 'FANC CATMAID'), null)
+})
+
+test('the same trap set by a tracer name embedded in a FAFB annotation', () => {
+  // VFB's FAFB annotations carry the human tracer's name, so a search for a
+  // forename returns a neuron. The accession is not what matches here — the
+  // rule that saves this one is stage 4's distinctive-token gate — but the
+  // neuron's own numbers must not be matchable either.
+  const TRACER = { results: [
+    { label: 'LHPV5d3#1 5807250 Jean-Claude ARJ (LHPV5d3#1 (FAFB:5807249))', short_form: 'VFB_0010128f', original_label: 'LHPV5d3#1 (FAFB:5807249)', facets_annotation: ['Entity', 'Individual', 'Neuron'] }
+  ] }
+  assert.equal(pickBestTermId(TRACER, 'FAFB'), null)
+  assert.equal(pickBestTermId(TRACER, '5807249'), null)
+})
+
+test('an individual is still resolvable by its own name, accession and all', () => {
+  // The strip is for matching only. A user who pastes the label back in, or who
+  // names the neuron without its accession, must still land on it.
+  assert.equal(pickBestTermId(FANC_SEARCH, 'neuron 464 (FANC:494748)'), 'VFB_001027ns')
+  assert.equal(pickBestTermId(FANC_SEARCH, 'neuron 464'), 'VFB_001027ns')
+  // And an ordinary class is untouched by any of this.
+  assert.equal(pickBestTermId(KENYON_SINGULAR, 'Kenyon cell'), 'FBbt_00003686')
+  assert.equal(pickBestTermId(FANC_SEARCH, 'Fancl'), 'FBgn0037781')
+})
