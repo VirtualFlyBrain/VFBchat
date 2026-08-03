@@ -480,6 +480,81 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
+// --- unmatched names must not become false absences -------------------------
+
+// Shared setup: a name the picker refuses to bind. "MBON-a1" shares no token
+// with the spelled-out labels VFB returns, so pickBestTermId abstains — and
+// before this fix the search result was discarded, the ledger stayed empty, and
+// NEVER OVERCLAIM turned that emptiness into "VFB does not currently hold data
+// on MBON-a1" about a term VFB very much holds under another name.
+function unmatchedDeps(docs) {
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['MBON-a1'], steps: []
+  }
+  return makeDeps({ plan, tools: { vfb_search_terms: () => ({ response: { docs } }) } })
+}
+
+test('an unmatched name reaches the synthesiser as a failed lookup, with the candidates VFB offered', async () => {
+  const deps = unmatchedDeps([
+    { short_form: 'FBbt_00100234', label: 'mushroom body output neuron' },
+    { short_form: 'FBbt_00100235', label: 'adult mushroom body' }
+  ])
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  const r = await runHarness('What is MBON-a1?', deps)
+  assert.equal(r.ledger.terms['MBON-a1'].id, null, 'the term stayed unresolved')
+  assert.deepEqual(r.ledger.terms['MBON-a1'].candidates,
+    ['mushroom body output neuron', 'adult mushroom body'], 'the near misses were kept')
+  assert.ok(synthMessages, 'synth ran')
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /"MBON-a1" — not matched automatically/)
+  assert.match(prompt, /mushroom body output neuron; adult mushroom body/)
+  // The two instructions that stop the false absence: don't claim VFB lacks it,
+  // and don't answer it from the model's own knowledge either.
+  assert.match(prompt, /must NOT say VFB holds no data on them/)
+  assert.match(prompt, /must NOT answer the question about them from your own knowledge/)
+  // Candidate labels are prompt hints, not resolved entities — the id must still
+  // never reach the synthesiser (it writes ids and mislinks).
+  assert.ok(!/FBbt_00100234/.test(prompt), 'no ontology ids in the synth prompt')
+})
+
+test('a name VFB\'s search knows nothing about is worded differently from an ambiguous one', async () => {
+  // [] candidates means the search itself came back empty. That is still a
+  // failed lookup, not evidence of absence, but the synthesiser must be able to
+  // tell the two apart — "no confident match among these" reads very
+  // differently from "no hits for this wording".
+  const deps = unmatchedDeps([])
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What is MBON-a1?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /"MBON-a1" — VFB's name search returned nothing for this wording/)
+  assert.ok(!/not matched automatically/.test(prompt), 'must not imply candidates were offered')
+})
+
+test('no UNMATCHED NAMES block when every name resolved', async () => {
+  // The block is a warning about a specific failure. Emitting it on a healthy
+  // run would spend prompt budget and invite hedging on a well-grounded answer.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const deps = makeDeps({
+    plan,
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+    }
+  })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', deps)
+  assert.ok(!/UNMATCHED NAMES/.test(synthMessages[1].content))
+})
+
 test('term-info returned for the WRONG id is discarded (no poisoned digest)', async () => {
   const plan = {
     intent: 'term_info', underspecified: false, clarifying_question: '',
