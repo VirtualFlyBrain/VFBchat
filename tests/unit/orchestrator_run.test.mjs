@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -508,4 +508,39 @@ test('region "inputs" question: term-info Queries digest reaches the extractor w
   const r = await runHarness('What are the main input neurons to the mushroom body?', deps)
   assert.ok(sawDigest, 'extractor must see the digest with the 367 count')
   assert.ok(r.ledger.evidence.some(e => /input/.test(e.claim)), 'should have VFB evidence, not dead-end')
+})
+
+test('maybeInjectRegionGraphStep routes a region GRAPH request to the region summary tool', () => {
+  // Task-battery G1. VFB has no region-level connectivity query, so left to itself
+  // the planner reaches for vfb_run_query, gets the query catalogue back, and the
+  // answer recites the list of available queries with zero graphs produced.
+  const region = () => ({
+    plan: [{ id: 's1', tool: 'vfb_get_term_info', status: 'satisfied' }],
+    terms: { medulla: { id: 'FBbt_00003748', label: 'medulla', digest: { name: 'medulla' },
+      info: { SuperTypes: ['Anatomy', 'Synaptic_neuropil'] } } }
+  })
+
+  const ledger = region()
+  maybeInjectRegionGraphStep(ledger, 'what are the class summarised connectivity from the medulla in graph form')
+  const inj = ledger.plan.find(s => s.tool === 'vfb_summarize_region_connections')
+  assert.ok(inj, 'region summary step injected')
+  assert.equal(inj.args.region, 'medulla')
+  assert.equal(inj.status, 'pending')
+
+  // idempotent
+  maybeInjectRegionGraphStep(ledger, 'what are the class summarised connectivity from the medulla in graph form')
+  assert.equal(ledger.plan.filter(s => s.tool === 'vfb_summarize_region_connections').length, 1)
+
+  // needs BOTH graph intent and connectivity intent
+  const noGraph = region()
+  maybeInjectRegionGraphStep(noGraph, 'what connects to the medulla?')
+  assert.equal(noGraph.plan.length, 1)
+  const noConn = region()
+  maybeInjectRegionGraphStep(noConn, 'show me the medulla in graph form')
+  assert.equal(noConn.plan.length, 1)
+
+  // and a region, not a neuron type (those go to maybeInjectConnectivityStep)
+  const neuron = { plan: [], terms: { x: { id: 'i', label: 'Tm1', digest: { name: 'Tm1' }, info: { SuperTypes: ['Neuron', 'Anatomy'] } } } }
+  maybeInjectRegionGraphStep(neuron, 'graph the connectivity of Tm1')
+  assert.equal(neuron.plan.length, 0)
 })

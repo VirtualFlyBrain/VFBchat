@@ -6263,9 +6263,17 @@ async function getRunQueryEvidence(client, id, queryType, limit = 8) {
   })
   const rows = extractRowsFromRunQueryPayload(outputText)
   const parsed = parseJsonPayload(outputText)
+  const rawCount = Number(parsed?.count)
+  const count = Number.isFinite(rawCount) ? rawCount : rows.length
   return {
     query_type: queryType,
-    count: Number.isFinite(Number(parsed?.count)) ? Number(parsed.count) : rows.length,
+    count,
+    // VFB reports -1 for a count it did not establish; never let that reach a
+    // model as a figure. count_status comes straight from the payload when the
+    // server supplied one (VFBquery 1.22.37+).
+    count_status: typeof parsed?.count_status === 'string' && parsed.count_status
+      ? parsed.count_status
+      : (count >= 0 ? 'exact' : 'unavailable'),
     preview_rows: rows.slice(0, limit).map(summarizeEvidenceRow)
   }
 }
@@ -7306,6 +7314,32 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
   ]
     .map(queryName => summarizeQueryEntry(getTermQueryEntry(region.term_record, [queryName]), limit))
     .filter(Boolean)
+
+  // A region's term-info previews are routinely UNPOPULATED — preview_results.rows
+  // empty and count -1 with status 'pending', which means "this query has not been
+  // run yet", not "there are no rows". medulla is the canonical example: every one
+  // of its twelve previews is empty, yet NeuronsPresynapticHere returns 262 rows the
+  // moment it is actually run. An empty preview reads to a model exactly like an
+  // absence, and it leaves the deterministic region-graph builder with nothing to
+  // draw. So run the two queries that carry the region's connectivity when their
+  // previews came back empty. Bounded to those two: they are what the answer and the
+  // graph are made of, and each costs one extra MCP round.
+  const REGION_CONNECTIVITY_BACKFILL_QUERIES = ['NeuronsPresynapticHere', 'NeuronsPostsynapticHere']
+  for (const summary of focusQuerySummaries) {
+    if (!REGION_CONNECTIVITY_BACKFILL_QUERIES.includes(summary.query_type)) continue
+    if (Array.isArray(summary.preview_rows) && summary.preview_rows.length) continue
+    try {
+      const live = await getRunQueryEvidence(client, region.id, summary.query_type, limit)
+      if (!live || !Array.isArray(live.preview_rows) || !live.preview_rows.length) continue
+      summary.preview_rows = live.preview_rows
+      summary.count = live.count
+      summary.count_status = live.count_status
+      delete summary.count_note
+      summary.source = 'run_query (term-info preview was not populated)'
+    } catch {
+      // A failed backfill leaves the preview summary exactly as it was.
+    }
+  }
 
   const relatedEvidence = []
   const majorInputs = []
