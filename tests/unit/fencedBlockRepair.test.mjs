@@ -94,3 +94,57 @@ test('a stream that ends mid-block still releases what it held', () => {
   out += r.flush()
   assert.ok(out.includes('"mcpServers"'), out)
 })
+
+// ---- dropping the synthesiser's own input ----
+//
+// Two answers in a twenty-one question battery printed plumbing at the reader:
+// the evidence record carrying the quote, and the query catalogue the model had
+// been handed. Both had already been forbidden in the prompt. A block shaped
+// like an internal record is now dropped here instead, where it cannot be
+// talked out of.
+
+test('the evidence record is dropped, fences and all', () => {
+  const record = '{\n  "claim": "NeuroFly 2026 will be held at the University of Cologne.",\n  "source": "doc",\n  "verbatim": "The 21st Biennial European Drosophila Neurobiology Conference …",\n  "ref": "https://www.virtualflybrain.org/blog/2025/12/17/neurofly-2026"\n}'
+  const answer = 'NeuroFly 2026 runs from 7 to 11 September at the University of Cologne.\n\n```json\n' + record + '\n```\n'
+  const out = stream(answer, [QUOTE])
+  assert.ok(!out.includes('"claim"'), out)
+  assert.ok(!out.includes('```'), out)
+  assert.ok(out.startsWith('NeuroFly 2026 runs from 7 to 11 September'), out)
+})
+
+test('the query catalogue is dropped too', () => {
+  const rows = '{\n"tool": "VFB",\n"key": "Queries",\n"rows": [\n{"id": "", "name": "Parts of mushroom body"},\n{"id": "", "name": "Subclasses of mushroom body"}\n]\n}'
+  const answer = 'There is a schematic of the mushroom body.\n\n```json\n' + rows + '\n```\n'
+  const out = stream(answer, [QUOTE])
+  assert.ok(!out.includes('"rows"'), out)
+  assert.ok(!out.includes('Subclasses of mushroom body'), out)
+  assert.ok(out.startsWith('There is a schematic'), out)
+})
+
+test('a record truncated mid-stream is still recognised and dropped', () => {
+  const r = createFenceRepairer([QUOTE])
+  let out = r.push('Here it is:\n```json\n{"claim": "x", "source": "doc", "verb')
+  out += r.flush()
+  assert.ok(!out.includes('"claim"'), out)
+  assert.ok(!out.includes('```'), out)
+})
+
+test('a real configuration is not mistaken for an internal record', () => {
+  // The shape test must not fire on the thing this filter exists to protect.
+  const answer = 'Use this:\n```json\n' + QUOTE + '\n```\nDone.'
+  assert.equal(stream(answer, [QUOTE]), answer)
+  // Nor on ordinary JSON that merely mentions a source.
+  const data = '{\n"source": "FlyWire",\n"neurons": 12\n}'
+  const other = 'Counts:\n```json\n' + data + '\n```\n'
+  assert.equal(stream(other, [QUOTE]), other)
+})
+
+test('dropping a block does not disturb one that follows it', () => {
+  const record = '{"claim": "c", "source": "doc", "ref": "u"}'
+  const answer = 'A:\n```json\n' + record + '\n```\nB:\n```json\n' + QUOTE + '\n```\n'
+  const out = stream(answer, [QUOTE])
+  assert.ok(!out.includes('"claim"'), out)
+  const blocks = out.split('```').filter((_, i) => i % 2 === 1)
+  assert.equal(blocks.length, 1)
+  assert.doesNotThrow(() => JSON.parse(blocks[0].replace(/^json\n/, '')))
+})

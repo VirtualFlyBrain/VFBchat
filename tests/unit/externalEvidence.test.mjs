@@ -7,7 +7,7 @@ import { extractPublicationRefs, hasPublicationRefs, bestRefUrl } from '../../li
 import {
   EXTRACT_SCHEMA, buildDocExtractMessages, buildLiteratureExtractMessages,
   buildEvidenceRow, needsDocumentation, needsLiterature, planRetrieval,
-  completeQuoteFromSource
+  completeQuoteFromSource, hasCopyableBlock
 } from '../../lib/externalEvidence.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
 
@@ -258,4 +258,31 @@ test('planRetrieval: VFB empty → literature fallback (do not dead-stop)', () =
   const r = planRetrieval({ question: 'What connects to the antennal lobe?', vfbAnswered: false, vfbHasData: false })
   assert.equal(r.literature, true)
   assert.ok(r.reasons.includes('vfb-empty-fallback'))
+})
+
+// ---- hasCopyableBlock: which pages get told to reproduce a block ----
+//
+// The battery caught the cost of getting this wrong in the permissive
+// direction: a support email address, a list of API section headings and a
+// plain English sentence all came back inside code fences, because the
+// instruction to reproduce a block verbatim was attached to every documentation
+// answer rather than to the pages that actually carry one.
+
+test('hasCopyableBlock: true for something the reader is meant to copy', () => {
+  assert.equal(hasCopyableBlock('{\n"mcpServers": {\n"virtual-fly-brain": {}\n}\n}'), true)
+  assert.equal(hasCopyableBlock('Install it via PyPi:\npip install vfb-connect'), true)
+  assert.equal(hasCopyableBlock("n = navis.example_neurons(1, kind='skeleton')"), true)
+  assert.equal(hasCopyableBlock('from vfb_connect import VfbConnect'), true)
+  assert.equal(hasCopyableBlock('```json\n{"a":1}\n```'), true)
+})
+
+test('hasCopyableBlock: false for the prose that was being fenced', () => {
+  // Every one of these came back inside a code fence in the D-battery.
+  assert.equal(hasCopyableBlock('Public Support Forum: support@virtualflybrain.org'), false)
+  assert.equal(hasCopyableBlock('GitHub Issues: Report an issue'), false)
+  assert.equal(hasCopyableBlock('Knowledgebase Operations\nDL Queries\nSPARQL Services'), false)
+  assert.equal(hasCopyableBlock('Point and click to select neurons/expression\nClick and drag with the mouse to rotate'), false)
+  assert.equal(hasCopyableBlock('Below you can watch the recorded introduction session of our workshop and follow along with the workshop notebooks.'), false)
+  assert.equal(hasCopyableBlock(''), false)
+  assert.equal(hasCopyableBlock('   '), false)
 })
