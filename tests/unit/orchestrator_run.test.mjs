@@ -249,6 +249,64 @@ test('count question: auto-runs the individual-image query and reports the count
   assert.match(claims, /226,524 images/)
 })
 
+test('list question: names the returned rows deterministically, never the extractor', async () => {
+  // The exact failing case: "Which neurons are presynaptic in the medulla? List
+  // them." ran NeuronsPresynapticHere, got a page of rows, and answered "Running
+  // the query … would provide the list of neurons" — the weak extractor
+  // describing the query instead of reading it. The rows must be read in code.
+  //
+  // Note every preview here is EMPTY with count -1: that is medulla's real
+  // term-info shape, and it is why the result table was blank too.
+  const termInfo = {
+    Name: 'medulla', Id: 'FBbt_00003748',
+    SuperTypes: ['Class', 'Anatomy', 'Synaptic_neuropil'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Optic-lobe neuropil.' },
+    Queries: [
+      { query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in medulla', count: -1, preview_results: { rows: [] } }
+    ],
+    Publications: []
+  }
+  const names = ['Dm8b', 'Mi1', 'Tm3', 'L1', 'T4a']
+  const plan = { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // If the extractor is ever consulted for this step, it produces the exact
+      // useless answer we are fixing — so a passing test proves it was bypassed.
+      extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'Running the query would provide the list of neurons.', verbatim: '' } })
+    },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({
+        count: 262, count_status: 'exact', headers: {},
+        rows: names.map((n, i) => ({ id: `FBbt_0011006${i}`, label: `[${n}](FBbt_0011006${i})`, tags: 'Adult|Neuron' }))
+      })
+    }
+  })
+  const r = await runHarness('Which neurons are presynaptic in the medulla? List them.', deps)
+  const ran = deps.calls.tools.filter(t => t.name === 'vfb_run_query').map(t => t.args.query_type)
+  assert.deepEqual(ran, ['NeuronsPresynapticHere'], 'the list question must run exactly the presynaptic query')
+  // Judge only the evidence the run_query step produced: other steps legitimately
+  // go through the (here, deliberately useless) extractor.
+  const fromQuery = r.ledger.evidence.filter(e => e.tool === 'vfb_run_query').map(e => e.claim)
+  assert.equal(fromQuery.length, 1)
+  const claim = fromQuery[0]
+  assert.ok(!/would provide the list/.test(claim), `extractor answer leaked through: ${claim}`)
+  assert.match(claim, /262 results/)
+  for (const n of names) assert.ok(claim.includes(n), `expected ${n} to be named, got: ${claim}`)
+  assert.match(claim, /Dm8b \(FBbt_00110060\)/, 'ids must be named alongside the labels')
+
+  // …and the run must have been folded back into the digest, so the result table
+  // has something to render for a query whose preview came back empty.
+  const q = Object.values(r.ledger.terms).find(t => t.digest)?.digest.queries
+    .find(x => x.query_type === 'NeuronsPresynapticHere')
+  assert.ok(q, 'the query should still be in the digest')
+  assert.equal(q.previewRows.length, names.length)
+  assert.equal(q.countKind, 'exact')
+  assert.equal(q.count, 262)
+})
+
 test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () => {
   // "DAN" must bind to dopaminergic neuron (which carries the synonym), not the
   // first fuzzy result (mushroom body) — the bug seen live.
