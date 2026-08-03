@@ -24,7 +24,7 @@ import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
-import { findLeakedIds, stripLeakedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
+import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -2584,7 +2584,11 @@ function normalizeServerToolArgs(name, args = {}) {
 
   if (name === 'vfb_search_terms') {
     cleanArgs.query = String(cleanArgs.query || '').trim()
-    cleanArgs.exclude_types = ensureStringListIncludes(cleanArgs.exclude_types, 'deprecated')
+    // Do NOT force exclude_types:['deprecated'] — the current VFB3-MCP has no
+    // such facet and rejects the entire search. Deprecated terms are already
+    // absent from its index. Only pass what the caller actually asked for.
+    cleanArgs.exclude_types = normalizeVfbSearchFacetList(cleanArgs.exclude_types)
+    if (cleanArgs.exclude_types.length === 0) delete cleanArgs.exclude_types
     cleanArgs.filter_types = normalizeVfbSearchFacetList(cleanArgs.filter_types)
     cleanArgs.boost_types = normalizeVfbSearchFacetList(cleanArgs.boost_types)
     if (cleanArgs.filter_types.length === 0) delete cleanArgs.filter_types
@@ -3565,8 +3569,30 @@ function singularizeEndpointSearchText(value = '') {
   return text
 }
 
+// VFB3-MCP's search_terms returns a flat { results: [...], total, returned,
+// start } envelope, not the Solr { response: { docs, numFound } } shape this
+// route (and lib/orchestrator's pickBestTermId) was written against. With no
+// bridge, EVERY label lookup found zero docs, so no term ever resolved and the
+// answer became "VFB does not currently hold data on …". Normalise once, at the
+// tool boundary, and leave the ~20 downstream `payload.response.docs` readers
+// and writers untouched.
+export function normalizeVfbSearchPayloadShape(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.response?.docs)) return payload
+  const flat = Array.isArray(payload.results) ? payload.results
+    : (Array.isArray(payload.docs) ? payload.docs : null)
+  if (!flat) return payload
+  payload.response = {
+    docs: flat,
+    numFound: Number.isFinite(payload.total) ? payload.total
+      : (Number.isFinite(payload.distinct_terms) ? payload.distinct_terms : flat.length),
+    start: Number.isFinite(payload.start) ? payload.start : 0
+  }
+  return payload
+}
+
 function extractDocsFromSearchTermsPayload(rawPayload) {
-  const parsed = parseJsonPayload(rawPayload)
+  const parsed = normalizeVfbSearchPayloadShape(parseJsonPayload(rawPayload))
   if (!parsed || typeof parsed !== 'object') return []
 
   if (Array.isArray(parsed?.response?.docs)) {
@@ -3577,6 +3603,10 @@ function extractDocsFromSearchTermsPayload(rawPayload) {
     return parsed.docs
   }
 
+  if (Array.isArray(parsed.results)) {
+    return parsed.results
+  }
+
   const docs = []
   for (const value of Object.values(parsed)) {
     if (!value || typeof value !== 'object') continue
@@ -3584,6 +3614,8 @@ function extractDocsFromSearchTermsPayload(rawPayload) {
       docs.push(...value.response.docs)
     } else if (Array.isArray(value.docs)) {
       docs.push(...value.docs)
+    } else if (Array.isArray(value.results)) {
+      docs.push(...value.results)
     }
   }
 
@@ -3820,7 +3852,6 @@ async function findPreferredAnatomyTermForPhrase(client, phrase = '') {
   const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
     query,
     filter_types: ['anatomy'],
-    exclude_types: ['deprecated'],
     rows: 10,
     minimize_results: false
   })
@@ -3904,7 +3935,10 @@ async function repairPrimaryTermIdFromUserPhrase({ client, cleanArgs = {}, conte
 }
 
 async function postprocessVfbSearchTermsOutput(rawOutput = '', cleanArgs = {}, context = {}, client = null) {
-  const payload = parseJsonPayload(rawOutput)
+  // Normalise VFB3-MCP's flat { results: [...] } envelope into the Solr shape
+  // the rest of this file reads. Note this function now RE-SERIALISES whenever
+  // it normalised, so the harness's pickBestTermId sees response.docs too.
+  const payload = normalizeVfbSearchPayloadShape(parseJsonPayload(rawOutput))
   if (!payload || !Array.isArray(payload?.response?.docs)) return rawOutput
 
   const queryText = String(cleanArgs.query || payload?.responseHeader?.params?.q || '').trim()
@@ -3922,8 +3956,7 @@ async function postprocessVfbSearchTermsOutput(rawOutput = '', cleanArgs = {}, c
       const supplementalOutput = await callVfbToolTextWithFallback(client, 'search_terms', {
         query: queryText,
         filter_types: ['neuron'],
-        exclude_types: ['deprecated'],
-        boost_types: ['class', 'has_neuron_connectivity'],
+          boost_types: ['class', 'has_neuron_connectivity'],
         rows: 50,
         minimize_results: false
       })
@@ -4063,7 +4096,6 @@ async function findPreferredNeuronClassForUserSymbol(client, symbol = '') {
   const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
     query,
     filter_types: ['neuron'],
-    exclude_types: ['deprecated'],
     boost_types: ['class', 'has_neuron_connectivity'],
     rows: 50,
     minimize_results: false
@@ -4130,7 +4162,6 @@ async function findPreferredAnatomyForUserSymbol(client, symbol = '', userMessag
   const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
     query: searchQuery,
     filter_types: ['anatomy'],
-    exclude_types: ['deprecated'],
     rows: 20,
     minimize_results: false
   })
@@ -4462,7 +4493,6 @@ function maybeRepairVfbSearchForMorphology(cleanArgs = {}, context = {}) {
   if (!queryNorm || queryNorm.length > 50 || /\b(there|dataset|morphologically|similar|studies)\b/.test(queryNorm)) {
     cleanArgs.query = 'fru+ mAL neurons'
     cleanArgs.filter_types = ['neuron']
-    cleanArgs.exclude_types = ['deprecated']
     cleanArgs.boost_types = ensureStringListIncludes(cleanArgs.boost_types, 'has_image')
     cleanArgs.minimize_results = true
     return true
@@ -4618,8 +4648,63 @@ function getReadableTermName(termRecord, fallback = '') {
 // Call a VFB MCP tool and return its text. The v3-cached HTTP fallback was
 // removed — the MCP is the single source of truth; errors propagate to the
 // caller (which degrades gracefully) rather than risk stale/incorrect cache data.
+// Facet values this client used to send that the current VFB3-MCP no longer
+// knows. `deprecated` was never a facet on the new server (GET /facets does not
+// list it — deprecated terms are excluded from the index instead), and the
+// server REJECTS the whole search with "Search rejected: exclude_types: unknown
+// type 'deprecated'". Because this client injected it into every single
+// search_terms call, no label search returned anything at all.
+const UNSUPPORTED_VFB_SEARCH_FACETS = new Set(['deprecated'])
+
+export function stripUnsupportedVfbSearchFacets(toolArguments = {}) {
+  const args = { ...toolArguments }
+  let changed = false
+  for (const key of ['exclude_types', 'filter_types', 'boost_types']) {
+    if (!Array.isArray(args[key])) continue
+    const kept = args[key].filter(v => !UNSUPPORTED_VFB_SEARCH_FACETS.has(String(v || '').trim().toLowerCase()))
+    if (kept.length === args[key].length) continue
+    changed = true
+    if (kept.length) args[key] = kept
+    else delete args[key]
+  }
+  return changed ? args : toolArguments
+}
+
+const VFB_SEARCH_FACET_REJECTION_RE = /Search rejected:\s*(exclude_types|filter_types|boost_types):\s*unknown type '([^']+)'/i
+
+/**
+ * Self-heal against any OTHER facet the server later retires: search_terms
+ * answers a bad facet value with a plain-text rejection naming the offending
+ * key and value, so drop just that value and retry once rather than letting a
+ * whole search — and therefore term resolution — fail.
+ * @returns {object|null} retry arguments, or null if the output is not a facet
+ *   rejection (or the offending value is not actually in the arguments).
+ */
+export function planVfbSearchFacetRetry(args = {}, outputText = '') {
+  const m = VFB_SEARCH_FACET_REJECTION_RE.exec(String(outputText || ''))
+  if (!m) return null
+  const [, key, bad] = m
+  if (!Array.isArray(args[key])) return null
+  const kept = args[key].filter(v => String(v || '').trim().toLowerCase() !== bad.trim().toLowerCase())
+  if (kept.length === args[key].length) return null
+  const retry = { ...args }
+  if (kept.length) retry[key] = kept
+  else delete retry[key]
+  return retry
+}
+
 async function callVfbToolTextWithFallback(client, toolName, toolArguments = {}, options = {}) {
-  return callMcpToolTextWithForceRefresh(client, toolName, toolArguments, options)
+  if (toolName !== 'search_terms') {
+    return callMcpToolTextWithForceRefresh(client, toolName, toolArguments, options)
+  }
+  const args = stripUnsupportedVfbSearchFacets(toolArguments)
+  let out = await callMcpToolTextWithForceRefresh(client, toolName, args, options)
+  const retry = planVfbSearchFacetRetry(args, out)
+  if (retry) {
+    console.error('[VFBchat] search_terms rejected a facet value — retrying without it')
+    out = await callMcpToolTextWithForceRefresh(client, toolName, retry, options)
+  }
+  return out
 }
 
 async function resolveConnectivityEndpointValue(client, rawValue = '') {
@@ -4922,7 +5007,6 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
   const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
     query: queryText,
     filter_types: ['neuron'],
-    exclude_types: ['deprecated'],
     boost_types: specificEndpointQuery ? ['has_neuron_connectivity'] : ['class', 'has_neuron_connectivity'],
     rows: 25,
     minimize_results: false
@@ -5903,7 +5987,6 @@ async function findGeneticToolsTool(client, args = {}, context = {}) {
     const searchText = await callVfbToolTextWithFallback(client, 'search_terms', {
       query: focus,
       filter_types: ['neuron'],
-      exclude_types: ['deprecated'],
       boost_types: ['class'],
       rows: 20,
       minimize_results: false
@@ -8586,7 +8669,11 @@ async function executeFunctionTool(name, args, context = {}) {
     }
 
     try {
-      const outputText = await callMcpToolTextWithForceRefresh(client, mcpName, mcpArgs, {
+      // Via callVfbToolTextWithFallback, NOT the raw MCP call: search_terms args
+      // need the retired-facet sanitiser (see UNSUPPORTED_VFB_SEARCH_FACETS).
+      // This is the executor the role-loop harness uses, so a rejected search
+      // here meant no term ever resolved.
+      const outputText = await callVfbToolTextWithFallback(client, mcpName, mcpArgs, {
         budget: getForceRefreshBudget(context)
       })
       if (name === 'vfb_get_term_info') {
@@ -9576,7 +9663,7 @@ function buildToolRelaySystemPrompt(toolDefinitions = TOOL_DEFINITIONS) {
 
 TOOL ROUTING RECIPES:
 - Concrete factual VFB/Drosophila data questions require tool evidence before the final answer. If you have not received TOOL_EVIDENCE_JSON, emit tool_calls JSON instead of answering from memory.
-- Anatomy subdivisions, containment, or taxonomy counts: vfb_search_terms with exclude_types ["deprecated"], rows <= 10, minimize_results true; then vfb_get_term_info on the best ID. First use Meta.Description and Queries[].count/preview_results from term info when present. Do not run a huge SubclassesOf/NeuronsPartHere table just to learn a count that is already listed in Queries[].count.
+- Anatomy subdivisions, containment, or taxonomy counts: vfb_search_terms with rows <= 10, minimize_results true; then vfb_get_term_info on the best ID. First use Meta.Description and Queries[].count/preview_results from term info when present. Do not run a huge SubclassesOf/NeuronsPartHere table just to learn a count that is already listed in Queries[].count.
 - Neuron-class taxonomy summaries, such as "what types of Kenyon cells exist": call vfb_summarize_neuron_taxonomy. For adult Kenyon-cell types use neuron_type="Kenyon cell", stage="adult". Do not fetch term info for every subclass unless the user asks to drill into one subtype.
 - For taxonomy questions asking "how many" and "how organised", prefer the relevant class term (for example "visual system neuron" for visual-system neuron taxonomy), report the exact query count from Queries[].count when it matches the user's scope, and use only a small read_data_resource sample if the hierarchy needs examples.
 - If the user asks for an adult/larval/stage-specific taxonomy count and the class count includes mixed tags, use the data_resource overview/read collection_summary.stage_counts, tag_counts, or search_data_resource for the stage tag before answering the count.
@@ -10870,8 +10957,14 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // re-linked deterministically from labels below), and log leaked ids / numbers
     // that do not trace to any tool value so the partial-fabrication rate is visible
     // in the container logs.
-    const leakedIds = findLeakedIds(rawAnswerText)
-    const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText) : rawAnswerText
+    // Grounded ids — the ones the USER typed in the question plus every id VFB
+    // itself returned (resolved terms, the label registry, and the example
+    // entities in each digest) — are NOT leaks. Stripping them deleted the
+    // user's own identifier mid-sentence ("the VFB ID of is AL.MB_CA.83") and
+    // made the "…and list the VFB IDs" instruction impossible to satisfy.
+    const groundedIds = collectGroundedIds(userMessage, live.ledger)
+    const leakedIds = findLeakedIds(rawAnswerText, groundedIds)
+    const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText, groundedIds) : rawAnswerText
     try {
       const grounded = collectGroundedNumbers(
         (live.terms || []).map(t => t),
