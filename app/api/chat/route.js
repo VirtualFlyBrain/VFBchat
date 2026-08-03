@@ -3622,15 +3622,17 @@ function extractDocsFromSearchTermsPayload(rawPayload) {
   return docs
 }
 
-function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
+export function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  // The name and the matched string, not doc.label — see getSearchDocName. With
+  // the composite here the +220 exact-name bonus below could never be awarded to
+  // any document, and the synonym bonus was scoring an always-empty array, so
+  // every endpoint was chosen on token overlap and facet bumps alone.
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const querySingular = singularizeEndpointSearchText(queryNorm)
   const labelSingular = singularizeEndpointSearchText(labelNorm)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = Array.isArray(doc.facets_annotation)
     ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
     : []
@@ -3668,7 +3670,7 @@ function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
   return score
 }
 
-function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
+export function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
   if (!Array.isArray(docs) || docs.length === 0) return null
 
   const fbbtDocs = docs.filter(doc => /^FBbt_\d{8}$/i.test(String(doc?.short_form || doc?.shortForm || '').trim()))
@@ -3728,7 +3730,7 @@ function getSearchDocFacets(doc = {}) {
 // succeed: nothing is literally called "Kenyon cell (FBbt_00003686)". Every
 // caller then falls through to whatever token heuristic sits below, and the
 // parenthesised id contributes junk tokens ("fbbt", "00003686") to that too.
-function getSearchDocName(doc = {}) {
+export function getSearchDocName(doc = {}) {
   return String(doc?.original_label || doc?.label || '').trim()
 }
 
@@ -3750,22 +3752,33 @@ function stripTrailingParenthetical(text = '') {
   return s
 }
 
-// Every string this document could reasonably have been matched on: its own
-// name, any declared synonyms, and the string VFB says matched — the last only
+// Every string OTHER than the name that this document could have been matched
+// on: any declared synonyms, and the string VFB says matched — the latter only
 // when it differs from the name, since otherwise the parenthetical held the
-// short_form and is not something anyone would type.
-function getSearchDocNames(doc = {}) {
-  const out = []
-  const name = getSearchDocName(doc)
-  if (name) out.push(name)
+// short_form, which is not something anyone types as a name.
+//
+// In practice the matched string is the whole of it. These documents carry no
+// `synonym` field at all, so the scorers' synonym bonuses were reading an empty
+// array; the display string is the only place a synonym ever appears.
+export function getSearchDocAltNames(doc = {}) {
   const declared = Array.isArray(doc?.synonym) ? doc.synonym : (doc?.synonym ? [doc.synonym] : [])
-  for (const s of declared) if (s) out.push(String(s))
+  const out = declared.map(s => String(s || '').trim()).filter(Boolean)
   if (doc?.original_label && doc?.label) {
     const matched = stripTrailingParenthetical(doc.label)
     if (matched && matched.toLowerCase() !== String(doc.original_label).trim().toLowerCase()) out.push(matched)
   }
   return out
 }
+
+/** The name plus every alternative, for callers that just want "could this be it?". */
+function getSearchDocNames(doc = {}) {
+  const name = getSearchDocName(doc)
+  return (name ? [name] : []).concat(getSearchDocAltNames(doc))
+}
+
+/** Normalised name / alternatives, the shape the endpoint scorers work in. */
+const searchDocNameNorm = (doc) => normalizeEndpointSearchText(getSearchDocName(doc))
+const searchDocAltNamesNorm = (doc) => getSearchDocAltNames(doc).map(n => normalizeEndpointSearchText(n)).filter(Boolean)
 
 function looksLikeNeuronTypeQuestion(userMessage = '', queryText = '') {
   const text = normalizeEndpointSearchText(`${userMessage} ${queryText}`)
@@ -3774,15 +3787,17 @@ function looksLikeNeuronTypeQuestion(userMessage = '', queryText = '') {
   return /\b(neuron type|cell type|type|class|what is known|where is it|connect|connects|connection|connections|function|input|inputs|output|outputs)\b/.test(text)
 }
 
-function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalIndex = 0) {
+export function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalIndex = 0) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  // getSearchDocName, not doc.label. The composite would also skew the shape
+  // tests below it: "Kenyon cells (gamma lobe) (gamma Kenyon cell)" contains
+  // "lobe" and not "neuron", so it takes the -100 neuropil penalty meant for
+  // regions, on a document that is a neuron class.
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const querySingular = singularizeEndpointSearchText(queryNorm)
   const labelSingular = singularizeEndpointSearchText(labelNorm)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   let score = -originalIndex / 1000
@@ -3813,9 +3828,9 @@ function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalI
   return score
 }
 
-function isSearchDocProbableNeuronClass(doc = {}) {
+export function isSearchDocProbableNeuronClass(doc = {}) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const labelNorm = searchDocNameNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   if (facets.includes('deprecated') || facets.includes('individual')) return false
@@ -3860,7 +3875,9 @@ function reorderVfbSearchTermsPayload(payload, cleanArgs = {}, context = {}) {
   payload.response._selection_guidance = {
     preferred_top_result: {
       short_form: preferred.doc.short_form || preferred.doc.shortForm || '',
-      label: preferred.doc.label || ''
+      // The term's name, not the display string: this is read back out as the
+      // preferred label and ends up in prose.
+      label: getSearchDocName(preferred.doc)
     },
     reason: 'For neuron type/class questions, prefer FBbt neuron classes over VFB individual neuron instances or anatomy-only regions when the labels otherwise match.'
   }
@@ -3894,7 +3911,7 @@ function rememberPreferredTermSearch(context = {}, payload = {}, cleanArgs = {})
 
   state.lastTermSearch = {
     id,
-    label: stripMarkdownLinkText(doc?.label || id),
+    label: stripMarkdownLinkText(getSearchDocName(doc) || id),
     query: String(cleanArgs.query || '').trim(),
     facets: getSearchDocFacets(doc)
   }
@@ -3918,7 +3935,7 @@ async function findPreferredAnatomyTermForPhrase(client, phrase = '') {
       return facets.includes('anatomy') && !facets.includes('deprecated')
     })
     .map((doc, index) => {
-      const labelNorm = normalizeEndpointSearchText(doc.label || '')
+      const labelNorm = searchDocNameNorm(doc)
       let score = -index / 1000
       if (/^FBbt_\d{8}$/i.test(String(doc.short_form || doc.shortForm || ''))) score += 50
       if (labelNorm === queryNorm || labelNorm === `adult ${queryNorm}`) score += 200
@@ -3934,7 +3951,7 @@ async function findPreferredAnatomyTermForPhrase(client, phrase = '') {
 
   return {
     id,
-    label: stripMarkdownLinkText(best?.label || id),
+    label: stripMarkdownLinkText(getSearchDocName(best) || id),
     query,
     facets: getSearchDocFacets(best)
   }
@@ -4030,7 +4047,7 @@ async function postprocessVfbSearchTermsOutput(rawOutput = '', cleanArgs = {}, c
         payload.response._selection_guidance = {
           preferred_top_result: {
             short_form: bestSupplementalDoc.short_form || bestSupplementalDoc.shortForm || '',
-            label: bestSupplementalDoc.label || ''
+            label: getSearchDocName(bestSupplementalDoc)
           },
           reason: 'A supplemental class-biased VFB search found a matching FBbt neuron class; for neuron type/class questions prefer that over VFB individual neuron instances.'
         }
@@ -4170,7 +4187,7 @@ async function findPreferredNeuronClassForUserSymbol(client, symbol = '') {
 
   return {
     id: bestId,
-    label: best.label || bestId
+    label: getSearchDocName(best) || bestId
   }
 }
 
@@ -4182,12 +4199,10 @@ function userMessageSuggestsAnatomySymbol(userMessage = '') {
 
 function scoreSearchDocForAnatomySymbolQuestion(doc = {}, queryText = '', userMessage = '', originalIndex = 0) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const messageNorm = normalizeEndpointSearchText(userMessage)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   let score = -originalIndex / 1000
@@ -4238,7 +4253,7 @@ async function findPreferredAnatomyForUserSymbol(client, symbol = '', userMessag
 
   return {
     id: bestId,
-    label: best.label || bestId
+    label: getSearchDocName(best) || bestId
   }
 }
 
@@ -5081,10 +5096,10 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
           input: String(rawValue || ''),
           id: parentClassId,
           label: getReadableTermName(parentTermRecord, parentClassId),
-          match_label: individualDoc.label || individualId,
+          match_label: getSearchDocName(individualDoc) || individualId,
           resolved_from_individual: {
             id: individualId,
-            label: individualDoc.label || individualId
+            label: getSearchDocName(individualDoc) || individualId
           },
           term_info_text: parentTermInfoText,
           is_neuron_class: parentTermRecord ? isNeuronClassTerm(parentTermRecord) : true
@@ -5118,8 +5133,8 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
   return {
     input: String(rawValue || ''),
     id: bestId,
-    label: getReadableTermName(termRecord, bestDoc.label || bestId),
-    match_label: bestDoc.label || bestId,
+    label: getReadableTermName(termRecord, getSearchDocName(bestDoc) || bestId),
+    match_label: getSearchDocName(bestDoc) || bestId,
     term_info_text: termInfoText,
     is_neuron_class: termRecord ? isNeuronClassTerm(termRecord) : true
   }
@@ -6052,7 +6067,7 @@ async function findGeneticToolsTool(client, args = {}, context = {}) {
     if (bestId) {
       focusTerm = {
         id: bestId,
-        label: stripMarkdownLinkText(bestDoc?.label || bestId),
+        label: stripMarkdownLinkText(getSearchDocName(bestDoc) || bestId),
         query: focus,
         facets: getSearchDocFacets(bestDoc)
       }
