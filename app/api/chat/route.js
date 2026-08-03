@@ -23,7 +23,10 @@ import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSe
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
+import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
+import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
+import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
@@ -727,8 +730,14 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bVirtual Fly Brain \(VFB\) output\b/gi, 'VFB')
     .replace(/\bthe Virtual Fly Brain \(VFB\) output\b/gi, 'VFB')
     .replace(/\bThe Virtual Fly Brain \(VFB\) database was searched\b/gi, 'VFB was checked')
-    .replace(/\bThe Hemibrain dataset contains neurons that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
-    .replace(/\bThere are neurons in the Hemibrain dataset that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
+    // Sentence-anchored on purpose: this rule substitutes a whole sentence, so
+    // it must only fire where a sentence starts. See lib/sentenceRewrite.mjs —
+    // unanchored it also matched the same words as a subordinate clause inside
+    // a hedge and spliced a capitalised sentence into the middle of it.
+    .replace(
+      sentenceStart('(?:The Hemibrain dataset contains neurons that are|There are neurons in the Hemibrain dataset that are) morphologically similar to the fru\\+ mAL neurons described in light microscopy studies\\.[ \\t]*'),
+      '$1This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. '
+    )
     .replace(/\bcandidate fruitless mAL-related neuron classes\b/gi, 'fruitless mAL-related terms')
     .replace(/\bTherefore,\s*the final answer to the user's question is:\s*/gi, '')
     .replace(/\buse a different tool, such as VFB,\s*to find\b/gi, 'select a concrete VFB neuron or image candidate for')
@@ -1357,6 +1366,22 @@ function getToolConfig() {
         genes: {
           type: 'string',
           description: 'Optional: the genes or gene family to report, e.g. "dopamine receptors" or "Dop1R1, Dop2R". If omitted, the top-expressed genes are returned.'
+        }
+      },
+      required: ['neuron_type']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_similar_neurons',
+    description: 'Find neurons morphologically similar to a neuron type or a single registered neuron, using VFB\'s NBLAST scores. Use this for "what neurons are similar to X?", "what does X most resemble?", "NBLAST / NeuronBridge matches for X". VFB computes NBLAST per registered neuron, not per class, so for a cell type this seeds from its registered neurons and reports the similar cell types with their best scores.',
+    parameters: {
+      type: 'object',
+      properties: {
+        neuron_type: {
+          type: 'string',
+          description: 'Neuron-class label or ID, or a single registered neuron, e.g. "LPLC2", "FBbt_00111763", or "VFB_jrchk06p".'
         }
       },
       required: ['neuron_type']
@@ -3622,15 +3647,17 @@ function extractDocsFromSearchTermsPayload(rawPayload) {
   return docs
 }
 
-function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
+export function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  // The name and the matched string, not doc.label — see getSearchDocName. With
+  // the composite here the +220 exact-name bonus below could never be awarded to
+  // any document, and the synonym bonus was scoring an always-empty array, so
+  // every endpoint was chosen on token overlap and facet bumps alone.
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const querySingular = singularizeEndpointSearchText(queryNorm)
   const labelSingular = singularizeEndpointSearchText(labelNorm)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = Array.isArray(doc.facets_annotation)
     ? doc.facets_annotation.map(entry => String(entry || '').toLowerCase())
     : []
@@ -3668,7 +3695,7 @@ function scoreSearchDocForConnectivityEndpoint(doc = {}, queryText = '') {
   return score
 }
 
-function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
+export function pickBestConnectivityEndpointDoc(docs = [], queryText = '') {
   if (!Array.isArray(docs) || docs.length === 0) return null
 
   const fbbtDocs = docs.filter(doc => /^FBbt_\d{8}$/i.test(String(doc?.short_form || doc?.shortForm || '').trim()))
@@ -3712,6 +3739,72 @@ function getSearchDocFacets(doc = {}) {
     : []
 }
 
+// VFB's search does not return a term's NAME in `label`. It returns a display
+// string built from whichever string matched:
+//
+//   label "Kenyon cell (FBbt_00003686)"            original_label "Kenyon cell"
+//   label "Kenyon cell (ACA) (alpha/beta posterior Kenyon cell)"
+//                                     original_label "alpha/beta posterior Kenyon cell"
+//
+// — the matched string, then the term's own label in parentheses, or the term's
+// short_form when the matched string WAS the label. There is no `synonym` field
+// on these documents at all; the matched string is the only place the synonym
+// the user typed ever appears.
+//
+// Reading `label` as though it were the name means no exact-name test can ever
+// succeed: nothing is literally called "Kenyon cell (FBbt_00003686)". Every
+// caller then falls through to whatever token heuristic sits below, and the
+// parenthesised id contributes junk tokens ("fbbt", "00003686") to that too.
+export function getSearchDocName(doc = {}) {
+  return String(doc?.original_label || doc?.label || '').trim()
+}
+
+// Remove the FINAL balanced parenthetical. Scanning for the balance point rather
+// than the last "(" keeps labels that carry their own brackets intact — without
+// it "alpha/beta c(i) Kenyon cell (alpha/beta inner-core Kenyon cell)" would
+// yield the invented synonym "alpha/beta c".
+function stripTrailingParenthetical(text = '') {
+  const s = String(text || '').trim()
+  if (!s.endsWith(')')) return s
+  let depth = 0
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] === ')') depth++
+    else if (s[i] === '(') {
+      depth--
+      if (depth === 0) return s.slice(0, i).trim()
+    }
+  }
+  return s
+}
+
+// Every string OTHER than the name that this document could have been matched
+// on: any declared synonyms, and the string VFB says matched — the latter only
+// when it differs from the name, since otherwise the parenthetical held the
+// short_form, which is not something anyone types as a name.
+//
+// In practice the matched string is the whole of it. These documents carry no
+// `synonym` field at all, so the scorers' synonym bonuses were reading an empty
+// array; the display string is the only place a synonym ever appears.
+export function getSearchDocAltNames(doc = {}) {
+  const declared = Array.isArray(doc?.synonym) ? doc.synonym : (doc?.synonym ? [doc.synonym] : [])
+  const out = declared.map(s => String(s || '').trim()).filter(Boolean)
+  if (doc?.original_label && doc?.label) {
+    const matched = stripTrailingParenthetical(doc.label)
+    if (matched && matched.toLowerCase() !== String(doc.original_label).trim().toLowerCase()) out.push(matched)
+  }
+  return out
+}
+
+/** The name plus every alternative, for callers that just want "could this be it?". */
+function getSearchDocNames(doc = {}) {
+  const name = getSearchDocName(doc)
+  return (name ? [name] : []).concat(getSearchDocAltNames(doc))
+}
+
+/** Normalised name / alternatives, the shape the endpoint scorers work in. */
+const searchDocNameNorm = (doc) => normalizeEndpointSearchText(getSearchDocName(doc))
+const searchDocAltNamesNorm = (doc) => getSearchDocAltNames(doc).map(n => normalizeEndpointSearchText(n)).filter(Boolean)
+
 function looksLikeNeuronTypeQuestion(userMessage = '', queryText = '') {
   const text = normalizeEndpointSearchText(`${userMessage} ${queryText}`)
   if (!text) return false
@@ -3719,15 +3812,17 @@ function looksLikeNeuronTypeQuestion(userMessage = '', queryText = '') {
   return /\b(neuron type|cell type|type|class|what is known|where is it|connect|connects|connection|connections|function|input|inputs|output|outputs)\b/.test(text)
 }
 
-function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalIndex = 0) {
+export function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalIndex = 0) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  // getSearchDocName, not doc.label. The composite would also skew the shape
+  // tests below it: "Kenyon cells (gamma lobe) (gamma Kenyon cell)" contains
+  // "lobe" and not "neuron", so it takes the -100 neuropil penalty meant for
+  // regions, on a document that is a neuron class.
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const querySingular = singularizeEndpointSearchText(queryNorm)
   const labelSingular = singularizeEndpointSearchText(labelNorm)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   let score = -originalIndex / 1000
@@ -3758,9 +3853,9 @@ function scoreSearchDocForNeuronTypeQuestion(doc = {}, queryText = '', originalI
   return score
 }
 
-function isSearchDocProbableNeuronClass(doc = {}) {
+export function isSearchDocProbableNeuronClass(doc = {}) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const labelNorm = searchDocNameNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   if (facets.includes('deprecated') || facets.includes('individual')) return false
@@ -3805,7 +3900,9 @@ function reorderVfbSearchTermsPayload(payload, cleanArgs = {}, context = {}) {
   payload.response._selection_guidance = {
     preferred_top_result: {
       short_form: preferred.doc.short_form || preferred.doc.shortForm || '',
-      label: preferred.doc.label || ''
+      // The term's name, not the display string: this is read back out as the
+      // preferred label and ends up in prose.
+      label: getSearchDocName(preferred.doc)
     },
     reason: 'For neuron type/class questions, prefer FBbt neuron classes over VFB individual neuron instances or anatomy-only regions when the labels otherwise match.'
   }
@@ -3839,7 +3936,7 @@ function rememberPreferredTermSearch(context = {}, payload = {}, cleanArgs = {})
 
   state.lastTermSearch = {
     id,
-    label: stripMarkdownLinkText(doc?.label || id),
+    label: stripMarkdownLinkText(getSearchDocName(doc) || id),
     query: String(cleanArgs.query || '').trim(),
     facets: getSearchDocFacets(doc)
   }
@@ -3863,7 +3960,7 @@ async function findPreferredAnatomyTermForPhrase(client, phrase = '') {
       return facets.includes('anatomy') && !facets.includes('deprecated')
     })
     .map((doc, index) => {
-      const labelNorm = normalizeEndpointSearchText(doc.label || '')
+      const labelNorm = searchDocNameNorm(doc)
       let score = -index / 1000
       if (/^FBbt_\d{8}$/i.test(String(doc.short_form || doc.shortForm || ''))) score += 50
       if (labelNorm === queryNorm || labelNorm === `adult ${queryNorm}`) score += 200
@@ -3879,7 +3976,7 @@ async function findPreferredAnatomyTermForPhrase(client, phrase = '') {
 
   return {
     id,
-    label: stripMarkdownLinkText(best?.label || id),
+    label: stripMarkdownLinkText(getSearchDocName(best) || id),
     query,
     facets: getSearchDocFacets(best)
   }
@@ -3975,7 +4072,7 @@ async function postprocessVfbSearchTermsOutput(rawOutput = '', cleanArgs = {}, c
         payload.response._selection_guidance = {
           preferred_top_result: {
             short_form: bestSupplementalDoc.short_form || bestSupplementalDoc.shortForm || '',
-            label: bestSupplementalDoc.label || ''
+            label: getSearchDocName(bestSupplementalDoc)
           },
           reason: 'A supplemental class-biased VFB search found a matching FBbt neuron class; for neuron type/class questions prefer that over VFB individual neuron instances.'
         }
@@ -4115,7 +4212,7 @@ async function findPreferredNeuronClassForUserSymbol(client, symbol = '') {
 
   return {
     id: bestId,
-    label: best.label || bestId
+    label: getSearchDocName(best) || bestId
   }
 }
 
@@ -4127,12 +4224,10 @@ function userMessageSuggestsAnatomySymbol(userMessage = '') {
 
 function scoreSearchDocForAnatomySymbolQuestion(doc = {}, queryText = '', userMessage = '', originalIndex = 0) {
   const shortForm = String(doc.short_form || doc.shortForm || '').trim()
-  const labelNorm = normalizeEndpointSearchText(doc.label || '')
+  const labelNorm = searchDocNameNorm(doc)
   const queryNorm = normalizeEndpointSearchText(queryText)
   const messageNorm = normalizeEndpointSearchText(userMessage)
-  const synonyms = Array.isArray(doc.synonym)
-    ? doc.synonym.map(entry => normalizeEndpointSearchText(entry)).filter(Boolean)
-    : []
+  const synonyms = searchDocAltNamesNorm(doc)
   const facets = getSearchDocFacets(doc)
 
   let score = -originalIndex / 1000
@@ -4183,7 +4278,7 @@ async function findPreferredAnatomyForUserSymbol(client, symbol = '', userMessag
 
   return {
     id: bestId,
-    label: best.label || bestId
+    label: getSearchDocName(best) || bestId
   }
 }
 
@@ -5026,10 +5121,10 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
           input: String(rawValue || ''),
           id: parentClassId,
           label: getReadableTermName(parentTermRecord, parentClassId),
-          match_label: individualDoc.label || individualId,
+          match_label: getSearchDocName(individualDoc) || individualId,
           resolved_from_individual: {
             id: individualId,
-            label: individualDoc.label || individualId
+            label: getSearchDocName(individualDoc) || individualId
           },
           term_info_text: parentTermInfoText,
           is_neuron_class: parentTermRecord ? isNeuronClassTerm(parentTermRecord) : true
@@ -5063,8 +5158,8 @@ async function resolveComparisonUpstreamType(client, rawValue = '') {
   return {
     input: String(rawValue || ''),
     id: bestId,
-    label: getReadableTermName(termRecord, bestDoc.label || bestId),
-    match_label: bestDoc.label || bestId,
+    label: getReadableTermName(termRecord, getSearchDocName(bestDoc) || bestId),
+    match_label: getSearchDocName(bestDoc) || bestId,
     term_info_text: termInfoText,
     is_neuron_class: termRecord ? isNeuronClassTerm(termRecord) : true
   }
@@ -5997,7 +6092,7 @@ async function findGeneticToolsTool(client, args = {}, context = {}) {
     if (bestId) {
       focusTerm = {
         id: bestId,
-        label: stripMarkdownLinkText(bestDoc?.label || bestId),
+        label: stripMarkdownLinkText(getSearchDocName(bestDoc) || bestId),
         query: focus,
         facets: getSearchDocFacets(bestDoc)
       }
@@ -6263,9 +6358,17 @@ async function getRunQueryEvidence(client, id, queryType, limit = 8) {
   })
   const rows = extractRowsFromRunQueryPayload(outputText)
   const parsed = parseJsonPayload(outputText)
+  const rawCount = Number(parsed?.count)
+  const count = Number.isFinite(rawCount) ? rawCount : rows.length
   return {
     query_type: queryType,
-    count: Number.isFinite(Number(parsed?.count)) ? Number(parsed.count) : rows.length,
+    count,
+    // VFB reports -1 for a count it did not establish; never let that reach a
+    // model as a figure. count_status comes straight from the payload when the
+    // server supplied one (VFBquery 1.22.37+).
+    count_status: typeof parsed?.count_status === 'string' && parsed.count_status
+      ? parsed.count_status
+      : (count >= 0 ? 'exact' : 'unavailable'),
     preview_rows: rows.slice(0, limit).map(summarizeEvidenceRow)
   }
 }
@@ -7153,6 +7256,67 @@ async function getNeurotransmitterProfileTool(client, args = {}, context = {}) {
 // (anatScRNAseqQuery), then the per-gene expression table per cluster
 // (clusterExpression), and filters server-side to the genes the user asked about —
 // turning a ~450 KB-per-cluster payload into a compact, cited gene × cluster matrix.
+// Resolve a cell-type NAME to the class that actually carries scRNA-seq data.
+//
+// This macro used to borrow resolveComparisonUpstreamType, which is built for
+// connectivity endpoints: it filters to neurons, boosts has_neuron_connectivity
+// and then scores for the endpoint a connectivity query would want. Asked for
+// "Kenyon cell" it returned FBbt_00110931 (KCab-p) — a deep subtype with no
+// scRNA-seq — so the macro answered "VFB does not currently hold scRNA-seq
+// expression data for KCab-p" about Kenyon cells, for which VFB holds plenty
+// (FBbt_00003686 carries hasScRNAseq).
+//
+// What this macro wants is different and much simpler: the term the user NAMED,
+// and among equals the one flagged hasScRNAseq. Two searches, because VFB's
+// index does not stem multi-word phrases — "Kenyon cells" returns 51 subtype
+// documents with the general class absent entirely, while "Kenyon cell" returns
+// it at rank 6 — and then exact name first, never a rank-order guess.
+async function resolveScrnaseqTermId(client, requested = '') {
+  const queryText = String(requested || '').trim()
+  if (!queryText) return null
+
+  const searchOnce = async (q) => {
+    try {
+      return extractDocsFromSearchTermsPayload(await callVfbToolTextWithFallback(client, 'search_terms', { query: q, rows: 25, minimize_results: false }))
+    } catch {
+      return []
+    }
+  }
+  const docs = await searchOnce(queryText)
+  const singularQuery = singularizeEndpointSearchText(queryText)
+  if (singularQuery && singularQuery !== normalizeEndpointSearchText(queryText)) {
+    docs.push(...await searchOnce(singularQuery))
+  }
+
+  const classDocs = docs.filter(d => /^FBbt_\d{8}$/i.test(String(d?.short_form || d?.shortForm || '').trim()))
+  if (!classDocs.length) return null
+
+  const idOf = (d) => String(d.short_form || d.shortForm || '').trim()
+  const hasScrnaseq = (d) => getSearchDocFacets(d).includes('hasscrnaseq')
+  // getSearchDocNames, not d.label: the latter is VFB's display string for the
+  // match ("Kenyon cell (FBbt_00003686)"), which no user ever types, so testing
+  // it for an exact name can only ever fail.
+  const namesOf = (d) => getSearchDocNames(d).map(n => singularizeEndpointSearchText(n)).filter(Boolean)
+  const wanted = singularizeEndpointSearchText(queryText)
+  const exact = classDocs.filter(d => namesOf(d).includes(wanted))
+
+  // Exact name, preferring the one with data when a label and a synonym collide.
+  const exactWithData = exact.find(hasScrnaseq)
+  if (exactWithData) return idOf(exactWithData)
+  if (exact.length) return idOf(exact[0])
+
+  // No exact name. Take a flagged term only if it contains every word the user
+  // used, so "Kenyon cell" can reach a Kenyon cell subtype but never reaches an
+  // unrelated class that merely happens to sit high in the ranking.
+  const wantedWords = wanted.split(' ').filter(Boolean)
+  const contains = (d) => {
+    const labelWords = new Set(singularizeEndpointSearchText(getSearchDocName(d)).split(' ').filter(Boolean))
+    return wantedWords.length > 0 && wantedWords.every(w => labelWords.has(w))
+  }
+  const flagged = classDocs.find(d => hasScrnaseq(d) && contains(d))
+  return flagged ? idOf(flagged) : null
+}
+
 async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   const requested = String(args.neuron_type || '').trim()
   if (!requested) {
@@ -7165,8 +7329,16 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   if (/^FBbt_\d{8}$/i.test(id)) {
     const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
   } else {
-    const r = await resolveComparisonUpstreamType(client, requested)
-    if (r?.id) { id = r.id; label = r.label || requested; const ti = await getTermInfoEvidence(client, id); record = ti.record } else { id = '' }
+    // scRNAseq-aware resolution first; the connectivity resolver is the fallback
+    // for names it knows and this one does not (individuals, ">"-style endpoints).
+    const scrnaseqId = await resolveScrnaseqTermId(client, requested)
+    if (scrnaseqId) {
+      id = scrnaseqId
+      const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
+    } else {
+      const r = await resolveComparisonUpstreamType(client, requested)
+      if (r?.id) { id = r.id; label = r.label || requested; const ti = await getTermInfoEvidence(client, id); record = ti.record } else { id = '' }
+    }
   }
   if (!id) {
     return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_scrnaseq_gene_expression', recoverable: true })
@@ -7199,6 +7371,118 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
     has_scrnaseq: true,
     cluster_count: clusters.length,
     ...matrix
+  })
+}
+
+// How many registered neurons to seed NBLAST from, and how deep to read each
+// neighbourhood. Three seeds is enough that one atypical or partially-traced
+// neuron cannot carry the answer on its own, and few enough that the tool stays
+// three parallel calls. 100 rows covers LPLC2's whole neighbourhood (131) and is
+// well past the point where the tail stops naming new cell types.
+// NBLAST registration is per-DATASET: of LPLC2's five source datasets, three
+// carry similarity scores and the two newest (MaleCNS/Berg2025, BANC/Bates2025)
+// carry none. So a candidate is PROBED, not trusted — we spread a slightly wider
+// pool across datasets, run them all, and report from whichever came back with a
+// neighbourhood. Probing costs one round of parallel calls, which is what a
+// fixed seed list cost anyway; guessing instead would answer "no similarity data
+// for LPLC2", which is false about the class.
+const SIMILARITY_SEED_CAP = 3
+const SIMILARITY_PROBE_CAP = 5
+const SIMILARITY_ROW_LIMIT = 100
+
+async function findSimilarNeuronsTool(client, args = {}, context = {}) {
+  const requested = String(args.neuron_type || args.focus || '').trim()
+  if (!requested) {
+    return JSON.stringify({ error: 'vfb_find_similar_neurons requires neuron_type.', tool: 'vfb_find_similar_neurons', recoverable: true })
+  }
+
+  // Resolve to an id. An individual (VFB_…) is used as its own seed; a class
+  // (FBbt_…) has to be hopped through its registered individuals, because VFB
+  // computes NBLAST per neuron and returns count 0 for a class.
+  let id = sanitizeVfbId(requested)
+  let label = requested
+  if (!/^(FBbt_\d+|VFB_\w+)$/i.test(id)) {
+    const r = await resolveComparisonUpstreamType(client, requested)
+    id = r?.id || ''
+    label = r?.label || requested
+  }
+  if (!id) {
+    return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_find_similar_neurons', recoverable: true })
+  }
+  if (label === requested || /^(FBbt_|VFB_)/i.test(label)) {
+    try {
+      const ti = await getTermInfoEvidence(client, id)
+      label = getReadableTermName(ti.record, id) || label
+    } catch { /* the id is answer enough if term-info is unavailable */ }
+  }
+
+  const isClass = /^FBbt_/i.test(id)
+  let candidates = []
+  if (isClass) {
+    // Hop 1: the class's registered individuals. The full list is fetched (limit
+    // 0 = unlimited) rather than a first page, because the rows come back grouped
+    // by dataset and a page would only ever see the dataset that sorts first —
+    // for LPLC2 that is 185 MaleCNS neurons, none of them NBLAST-registered.
+    try {
+      const images = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+        id, query_type: 'ListAllAvailableImages', limit: 0
+      }))
+      candidates = pickSeedIndividuals(images, { classId: id, cap: SIMILARITY_PROBE_CAP })
+    } catch { candidates = [] }
+    if (!candidates.length) {
+      return JSON.stringify({
+        tool: 'vfb_find_similar_neurons',
+        resolved: { id, label },
+        seed_neurons: [],
+        similar_classes: [],
+        note: `VFB holds no registered ${label} neuron to compare morphologies from, so NBLAST similarity cannot be computed for this class.`
+      })
+    }
+  } else {
+    candidates = [{ id, label }]
+  }
+
+  // Hop 2: one NBLAST neighbourhood per candidate, in parallel — the calls are
+  // independent and the slowest one sets the latency either way. A candidate
+  // whose dataset carries no NBLAST simply returns nothing and drops out.
+  const perSeed = await Promise.all(candidates.map(async seed => {
+    try {
+      const payload = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+        id: seed.id, query_type: 'SimilarMorphologyTo', limit: SIMILARITY_ROW_LIMIT
+      }))
+      return parseSimilarityHits(payload, { seed })
+    } catch { return [] }
+  }))
+  const used = candidates.filter((_, i) => perSeed[i].length > 0).slice(0, SIMILARITY_SEED_CAP)
+  const keep = new Set(used.map(s => s.id))
+  const hits = perSeed.flat().filter(h => keep.has(h.seedId) || !isClass)
+  if (!hits.length) {
+    // Name the datasets tried. "No NBLAST neighbours for LPLC2" would read as a
+    // statement about the cell type when it is a statement about which
+    // connectomes have been NBLAST-registered so far.
+    const tried = [...new Set(candidates.map(s => s.dataset).filter(Boolean))]
+    return JSON.stringify({
+      tool: 'vfb_find_similar_neurons',
+      resolved: { id, label },
+      seed_neurons: candidates,
+      similar_classes: [],
+      note: `VFB returned no NBLAST neighbours for the registered ${label} neurons tried${tried.length ? ` (from ${tried.join('; ')})` : ''}, so morphological similarity cannot be scored for this cell type from the data currently registered.`
+    })
+  }
+
+  const grouped = groupSimilarByClass(hits, { focusId: isClass ? id : '', seedIds: used.map(s => s.id) })
+  return JSON.stringify({
+    tool: 'vfb_find_similar_neurons',
+    resolved: { id, label },
+    seed_neurons: used,
+    neurons_compared: grouped.neurons,
+    self_class: grouped.self,
+    similar_classes: grouped.others.slice(0, 12),
+    top_neurons: [...hits]
+      .sort((a, b) => b.score - a.score)
+      .filter((h, i, arr) => arr.findIndex(x => x.id === h.id) === i)
+      .slice(0, 10)
+      .map(h => ({ id: h.id, name: h.name, score: h.score, type: h.classes.map(c => c.text).join('; ') }))
   })
 }
 
@@ -7306,6 +7590,32 @@ async function summarizeRegionConnectionsTool(client, args = {}, context = {}) {
   ]
     .map(queryName => summarizeQueryEntry(getTermQueryEntry(region.term_record, [queryName]), limit))
     .filter(Boolean)
+
+  // A region's term-info previews are routinely UNPOPULATED — preview_results.rows
+  // empty and count -1 with status 'pending', which means "this query has not been
+  // run yet", not "there are no rows". medulla is the canonical example: every one
+  // of its twelve previews is empty, yet NeuronsPresynapticHere returns 262 rows the
+  // moment it is actually run. An empty preview reads to a model exactly like an
+  // absence, and it leaves the deterministic region-graph builder with nothing to
+  // draw. So run the two queries that carry the region's connectivity when their
+  // previews came back empty. Bounded to those two: they are what the answer and the
+  // graph are made of, and each costs one extra MCP round.
+  const REGION_CONNECTIVITY_BACKFILL_QUERIES = ['NeuronsPresynapticHere', 'NeuronsPostsynapticHere']
+  for (const summary of focusQuerySummaries) {
+    if (!REGION_CONNECTIVITY_BACKFILL_QUERIES.includes(summary.query_type)) continue
+    if (Array.isArray(summary.preview_rows) && summary.preview_rows.length) continue
+    try {
+      const live = await getRunQueryEvidence(client, region.id, summary.query_type, limit)
+      if (!live || !Array.isArray(live.preview_rows) || !live.preview_rows.length) continue
+      summary.preview_rows = live.preview_rows
+      summary.count = live.count
+      summary.count_status = live.count_status
+      delete summary.count_note
+      summary.source = 'run_query (term-info preview was not populated)'
+    } catch {
+      // A failed backfill leaves the preview summary exactly as it was.
+    }
+  }
 
   const relatedEvidence = []
   const majorInputs = []
@@ -8357,6 +8667,11 @@ async function executeFunctionTool(name, args, context = {}) {
     return scrnaseqGeneExpressionTool(client, normalizedArgs, context)
   }
 
+  if (name === 'vfb_find_similar_neurons') {
+    const client = await getMcpClientForContext('vfb', context)
+    return findSimilarNeuronsTool(client, normalizedArgs, context)
+  }
+
   if (name === 'vfb_summarize_region_connections') {
     const client = await getMcpClientForContext('vfb', context)
     return summarizeRegionConnectionsTool(client, normalizedArgs, context)
@@ -8529,7 +8844,12 @@ async function executeFunctionTool(name, args, context = {}) {
         )
       }
 
-      const queryValidationError = await validateVfbRunQueryTypes({ client, cleanArgs, userMessage: context.userMessage || '' })
+      const queryValidationError = await validateVfbRunQueryTypes({
+        client,
+        cleanArgs,
+        userMessage: context.userMessage || '',
+        fromHarness: Boolean(context.fromHarness)
+      })
       if (queryValidationError) return queryValidationError
     }
 
@@ -8673,6 +8993,14 @@ async function executeFunctionTool(name, args, context = {}) {
       // need the retired-facet sanitiser (see UNSUPPORTED_VFB_SEARCH_FACETS).
       // This is the executor the role-loop harness uses, so a rejected search
       // here meant no term ever resolved.
+      // The args as they leave this process, after every normaliser, repair and
+      // override above has had a go at them. Off unless VFB_HARNESS_TRACE=true.
+      // Worth its keep: the #79 list-question defect was a query_type the caller
+      // never asked for, and no other log showed the difference between the
+      // requested args and the sent ones.
+      if (process.env.VFB_HARNESS_TRACE === 'true') {
+        try { console.log('[VFBchat] MCPARGS', mcpName, JSON.stringify(mcpArgs)) } catch {}
+      }
       const outputText = await callVfbToolTextWithFallback(client, mcpName, mcpArgs, {
         budget: getForceRefreshBudget(context)
       })
@@ -9022,7 +9350,54 @@ async function getAvailableVfbQueryTypesForTerm(client, termId = '') {
   }
 }
 
-async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = '' }) {
+// Spatial query types that the taxonomy override is allowed to replace. Anything
+// outside this set is left alone whatever the wording looks like.
+const TAXONOMY_OVERRIDABLE_QUERY_KEYS = new Set([
+  'neuronsparthere', 'neuronssynaptic', 'neuronspresynaptichere',
+  'neuronspostsynaptichere', 'partsof', 'componentsof'
+])
+
+/**
+ * Decide whether a run_query query_type should be replaced by a taxonomy query
+ * (SubclassesOf / PartsOf / ComponentsOf) inferred from the user's wording.
+ * Returns the replacement query_type, or null to leave the caller's choice alone.
+ *
+ * This is a guess made from WORDING, and it exists for the legacy relay loop,
+ * where the model picks a query_type freehand and often picks a spatial one for a
+ * "what types are there" question. The role harness does not guess:
+ * injectIntentQuerySteps reads the term's own Queries[] catalogue and picks
+ * deterministically, so rewriting its choice replaces evidence with a keyword
+ * hunch. Hence the fromHarness veto.
+ *
+ * That veto is not hypothetical. "List the neuron types that have some part in
+ * the medulla" contains "neuron types", so isTaxonomyStyleQuestion matched, and
+ * the harness's NeuronsPartHere (471 rows) was rewritten to SubclassesOf on
+ * FBbt_00003748 — a region, which has no subclasses. The query returned count 0,
+ * the list branch in runStep found no rows to name, and the user was told to go
+ * and run the query themselves. The rewrite, not the routing, was the whole
+ * defect.
+ */
+export function pickTaxonomyQueryTypeOverride({
+  currentQueryType = '',
+  availableQueryTypes = [],
+  userMessage = '',
+  fromHarness = false
+} = {}) {
+  if (fromHarness) return null
+  // An explicitly named query type is an instruction, not a hint — never override it.
+  if (extractRequestedVfbQueryShortNames(userMessage).length > 0) return null
+  if (!isTaxonomyStyleQuestion(userMessage)) return null
+
+  const currentKey = normalizeQueryTypeComparisonKey(currentQueryType)
+  if (!TAXONOMY_OVERRIDABLE_QUERY_KEYS.has(currentKey)) return null
+
+  const preferred = chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf'])
+  if (!preferred) return null
+  if (normalizeQueryTypeComparisonKey(preferred) === currentKey) return null
+  return preferred
+}
+
+async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = '', fromHarness = false }) {
   const candidates = []
 
   if (Array.isArray(cleanArgs.queries)) {
@@ -9061,16 +9436,14 @@ async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = 
     }
 
     const availableQueryTypes = availableById.get(candidate.id) || []
-    const explicitQueryTypes = extractRequestedVfbQueryShortNames(userMessage)
-    const preferredTaxonomyQueryType = explicitQueryTypes.length === 0 && isTaxonomyStyleQuestion(userMessage)
-      ? chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf'])
-      : null
 
-    if (
-      preferredTaxonomyQueryType &&
-      normalizeQueryTypeComparisonKey(candidate.query_type) !== normalizeQueryTypeComparisonKey(preferredTaxonomyQueryType) &&
-      ['neuronsparthere', 'neuronssynaptic', 'neuronspresynaptichere', 'neuronspostsynaptichere', 'partsof', 'componentsof'].includes(normalizeQueryTypeComparisonKey(candidate.query_type))
-    ) {
+    const preferredTaxonomyQueryType = pickTaxonomyQueryTypeOverride({
+      currentQueryType: candidate.query_type,
+      availableQueryTypes,
+      userMessage,
+      fromHarness
+    })
+    if (preferredTaxonomyQueryType) {
       candidate.query_type = preferredTaxonomyQueryType
       if (typeof candidate.setQueryType === 'function') candidate.setQueryType(preferredTaxonomyQueryType)
     }
@@ -10797,7 +11170,12 @@ async function requestNoToolFallbackResponse({
 
 // Stream a tool-free synthesis completion, emitting `delta` events so the answer
 // types out in the UI, and return the full text. Captures the upstream response id.
-async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId }) {
+async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId, sourceQuotes }) {
+  // Fenced code blocks are held until their closing fence and released closed —
+  // the synthesiser re-indents a copied configuration often enough to lose its
+  // last brace, and a streamed answer has no afterwards in which to fix that.
+  // Inert outside a fence, and outside blocks that came from the documentation.
+  const fences = createFenceRepairer(sourceQuotes)
   let res
   try {
     res = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
@@ -10814,6 +11192,7 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
     const text = await res.text().catch(() => '')
     let content = ''
     try { content = JSON.parse(text)?.choices?.[0]?.message?.content || '' } catch { content = '' }
+    if (content) content = fences.push(content) + fences.flush()
     if (content) sendEvent('delta', { text: content })
     return content
   }
@@ -10838,10 +11217,15 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
         const obj = JSON.parse(payload)
         if (!idSent && obj.id && onResponseId) { onResponseId(obj.id); idSent = true }
         const delta = obj?.choices?.[0]?.delta?.content || obj?.choices?.[0]?.message?.content || ''
-        if (delta) { full += delta; sendEvent('delta', { text: delta }) }
+        // `full` accumulates what was EMITTED, not what arrived, so the answer
+        // returned for linking and sanitising is the same text the reader saw.
+        const out = delta ? fences.push(delta) : ''
+        if (out) { full += out; sendEvent('delta', { text: out }) }
       } catch { /* keep-alive or partial chunk */ }
     }
   }
+  const tail = fences.flush()
+  if (tail) { full += tail; sendEvent('delta', { text: tail }) }
   return full
 }
 
@@ -10924,8 +11308,8 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         if (typeof out === 'string') { try { parsed = JSON.parse(out) } catch { parsed = null } }
         return buildConnectivityGraphs(parsed).map(normalizeGraphSpec).filter(Boolean)
       },
-      streamText: ({ messages, model }) => streamSynthCompletion({
-        messages, model, apiBaseUrl, apiKey, sendEvent,
+      streamText: ({ messages, model, sourceQuotes }) => streamSynthCompletion({
+        messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes,
         onResponseId: (id) => { if (!responseId) responseId = id }
       }),
       onStatus: (status) => sendEvent('status', status),
@@ -10962,6 +11346,23 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // entities in each digest) — are NOT leaks. Stripping them deleted the
     // user's own identifier mid-sentence ("the VFB ID of is AL.MB_CA.83") and
     // made the "…and list the VFB IDs" instruction impossible to satisfy.
+    // Post-mortem diagnostic, off unless VFB_HARNESS_TRACE=true. When an answer
+    // is wrong the two things worth knowing are which actions the controller
+    // chose (trace) and what each step ended up asking for and whether it was
+    // answered (plan). Together with the MCPARGS line in executeFunctionTool
+    // these localise a defect to routing, execution or synthesis in one run —
+    // which is how #79 was finally pinned on a query_type rewrite. No user text
+    // and no tool payloads are logged, only step metadata.
+    if (process.env.VFB_HARNESS_TRACE === 'true') {
+      try { console.log('[VFBchat] HARNESS TRACE', JSON.stringify(live.trace)) } catch {}
+      try { console.log('[VFBchat] HARNESS PLAN', JSON.stringify((live.ledger?.plan || []).map(s => ({ id: s.id, tool: s.tool, status: s.status, args: s.args, note: s.note })))) } catch {}
+      // The third thing worth knowing when an answer looks wrong: what the
+      // deterministic linkifiers had to work with. A name that stayed unlinked in
+      // the prose is either absent from termLinks (nothing registered it) or
+      // present and not matched (the model wrote it differently) — and those two
+      // have completely different fixes.
+      try { console.log('[VFBchat] HARNESS LINKS', JSON.stringify({ terms: (live.termLinks || []).length, names: (live.termLinks || []).slice(0, 8).map(t => t.name), counts: (live.countLinks || []).length })) } catch {}
+    }
     const groundedIds = collectGroundedIds(userMessage, live.ledger)
     const leakedIds = findLeakedIds(rawAnswerText, groundedIds)
     const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText, groundedIds) : rawAnswerText

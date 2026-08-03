@@ -101,6 +101,157 @@ test('normalizePlan: bad intent → other; dedupes step ids; drops toolless step
   assert.notEqual(p.steps[0].id, p.steps[1].id)
 })
 
+test('normalizePlan: "what specific aspect" is an abstention, not a clarification', () => {
+  // Both of these are verbatim from the task battery. "How do I use the VFB MCP
+  // tool?" and "What was included in the latest VFB release?" each came back
+  // underspecified, and underspecified ALSO suppresses the concurrent doc search
+  // — so the two questions most obviously answerable from documentation were the
+  // two that never looked at any. Vetoing the flag drops them into the
+  // controller's documentation escalation instead.
+  for (const q of [
+    'What specific aspect of the latest Virtual Fly Brain release are you interested in?',
+    'What specific aspect of the Virtual Fly Brain Model Context Protocol tool do you need help with?',
+    'Which parts of the 3D viewer do you mean?',
+    'Could you be more specific?',
+    'What kind of information are you looking for?',
+    // D5, verbatim: "How do I report a problem or contribute data to VFB?" is
+    // a whole question already. The same stall in a different noun.
+    'What specific type of problem or data are you trying to report or contribute to Virtual Fly Brain?',
+    'What sort of help do you need?'
+  ]) {
+    const p = normalizePlan({ intent: 'documentation', underspecified: true, clarifying_question: q, steps: [] })
+    assert.equal(p.underspecified, false, q)
+    assert.equal(p.clarifying_question, '', q)
+  }
+})
+
+test('normalizePlan: a question about VFB itself is never clarified', () => {
+  // The stalls kept arriving in new grammar. This one offers a choice between
+  // the two halves of a question that had already asked for both, so it slips
+  // past a phrasing rule anchored on "what"/"which" — but a documentation
+  // question always has something to do, and clarifying suppresses the doc
+  // search on top of costing a turn.
+  const q = 'Are you looking to report a problem with Virtual Fly Brain or contribute new data?'
+  const p = normalizePlan({ intent: 'documentation', underspecified: true, clarifying_question: q, steps: [] })
+  assert.equal(p.underspecified, false)
+  assert.equal(p.clarifying_question, '')
+
+  // The same question under an intent that can genuinely be blocked on a name.
+  const q2 = normalizePlan({ intent: 'term_info', underspecified: true, clarifying_question: 'Which neuron do you mean?', steps: [] })
+  assert.equal(q2.underspecified, true)
+})
+
+test('normalizePlan: a how-to question is never clarified, whatever the intent', () => {
+  // Verbatim, and the clarify it came back with. The intent veto did not fire:
+  // "Claude" reads as an entity name, so this was not classified as a
+  // documentation question — and the clarification asks the user to define a
+  // word the question had just used.
+  const q = 'How do I connect Claude to the Virtual Fly Brain MCP server?'
+  const asked = 'What is Claude in the context of Virtual Fly Brain?'
+  const p = normalizePlan({ intent: 'term_info', underspecified: true, clarifying_question: asked, steps: [] }, q)
+  assert.equal(p.underspecified, false)
+  assert.equal(p.clarifying_question, '')
+
+  for (const howTo of [
+    'How can we install vfb-connect?',
+    'How to cite Virtual Fly Brain',
+    'What is the best way to download a neuron mesh?',
+    'What are the steps to load a scene in the 3D viewer?'
+  ]) {
+    const r = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: asked, steps: [] }, howTo)
+    assert.equal(r.underspecified, false, howTo)
+  }
+})
+
+test('normalizePlan: the how-to veto reads the question, not the clarification', () => {
+  // A question that is not a how-to keeps a clarification that names what is
+  // missing, even though the clarification itself would read as one.
+  const p = normalizePlan(
+    { intent: 'term_info', underspecified: true, clarifying_question: 'Which neuron do you mean?', steps: [] },
+    'Show me the inputs to it.'
+  )
+  assert.equal(p.underspecified, true)
+
+  // And with no question threaded in at all — the eight older call sites — the
+  // veto is simply absent rather than firing on an empty string.
+  const q = normalizePlan({ intent: 'term_info', underspecified: true, clarifying_question: 'Which dataset?', steps: [] })
+  assert.equal(q.underspecified, true)
+})
+
+test('normalizePlan: the LLM client at the other end is not a term to resolve', () => {
+  // VFB's search for "Claude" returns a FAFB neuron whose matched synonym is
+  // "LHPV5d3#1 5807250 Jean-Claude ARJ" — the tracer's name in the annotation.
+  // The resolver cannot tell those apart lexically, so the name is dropped here.
+  const p = normalizePlan({
+    intent: 'documentation',
+    terms_to_resolve: ['Claude', 'Claude Desktop', 'ChatGPT', 'Gemini', 'VS Code', 'Virtual Fly Brain MCP', 'lateral horn neuron'],
+    steps: []
+  }, 'How do I connect Claude to the Virtual Fly Brain MCP server?')
+  assert.deepEqual(p.terms_to_resolve, ['lateral horn neuron'])
+})
+
+test('normalizePlan: a real term is not mistaken for a client name', () => {
+  // The client list is anchored whole-string, so a term that merely contains one
+  // of those words survives. "Claude" the tracer is why this matters: the point
+  // is to drop the software, not every neuron a person's name touches.
+  const p = normalizePlan({
+    intent: 'term_info',
+    terms_to_resolve: ['cursor neuron', 'gemini gene', 'LHPV5d3#1'],
+    steps: []
+  }, 'What is a cursor neuron?')
+  assert.deepEqual(p.terms_to_resolve, ['cursor neuron', 'gemini gene', 'LHPV5d3#1'])
+})
+
+test('normalizePlan: a clarification that names the missing ENTITY survives', () => {
+  for (const q of [
+    'Which neuron do you mean?',
+    'Which dataset should I compare against?',
+    'What is the name of the neuron you are asking about?',
+    // The noun is what separates a stall from a real question: "what kind of
+    // problem" is a stall, "what kind of neuron" names the thing that is missing.
+    'What kind of neuron are you asking about?'
+  ]) {
+    const p = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: q, steps: [] })
+    assert.equal(p.underspecified, true, q)
+    assert.equal(p.clarifying_question, q, q)
+  }
+})
+
+test('normalizePlan: the VFB service itself is not a term to resolve', () => {
+  // VFB's ontology holds fly anatomy; it does not hold "Virtual Fly Brain".
+  // Asking anyway returned VFB_SYMBOL for the release question and nothing at all
+  // for the MCP one, and the latter turned the whole answer into "the name could
+  // not be matched to a VFB term".
+  const p = normalizePlan({
+    intent: 'documentation', underspecified: false,
+    terms_to_resolve: [
+      'Virtual Fly Brain',
+      'the VFB website',
+      'Virtual Fly Brain Model Context Protocol (MCP)',
+      'VFB-connect',
+      'mushroom body'
+    ],
+    steps: []
+  })
+  assert.deepEqual(p.terms_to_resolve, ['mushroom body'])
+})
+
+test('normalizePlan: a real term that merely mentions VFB is kept', () => {
+  const p = normalizePlan({
+    intent: 'term_info', underspecified: false,
+    terms_to_resolve: ['VFB_00101567', 'Kenyon cell', 'adult brain template'],
+    steps: []
+  })
+  assert.deepEqual(p.terms_to_resolve, ['VFB_00101567', 'Kenyon cell', 'adult brain template'])
+})
+
+test('normalizePlan: underspecified with no question to ask is dropped', () => {
+  // The controller needs both to clarify, so keeping the flag alone would only
+  // suppress the doc search and then fall through unanswered anyway.
+  const p = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: '   ', steps: [] })
+  assert.equal(p.underspecified, false)
+})
+
 test('buildPlannerMessages: includes question + catalogue, instructs not to answer', () => {
   const m = buildPlannerMessages('what connects to DA1?', [{ name: 'vfb_query_connectivity', purpose: 'class-to-class connectivity' }])
   assert.match(m[0].content, /Do NOT answer/)

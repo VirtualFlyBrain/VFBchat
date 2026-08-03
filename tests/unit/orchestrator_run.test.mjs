@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -249,6 +249,64 @@ test('count question: auto-runs the individual-image query and reports the count
   assert.match(claims, /226,524 images/)
 })
 
+test('list question: names the returned rows deterministically, never the extractor', async () => {
+  // The exact failing case: "Which neurons are presynaptic in the medulla? List
+  // them." ran NeuronsPresynapticHere, got a page of rows, and answered "Running
+  // the query … would provide the list of neurons" — the weak extractor
+  // describing the query instead of reading it. The rows must be read in code.
+  //
+  // Note every preview here is EMPTY with count -1: that is medulla's real
+  // term-info shape, and it is why the result table was blank too.
+  const termInfo = {
+    Name: 'medulla', Id: 'FBbt_00003748',
+    SuperTypes: ['Class', 'Anatomy', 'Synaptic_neuropil'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Optic-lobe neuropil.' },
+    Queries: [
+      { query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in medulla', count: -1, preview_results: { rows: [] } }
+    ],
+    Publications: []
+  }
+  const names = ['Dm8b', 'Mi1', 'Tm3', 'L1', 'T4a']
+  const plan = { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // If the extractor is ever consulted for this step, it produces the exact
+      // useless answer we are fixing — so a passing test proves it was bypassed.
+      extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'Running the query would provide the list of neurons.', verbatim: '' } })
+    },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({
+        count: 262, count_status: 'exact', headers: {},
+        rows: names.map((n, i) => ({ id: `FBbt_0011006${i}`, label: `[${n}](FBbt_0011006${i})`, tags: 'Adult|Neuron' }))
+      })
+    }
+  })
+  const r = await runHarness('Which neurons are presynaptic in the medulla? List them.', deps)
+  const ran = deps.calls.tools.filter(t => t.name === 'vfb_run_query').map(t => t.args.query_type)
+  assert.deepEqual(ran, ['NeuronsPresynapticHere'], 'the list question must run exactly the presynaptic query')
+  // Judge only the evidence the run_query step produced: other steps legitimately
+  // go through the (here, deliberately useless) extractor.
+  const fromQuery = r.ledger.evidence.filter(e => e.tool === 'vfb_run_query').map(e => e.claim)
+  assert.equal(fromQuery.length, 1)
+  const claim = fromQuery[0]
+  assert.ok(!/would provide the list/.test(claim), `extractor answer leaked through: ${claim}`)
+  assert.match(claim, /262 results/)
+  for (const n of names) assert.ok(claim.includes(n), `expected ${n} to be named, got: ${claim}`)
+  assert.match(claim, /Dm8b \(FBbt_00110060\)/, 'ids must be named alongside the labels')
+
+  // …and the run must have been folded back into the digest, so the result table
+  // has something to render for a query whose preview came back empty.
+  const q = Object.values(r.ledger.terms).find(t => t.digest)?.digest.queries
+    .find(x => x.query_type === 'NeuronsPresynapticHere')
+  assert.ok(q, 'the query should still be in the digest')
+  assert.equal(q.previewRows.length, names.length)
+  assert.equal(q.countKind, 'exact')
+  assert.equal(q.count, 262)
+})
+
 test('pickBestTermId prefers exact synonym/label over the first fuzzy hit', () => {
   // "DAN" must bind to dopaminergic neuron (which carries the synonym), not the
   // first fuzzy result (mushroom body) — the bug seen live.
@@ -422,6 +480,407 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
+test('a step that ANSWERED suppresses the AVAILABLE VFB DATA fallback', async () => {
+  // The block is a rescue for a thin ledger. Supplied alongside a real answer, the
+  // system prompt's "point to the follow-up queries" appends the query catalogue
+  // as a tail — which is the read-back defect, re-entering through the back door.
+  // The follow-ons are already shown as chips beside the answer.
+  const plan = {
+    intent: 'neuron_profile', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['LPLC2'],
+    steps: [{ id: 's1', tool: 'vfb_find_similar_neurons', answers: ['x'], args: { neuron_type: 'LPLC2' } }]
+  }
+  let synthMessages = null
+  const deps = makeDeps({ plan })
+  deps.toolDefs = [...TOOL_DEFS, { name: 'vfb_find_similar_neurons', purpose: 'nblast', parameters: { type: 'object', required: ['neuron_type'], properties: { neuron_type: { type: 'string' } } } }]
+  const base = deps.runTool
+  deps.runTool = async (name, args) => {
+    if (name === 'vfb_get_term_info') return { Name: 'LPLC2', Id: 'FBbt_00111763',
+      Queries: [{ query: 'ListAllAvailableImages', label: 'Images of LPLC2', count: 723, preview_results: { rows: [] } }] }
+    if (name === 'vfb_search_terms') return { response: { docs: [{ short_form: 'FBbt_00111763', label: 'LPLC2' }] } }
+    if (name === 'vfb_find_similar_neurons') {
+      return { tool: 'vfb_find_similar_neurons', resolved: { id: 'FBbt_00111763', label: 'LPLC2' },
+        seed_neurons: [{ id: 'VFB_jrchk06p', label: 'LPLC2_R' }], neurons_compared: 100,
+        self_class: { id: 'FBbt_00111763', label: 'LPLC2', neurons: 69, bestScore: 0.8 },
+        similar_classes: [{ id: 'FBbt_00003874', label: 'lobula columnar neuron LC4', neurons: 30, bestScore: 0.46 }] }
+    }
+    return base(name, args)
+  }
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What neurons are similar to LPLC2?', deps)
+  assert.ok(synthMessages, 'synth ran')
+  assert.ok(!/AVAILABLE VFB DATA/.test(synthMessages[1].content), synthMessages[1].content.slice(0, 400))
+})
+
+test('a planner-chosen similarity step still gets the deterministic claim', async () => {
+  // The injector sets step.similarity_query, but the planner picks this tool from
+  // the catalogue on its own. That step used to reach the generic macro branch,
+  // which read seed_neurons as the answer and reported the neurons compared FROM
+  // as the neurons LPLC2 is similar TO — backwards, and confidently so.
+  const plan = {
+    intent: 'neuron_profile', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['LPLC2'],
+    steps: [{ id: 's1', tool: 'vfb_find_similar_neurons', answers: ['x'], args: { neuron_type: 'LPLC2' } }]
+  }
+  let synthMessages = null
+  const deps = makeDeps({ plan })
+  deps.toolDefs = [...TOOL_DEFS, { name: 'vfb_find_similar_neurons', purpose: 'nblast', parameters: { type: 'object', required: ['neuron_type'], properties: { neuron_type: { type: 'string' } } } }]
+  const base = deps.runTool
+  deps.runTool = async (name, args) => {
+    if (name === 'vfb_search_terms') return { response: { docs: [{ short_form: 'FBbt_00111763', label: 'LPLC2' }] } }
+    if (name === 'vfb_get_term_info') return { Name: 'LPLC2', Id: 'FBbt_00111763', Queries: [] }
+    if (name === 'vfb_find_similar_neurons') {
+      return { tool: 'vfb_find_similar_neurons', resolved: { id: 'FBbt_00111763', label: 'LPLC2' },
+        seed_neurons: [{ id: 'VFB_jrchk06p', label: 'LPLC2_R' }], neurons_compared: 100,
+        self_class: { id: 'FBbt_00111763', label: 'LPLC2', neurons: 69, bestScore: 0.8 },
+        similar_classes: [{ id: 'FBbt_00003874', label: 'lobula columnar neuron LC4', neurons: 30, bestScore: 0.46 }] }
+    }
+    return base(name, args)
+  }
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What neurons are similar to LPLC2?', deps)
+  const ev = synthMessages[1].content
+  assert.match(ev, /computed per registered neuron, not per class/)
+  assert.match(ev, /lobula columnar neuron LC4/)
+})
+
+// --- unmatched names must not become false absences -------------------------
+
+// Shared setup: a name the picker refuses to bind. "MBON-a1" shares no token
+// with the spelled-out labels VFB returns, so pickBestTermId abstains — and
+// before this fix the search result was discarded, the ledger stayed empty, and
+// NEVER OVERCLAIM turned that emptiness into "VFB does not currently hold data
+// on MBON-a1" about a term VFB very much holds under another name.
+function unmatchedDeps(docs) {
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['MBON-a1'], steps: []
+  }
+  return makeDeps({ plan, tools: { vfb_search_terms: () => ({ response: { docs } }) } })
+}
+
+test('an unmatched name reaches the synthesiser as a failed lookup, with the candidates VFB offered', async () => {
+  const deps = unmatchedDeps([
+    { short_form: 'FBbt_00100234', label: 'mushroom body output neuron' },
+    { short_form: 'FBbt_00100235', label: 'adult mushroom body' }
+  ])
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  const r = await runHarness('What is MBON-a1?', deps)
+  assert.equal(r.ledger.terms['MBON-a1'].id, null, 'the term stayed unresolved')
+  assert.deepEqual(r.ledger.terms['MBON-a1'].candidates,
+    ['mushroom body output neuron', 'adult mushroom body'], 'the near misses were kept')
+  assert.ok(synthMessages, 'synth ran')
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /"MBON-a1" — not matched automatically/)
+  assert.match(prompt, /mushroom body output neuron; adult mushroom body/)
+  // The two instructions that stop the false absence: don't claim VFB lacks it,
+  // and don't answer it from the model's own knowledge either.
+  assert.match(prompt, /must NOT say VFB holds no data on them/)
+  assert.match(prompt, /must NOT answer the question about them from your own knowledge/)
+  // Candidate labels are prompt hints, not resolved entities — the id must still
+  // never reach the synthesiser (it writes ids and mislinks).
+  assert.ok(!/FBbt_00100234/.test(prompt), 'no ontology ids in the synth prompt')
+})
+
+test('a name VFB\'s search knows nothing about is worded differently from an ambiguous one', async () => {
+  // [] candidates means the search itself came back empty. That is still a
+  // failed lookup, not evidence of absence, but the synthesiser must be able to
+  // tell the two apart — "no confident match among these" reads very
+  // differently from "no hits for this wording".
+  const deps = unmatchedDeps([])
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What is MBON-a1?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /"MBON-a1" — VFB's name search returned nothing for this wording/)
+  assert.ok(!/not matched automatically/.test(prompt), 'must not imply candidates were offered')
+})
+
+test('an unmatched name does not veto an answer the documentation already gave', async () => {
+  // "How do I use the Virtual Fly Brain MCP tool?" came back as a request to
+  // clarify which VFB term "Virtual Fly Brain MCP" meant — while the doc search
+  // sat beside it. The instruction to ask which was meant is unconditional and
+  // outranked the evidence. An unresolved name is a reason not to claim absence,
+  // not a reason to withhold an answer found some other way.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['the MCP tool'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [] } }),
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP', url: 'https://www.virtualflybrain.org/docs/mcp' }] }),
+    get_reviewed_page: () => 'Point your MCP client at mcp.virtualflybrain.org.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/, 'still warned not to claim absence')
+  assert.match(prompt, /must NOT say VFB holds no data on them/)
+  assert.match(prompt, /Answer the question from the EVIDENCE above/)
+  assert.ok(!/ask which was meant/.test(prompt), prompt)
+})
+
+test('the doc retrieve reads past a top hit that does not answer', async () => {
+  // Search ranking is a keyword heuristic: for "How do I use the VFB MCP tool?"
+  // it puts the Term Context page first (the word "context") and the MCP guide
+  // second. Reading only the top hit turned a page that answers the question
+  // into "consult the documentation".
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const fetched = []
+  const deps = makeDeps({ plan, structured: {
+    // Only the MCP guide answers; the first two pages are relevant-looking noise.
+    extract: messages => /vfb-mcp-guide/.test(messages[1].content)
+      ? { ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } }
+      : { ok: true, value: { relevant: true, answered: false, claim: '', verbatim: '' } }
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [
+      { id: 'termcontext', title: 'The Term Context tab', url: 'https://www.virtualflybrain.org/docs/website-features/termcontext' },
+      { id: 'mcp', title: 'VFB Model Context Protocol (MCP) Tool Guide', url: 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide' },
+      { id: 'tools', title: 'Tool landscape', url: 'https://www.virtualflybrain.org/docs/past-workshops/connectome/tools' }
+    ] }),
+    get_reviewed_page: ({ url }) => { fetched.push(url); return `page body for ${url}` }
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', deps)
+  assert.deepEqual(fetched.slice(0, 2), [
+    'https://www.virtualflybrain.org/docs/website-features/termcontext',
+    'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide'
+  ])
+  assert.ok(!fetched.includes('https://www.virtualflybrain.org/docs/past-workshops/connectome/tools'), 'stops at the first page that answers')
+  assert.match(synthMessages[1].content, /mcp\.virtualflybrain\.org/)
+  // …and having answered from a doc page, the synthesiser is told not to close
+  // with "VFB does not currently hold instructions on this".
+  assert.match(synthMessages[1].content, /DOCUMENTATION ANSWERED THIS/)
+})
+
+test('a docs question whose phrase is not an ontology term does not answer with the name failure', async () => {
+  // "What do confidence values mean on VFB?" answered "The term 'confidence
+  // values' could not be matched to a Virtual Fly Brain term ... I suggest
+  // searching for it on virtualflybrain.org" — an ontology-lookup report for a
+  // question about a UI feature, which was never going to have an ontology entry.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['confidence values'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [] } }),
+    search_reviewed_docs: () => ({ results: [{ id: 'home', title: 'Virtual Fly Brain', url: 'https://virtualflybrain.org/' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What do confidence values mean on Virtual Fly Brain?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /not ontology terms VFB was ever going to hold/)
+  assert.match(prompt, /documentation does not appear to cover this/)
+  assert.ok(!/ask which was meant/.test(prompt), prompt)
+})
+
+test('a non-docs question with an unmatched name still asks which was meant', async () => {
+  // The softer wording is scoped to documentation intent: for an anatomy
+  // question a misspelt neuron name IS the thing to raise with the user.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['MBON-a1'], steps: []
+  }
+  const deps = makeDeps({ plan, tools: { vfb_search_terms: () => ({ response: { docs: [] } }) } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about MBON-a1', deps)
+  assert.match(synthMessages[1].content, /ask which was meant/)
+})
+
+test('no documentation disclaimer block when nothing came from the docs', async () => {
+  // The block contradicts the standing absence rule, so it must appear only
+  // when a documentation page actually answered.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const deps = makeDeps({ plan, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+    vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', deps)
+  assert.ok(!/DOCUMENTATION ANSWERED THIS/.test(synthMessages[1].content))
+})
+
+const MCP_PAGE = [
+  'Quick start: use the hosted service, which requires no installation or setup.',
+  '',
+  '```json',
+  '{',
+  '  "mcpServers": {',
+  '    "virtual-fly-brain": {',
+  '      "type": "http",',
+  '      "url": "https://vfb3-mcp.virtualflybrain.org"',
+  '    }',
+  '  }',
+  '}',
+  '```'
+].join('\n')
+
+function copyableDeps(question, quote) {
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  return makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The hosted service needs no setup.', verbatim: quote } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP tool guide', url: 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide' }] }),
+    get_reviewed_page: () => MCP_PAGE
+  } })
+}
+
+test('a how-to page\'s block reaches the synthesiser even when the extractor quoted the prose', async () => {
+  // The extractor returns one quote per page, and on a page carrying both a
+  // prose quick-start and the configuration it describes, which one it picks is
+  // a coin toss. Two runs in three quoted "use the hosted service, which
+  // requires no installation" and the block never reached the synthesiser at
+  // all — so the answer could not have included it however it was prompted.
+  const deps = copyableDeps('How do I use the Virtual Fly Brain MCP tool?', 'use the hosted service, which requires no installation or setup')
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  const r = await runHarness('How do I use the Virtual Fly Brain MCP tool?', deps)
+  const blocks = r.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || ''))
+  assert.equal(blocks.length, 1, 'the block was added once, beside the extractor\'s quote')
+  assert.match(blocks[0].verbatim, /"url": "https:\/\/vfb3-mcp\.virtualflybrain\.org"/)
+  assert.equal(blocks[0].url, 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide', 'attributed to the page it came from')
+  // …and having a block in evidence is what turns on the instruction to fence it.
+  assert.match(synthMessages[1].content, /fenced code block on its own lines/)
+})
+
+test('the page block is not added when the quote already carries one, nor to a question that did not ask how', async () => {
+  const quoted = copyableDeps('How do I use the Virtual Fly Brain MCP tool?', '{\n  "mcpServers": {\n    "virtual-fly-brain": {}\n  }\n}')
+  const rq = await runHarness('How do I use the Virtual Fly Brain MCP tool?', quoted)
+  assert.equal(rq.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || '')).length, 1, 'not duplicated')
+
+  // "What materials are available from the workshop?" is answered by the prose
+  // on the page; a code sample lifted out of it answers a question nobody asked.
+  const asked = copyableDeps('What materials are available from the VFB workshop?', 'the recorded introduction session and the workshop notebooks')
+  const ra = await runHarness('What materials are available from the VFB workshop?', asked)
+  assert.equal(ra.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || '')).length, 0)
+})
+
+test('a documentation question no page answered reports a DOCUMENTATION absence, not a data one', async () => {
+  // "What are bridging registrations between brain templates in VFB?" and "When
+  // did predicted neurotransmitters for EM data become available on VFB?" both
+  // answered "VFB does not currently hold data on …" — a claim about the
+  // ontology and the connectome, made about two questions that were never about
+  // VFB's data holdings. Both are real gaps in the site's content; saying so is
+  // true and useful, saying VFB holds no data on them is neither.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'home', title: 'Registration templates', url: 'https://www.virtualflybrain.org/docs/templates' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What are bridging registrations between brain templates in VFB?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /NO PAGE ANSWERED THIS/)
+  assert.match(prompt, /documentation does not appear to cover/)
+  assert.match(prompt, /never "VFB does not currently hold data on/)
+})
+
+test('the documentation-absence wording survives a documentation question that resolved a term', async () => {
+  // The bridging-registrations question resolves "brain templates" and reads its
+  // term info, so a gate of "nothing retrieved and no term data" missed the very
+  // answer it was written for. The block is conditional on an absence being
+  // reported, not on there being nothing to say, so it is safe to keep here.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['brain templates'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003624', label: 'adult brain' }] } }),
+    vfb_get_term_info: () => ({ Name: 'adult brain', Id: 'FBbt_00003624', Meta: { Description: 'The brain of the adult fly.' }, Queries: [{ query_type: 'PartsOf', label: 'Parts of adult brain', count: 28 }] }),
+    search_reviewed_docs: () => ({ results: [{ id: 'templates', title: 'Templates', url: 'https://www.virtualflybrain.org/docs/templates' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What are bridging registrations between brain templates in VFB?', deps)
+  assert.match(synthMessages[1].content, /NO PAGE ANSWERED THIS/)
+})
+
+test('the documentation-absence block stays away from questions that were answered', async () => {
+  // Gated hard on purpose: it fires only when the answer was going to be an
+  // absence in any case, so there is nothing here for it to talk out of a good
+  // answer. A page that answered, or term data to be constructive with, is
+  // enough to keep it out.
+  const answeredPlan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const answered = makeDeps({ plan: answeredPlan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP tool guide', url: 'https://www.virtualflybrain.org/docs/mcp' }] }),
+    get_reviewed_page: () => 'Point your MCP client at mcp.virtualflybrain.org.'
+  } })
+  let answeredMessages = null
+  answered.callText = async ({ messages }) => { answeredMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', answered)
+  assert.ok(!/NO PAGE ANSWERED THIS/.test(answeredMessages[1].content), 'a page answered')
+
+  const dataPlan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const data = makeDeps({ plan: dataPlan, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+    vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+  } })
+  let dataMessages = null
+  data.callText = async ({ messages }) => { dataMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', data)
+  assert.ok(!/NO PAGE ANSWERED THIS/.test(dataMessages[1].content), 'not a documentation question')
+})
+
+test('no UNMATCHED NAMES block when every name resolved', async () => {
+  // The block is a warning about a specific failure. Emitting it on a healthy
+  // run would spend prompt budget and invite hedging on a well-grounded answer.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const deps = makeDeps({
+    plan,
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+    }
+  })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', deps)
+  assert.ok(!/UNMATCHED NAMES/.test(synthMessages[1].content))
+})
+
 test('term-info returned for the WRONG id is discarded (no poisoned digest)', async () => {
   const plan = {
     intent: 'term_info', underspecified: false, clarifying_question: '',
@@ -508,4 +967,39 @@ test('region "inputs" question: term-info Queries digest reaches the extractor w
   const r = await runHarness('What are the main input neurons to the mushroom body?', deps)
   assert.ok(sawDigest, 'extractor must see the digest with the 367 count')
   assert.ok(r.ledger.evidence.some(e => /input/.test(e.claim)), 'should have VFB evidence, not dead-end')
+})
+
+test('maybeInjectRegionGraphStep routes a region GRAPH request to the region summary tool', () => {
+  // Task-battery G1. VFB has no region-level connectivity query, so left to itself
+  // the planner reaches for vfb_run_query, gets the query catalogue back, and the
+  // answer recites the list of available queries with zero graphs produced.
+  const region = () => ({
+    plan: [{ id: 's1', tool: 'vfb_get_term_info', status: 'satisfied' }],
+    terms: { medulla: { id: 'FBbt_00003748', label: 'medulla', digest: { name: 'medulla' },
+      info: { SuperTypes: ['Anatomy', 'Synaptic_neuropil'] } } }
+  })
+
+  const ledger = region()
+  maybeInjectRegionGraphStep(ledger, 'what are the class summarised connectivity from the medulla in graph form')
+  const inj = ledger.plan.find(s => s.tool === 'vfb_summarize_region_connections')
+  assert.ok(inj, 'region summary step injected')
+  assert.equal(inj.args.region, 'medulla')
+  assert.equal(inj.status, 'pending')
+
+  // idempotent
+  maybeInjectRegionGraphStep(ledger, 'what are the class summarised connectivity from the medulla in graph form')
+  assert.equal(ledger.plan.filter(s => s.tool === 'vfb_summarize_region_connections').length, 1)
+
+  // needs BOTH graph intent and connectivity intent
+  const noGraph = region()
+  maybeInjectRegionGraphStep(noGraph, 'what connects to the medulla?')
+  assert.equal(noGraph.plan.length, 1)
+  const noConn = region()
+  maybeInjectRegionGraphStep(noConn, 'show me the medulla in graph form')
+  assert.equal(noConn.plan.length, 1)
+
+  // and a region, not a neuron type (those go to maybeInjectConnectivityStep)
+  const neuron = { plan: [], terms: { x: { id: 'i', label: 'Tm1', digest: { name: 'Tm1' }, info: { SuperTypes: ['Neuron', 'Anatomy'] } } } }
+  maybeInjectRegionGraphStep(neuron, 'graph the connectivity of Tm1')
+  assert.equal(neuron.plan.length, 0)
 })

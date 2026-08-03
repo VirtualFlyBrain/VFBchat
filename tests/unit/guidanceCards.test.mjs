@@ -12,6 +12,23 @@ test('connectivity card fires for connectivity/graph questions only', () => {
   assert.ok(!ids('What is the mushroom body?').includes('connectivity'))
 })
 
+test('connectivity card stands down for the software sense of "connect"', () => {
+  // "How do I connect Claude to the VFB MCP server?" is a documentation
+  // question. It matched on the word "connect", was handed the synaptic-partner
+  // playbook, and — because connectivity is a COMPLEX card — was also promoted
+  // to three planner votes and 24 tool rounds it had no use for.
+  const ids = (q) => selectCards(q).map(c => c.id)
+  assert.ok(!ids('How do I connect Claude to the VFB MCP server?').includes('connectivity'))
+  assert.ok(!ids('How do I connect a client to the API endpoint?').includes('connectivity'))
+  assert.ok(!ids('What is the URL of the connectome server?').includes('connectivity'))
+  assert.equal(classifyComplexity('How do I connect Claude to the VFB MCP server?').tier, 'simple')
+
+  // …but the neural sense is untouched, including where the two vocabularies
+  // are closest: a connectome question that never mentions wiring up software.
+  assert.ok(ids('What is downstream of DA1 lPN in the hemibrain connectome?').includes('connectivity'))
+  assert.ok(ids('Which neurons connect to the giant fiber?').includes('connectivity'))
+})
+
 test('genetic-tools and taxonomy cards fire on their intents', () => {
   assert.ok(selectCards('What GAL4 lines label mushroom body neurons?').some(c => c.id === 'genetic-tools'))
   assert.ok(selectCards('What types of Kenyon cells exist?').some(c => c.id === 'taxonomy'))
@@ -96,4 +113,26 @@ test('classifyComplexity scales effort: simple < standard < complex', () => {
 test('cards do not over-fire on a plain definitional question', () => {
   assert.deepEqual(selectCards('What is the mushroom body?').map(c => c.id), [])
   assert.deepEqual(selectCards('Where is the medulla located?').map(c => c.id), [])
+})
+
+test('similarity card fires for morphology questions, not for homology', () => {
+  const ids = (q) => selectCards(q).map(c => c.id)
+  for (const q of [
+    'What neurons are similar to LPLC2?',
+    'NBLAST matches for LPLC2',
+    'Which cell types are morphologically similar to LPLC2?',
+    'What does LPLC2 most closely resemble?'
+  ]) assert.ok(ids(q).includes('similarity'), q)
+  // "the larval equivalent of X" is homology; NBLAST does not answer it.
+  assert.ok(!ids('What is the larval equivalent of LPLC2?').includes('similarity'))
+  assert.ok(!ids('What is the mushroom body?').includes('similarity'))
+})
+
+test('similarity synth guidance demands the self-class figure first', () => {
+  // Dropping it inverts the answer: LPLC2's own neurons are both the most common
+  // and the highest-scoring neighbours, so a list of OTHER types read alone says
+  // "LPLC2 most resembles VPNd1", which the data does not say.
+  const g = synthGuidance('What neurons are similar to LPLC2?')
+  assert.match(g, /same cell type/)
+  assert.match(g, /per registered neuron/)
 })
