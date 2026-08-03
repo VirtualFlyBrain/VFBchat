@@ -720,6 +720,147 @@ test('no documentation disclaimer block when nothing came from the docs', async 
   assert.ok(!/DOCUMENTATION ANSWERED THIS/.test(synthMessages[1].content))
 })
 
+const MCP_PAGE = [
+  'Quick start: use the hosted service, which requires no installation or setup.',
+  '',
+  '```json',
+  '{',
+  '  "mcpServers": {',
+  '    "virtual-fly-brain": {',
+  '      "type": "http",',
+  '      "url": "https://vfb3-mcp.virtualflybrain.org"',
+  '    }',
+  '  }',
+  '}',
+  '```'
+].join('\n')
+
+function copyableDeps(question, quote) {
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  return makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The hosted service needs no setup.', verbatim: quote } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP tool guide', url: 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide' }] }),
+    get_reviewed_page: () => MCP_PAGE
+  } })
+}
+
+test('a how-to page\'s block reaches the synthesiser even when the extractor quoted the prose', async () => {
+  // The extractor returns one quote per page, and on a page carrying both a
+  // prose quick-start and the configuration it describes, which one it picks is
+  // a coin toss. Two runs in three quoted "use the hosted service, which
+  // requires no installation" and the block never reached the synthesiser at
+  // all — so the answer could not have included it however it was prompted.
+  const deps = copyableDeps('How do I use the Virtual Fly Brain MCP tool?', 'use the hosted service, which requires no installation or setup')
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  const r = await runHarness('How do I use the Virtual Fly Brain MCP tool?', deps)
+  const blocks = r.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || ''))
+  assert.equal(blocks.length, 1, 'the block was added once, beside the extractor\'s quote')
+  assert.match(blocks[0].verbatim, /"url": "https:\/\/vfb3-mcp\.virtualflybrain\.org"/)
+  assert.equal(blocks[0].url, 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide', 'attributed to the page it came from')
+  // …and having a block in evidence is what turns on the instruction to fence it.
+  assert.match(synthMessages[1].content, /fenced code block on its own lines/)
+})
+
+test('the page block is not added when the quote already carries one, nor to a question that did not ask how', async () => {
+  const quoted = copyableDeps('How do I use the Virtual Fly Brain MCP tool?', '{\n  "mcpServers": {\n    "virtual-fly-brain": {}\n  }\n}')
+  const rq = await runHarness('How do I use the Virtual Fly Brain MCP tool?', quoted)
+  assert.equal(rq.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || '')).length, 1, 'not duplicated')
+
+  // "What materials are available from the workshop?" is answered by the prose
+  // on the page; a code sample lifted out of it answers a question nobody asked.
+  const asked = copyableDeps('What materials are available from the VFB workshop?', 'the recorded introduction session and the workshop notebooks')
+  const ra = await runHarness('What materials are available from the VFB workshop?', asked)
+  assert.equal(ra.ledger.evidence.filter(e => /mcpServers/.test(e.verbatim || '')).length, 0)
+})
+
+test('a documentation question no page answered reports a DOCUMENTATION absence, not a data one', async () => {
+  // "What are bridging registrations between brain templates in VFB?" and "When
+  // did predicted neurotransmitters for EM data become available on VFB?" both
+  // answered "VFB does not currently hold data on …" — a claim about the
+  // ontology and the connectome, made about two questions that were never about
+  // VFB's data holdings. Both are real gaps in the site's content; saying so is
+  // true and useful, saying VFB holds no data on them is neither.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'home', title: 'Registration templates', url: 'https://www.virtualflybrain.org/docs/templates' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What are bridging registrations between brain templates in VFB?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /NO PAGE ANSWERED THIS/)
+  assert.match(prompt, /documentation does not appear to cover/)
+  assert.match(prompt, /never "VFB does not currently hold data on/)
+})
+
+test('the documentation-absence wording survives a documentation question that resolved a term', async () => {
+  // The bridging-registrations question resolves "brain templates" and reads its
+  // term info, so a gate of "nothing retrieved and no term data" missed the very
+  // answer it was written for. The block is conditional on an absence being
+  // reported, not on there being nothing to say, so it is safe to keep here.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['brain templates'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003624', label: 'adult brain' }] } }),
+    vfb_get_term_info: () => ({ Name: 'adult brain', Id: 'FBbt_00003624', Meta: { Description: 'The brain of the adult fly.' }, Queries: [{ query_type: 'PartsOf', label: 'Parts of adult brain', count: 28 }] }),
+    search_reviewed_docs: () => ({ results: [{ id: 'templates', title: 'Templates', url: 'https://www.virtualflybrain.org/docs/templates' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What are bridging registrations between brain templates in VFB?', deps)
+  assert.match(synthMessages[1].content, /NO PAGE ANSWERED THIS/)
+})
+
+test('the documentation-absence block stays away from questions that were answered', async () => {
+  // Gated hard on purpose: it fires only when the answer was going to be an
+  // absence in any case, so there is nothing here for it to talk out of a good
+  // answer. A page that answered, or term data to be constructive with, is
+  // enough to keep it out.
+  const answeredPlan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const answered = makeDeps({ plan: answeredPlan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } })
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP tool guide', url: 'https://www.virtualflybrain.org/docs/mcp' }] }),
+    get_reviewed_page: () => 'Point your MCP client at mcp.virtualflybrain.org.'
+  } })
+  let answeredMessages = null
+  answered.callText = async ({ messages }) => { answeredMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', answered)
+  assert.ok(!/NO PAGE ANSWERED THIS/.test(answeredMessages[1].content), 'a page answered')
+
+  const dataPlan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const data = makeDeps({ plan: dataPlan, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+    vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+  } })
+  let dataMessages = null
+  data.callText = async ({ messages }) => { dataMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', data)
+  assert.ok(!/NO PAGE ANSWERED THIS/.test(dataMessages[1].content), 'not a documentation question')
+})
+
 test('no UNMATCHED NAMES block when every name resolved', async () => {
   // The block is a warning about a specific failure. Emitting it on a healthy
   // run would spend prompt budget and invite hedging on a well-grounded answer.

@@ -7,7 +7,7 @@ import { extractPublicationRefs, hasPublicationRefs, bestRefUrl } from '../../li
 import {
   EXTRACT_SCHEMA, buildDocExtractMessages, buildLiteratureExtractMessages,
   buildEvidenceRow, needsDocumentation, needsLiterature, planRetrieval,
-  completeQuoteFromSource, hasCopyableBlock
+  completeQuoteFromSource, hasCopyableBlock, firstCopyableBlock
 } from '../../lib/externalEvidence.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
 
@@ -285,4 +285,39 @@ test('hasCopyableBlock: false for the prose that was being fenced', () => {
   assert.equal(hasCopyableBlock('Below you can watch the recorded introduction session of our workshop and follow along with the workshop notebooks.'), false)
   assert.equal(hasCopyableBlock(''), false)
   assert.equal(hasCopyableBlock('   '), false)
+})
+
+// ---- firstCopyableBlock: the part of a how-to answer that cannot be paraphrased ----
+
+test('firstCopyableBlock: takes a fenced block from the page', () => {
+  const page = 'Quick start\n\nUse the hosted service.\n\n```json\n{\n  "mcpServers": {\n    "virtual-fly-brain": {\n      "type": "http",\n      "url": "https://vfb3-mcp.virtualflybrain.org"\n    }\n  }\n}\n```\n\nThat is all.'
+  const block = firstCopyableBlock(page)
+  assert.match(block, /^\{/)
+  assert.match(block, /"mcpServers"/)
+  assert.match(block, /\}$/)
+  assert.ok(!block.includes('```'), 'the fences belong to the page, not the block')
+})
+
+test('firstCopyableBlock: reads the page in its serialised form', () => {
+  // The page arrives as tool output, so its newlines are the two characters
+  // backslash-n — the form every real call passes in.
+  const page = 'Configure it:\\n\\n{\\n  "mcpServers": {\\n    "vfb": {}\\n  }\\n}\\n\\nDone.'
+  const block = firstCopyableBlock(page)
+  assert.match(block, /"mcpServers"/)
+  assert.match(block, /\n/, 'decoded to real newlines')
+})
+
+test('firstCopyableBlock: nothing from a page of prose', () => {
+  assert.equal(firstCopyableBlock('Point and click to select neurons. Click and drag to rotate the scene.'), '')
+  // A brace in a sentence is not a configuration: one line, and no quoted key.
+  assert.equal(firstCopyableBlock('The set {a, b, c} is written in braces.'), '')
+  // Multi-line braces with no quoted key are prose too.
+  assert.equal(firstCopyableBlock('A list follows {\nfirst\nsecond\n}'), '')
+  assert.equal(firstCopyableBlock(''), '')
+})
+
+test('firstCopyableBlock: an unterminated or oversized block is left alone', () => {
+  assert.equal(firstCopyableBlock('{\n  "mcpServers": {\n    "vfb": {}'), '', 'never closes')
+  const huge = '{\n  "k": "' + 'x'.repeat(1400) + '"\n}'
+  assert.equal(firstCopyableBlock(huge), '', 'past the size cap')
 })
