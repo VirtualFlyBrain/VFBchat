@@ -24,6 +24,7 @@ import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
+import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
@@ -1357,6 +1358,22 @@ function getToolConfig() {
         genes: {
           type: 'string',
           description: 'Optional: the genes or gene family to report, e.g. "dopamine receptors" or "Dop1R1, Dop2R". If omitted, the top-expressed genes are returned.'
+        }
+      },
+      required: ['neuron_type']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_similar_neurons',
+    description: 'Find neurons morphologically similar to a neuron type or a single registered neuron, using VFB\'s NBLAST scores. Use this for "what neurons are similar to X?", "what does X most resemble?", "NBLAST / NeuronBridge matches for X". VFB computes NBLAST per registered neuron, not per class, so for a cell type this seeds from its registered neurons and reports the similar cell types with their best scores.',
+    parameters: {
+      type: 'object',
+      properties: {
+        neuron_type: {
+          type: 'string',
+          description: 'Neuron-class label or ID, or a single registered neuron, e.g. "LPLC2", "FBbt_00111763", or "VFB_jrchk06p".'
         }
       },
       required: ['neuron_type']
@@ -7349,6 +7366,118 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   })
 }
 
+// How many registered neurons to seed NBLAST from, and how deep to read each
+// neighbourhood. Three seeds is enough that one atypical or partially-traced
+// neuron cannot carry the answer on its own, and few enough that the tool stays
+// three parallel calls. 100 rows covers LPLC2's whole neighbourhood (131) and is
+// well past the point where the tail stops naming new cell types.
+// NBLAST registration is per-DATASET: of LPLC2's five source datasets, three
+// carry similarity scores and the two newest (MaleCNS/Berg2025, BANC/Bates2025)
+// carry none. So a candidate is PROBED, not trusted — we spread a slightly wider
+// pool across datasets, run them all, and report from whichever came back with a
+// neighbourhood. Probing costs one round of parallel calls, which is what a
+// fixed seed list cost anyway; guessing instead would answer "no similarity data
+// for LPLC2", which is false about the class.
+const SIMILARITY_SEED_CAP = 3
+const SIMILARITY_PROBE_CAP = 5
+const SIMILARITY_ROW_LIMIT = 100
+
+async function findSimilarNeuronsTool(client, args = {}, context = {}) {
+  const requested = String(args.neuron_type || args.focus || '').trim()
+  if (!requested) {
+    return JSON.stringify({ error: 'vfb_find_similar_neurons requires neuron_type.', tool: 'vfb_find_similar_neurons', recoverable: true })
+  }
+
+  // Resolve to an id. An individual (VFB_…) is used as its own seed; a class
+  // (FBbt_…) has to be hopped through its registered individuals, because VFB
+  // computes NBLAST per neuron and returns count 0 for a class.
+  let id = sanitizeVfbId(requested)
+  let label = requested
+  if (!/^(FBbt_\d+|VFB_\w+)$/i.test(id)) {
+    const r = await resolveComparisonUpstreamType(client, requested)
+    id = r?.id || ''
+    label = r?.label || requested
+  }
+  if (!id) {
+    return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_find_similar_neurons', recoverable: true })
+  }
+  if (label === requested || /^(FBbt_|VFB_)/i.test(label)) {
+    try {
+      const ti = await getTermInfoEvidence(client, id)
+      label = getReadableTermName(ti.record, id) || label
+    } catch { /* the id is answer enough if term-info is unavailable */ }
+  }
+
+  const isClass = /^FBbt_/i.test(id)
+  let candidates = []
+  if (isClass) {
+    // Hop 1: the class's registered individuals. The full list is fetched (limit
+    // 0 = unlimited) rather than a first page, because the rows come back grouped
+    // by dataset and a page would only ever see the dataset that sorts first —
+    // for LPLC2 that is 185 MaleCNS neurons, none of them NBLAST-registered.
+    try {
+      const images = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+        id, query_type: 'ListAllAvailableImages', limit: 0
+      }))
+      candidates = pickSeedIndividuals(images, { classId: id, cap: SIMILARITY_PROBE_CAP })
+    } catch { candidates = [] }
+    if (!candidates.length) {
+      return JSON.stringify({
+        tool: 'vfb_find_similar_neurons',
+        resolved: { id, label },
+        seed_neurons: [],
+        similar_classes: [],
+        note: `VFB holds no registered ${label} neuron to compare morphologies from, so NBLAST similarity cannot be computed for this class.`
+      })
+    }
+  } else {
+    candidates = [{ id, label }]
+  }
+
+  // Hop 2: one NBLAST neighbourhood per candidate, in parallel — the calls are
+  // independent and the slowest one sets the latency either way. A candidate
+  // whose dataset carries no NBLAST simply returns nothing and drops out.
+  const perSeed = await Promise.all(candidates.map(async seed => {
+    try {
+      const payload = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+        id: seed.id, query_type: 'SimilarMorphologyTo', limit: SIMILARITY_ROW_LIMIT
+      }))
+      return parseSimilarityHits(payload, { seed })
+    } catch { return [] }
+  }))
+  const used = candidates.filter((_, i) => perSeed[i].length > 0).slice(0, SIMILARITY_SEED_CAP)
+  const keep = new Set(used.map(s => s.id))
+  const hits = perSeed.flat().filter(h => keep.has(h.seedId) || !isClass)
+  if (!hits.length) {
+    // Name the datasets tried. "No NBLAST neighbours for LPLC2" would read as a
+    // statement about the cell type when it is a statement about which
+    // connectomes have been NBLAST-registered so far.
+    const tried = [...new Set(candidates.map(s => s.dataset).filter(Boolean))]
+    return JSON.stringify({
+      tool: 'vfb_find_similar_neurons',
+      resolved: { id, label },
+      seed_neurons: candidates,
+      similar_classes: [],
+      note: `VFB returned no NBLAST neighbours for the registered ${label} neurons tried${tried.length ? ` (from ${tried.join('; ')})` : ''}, so morphological similarity cannot be scored for this cell type from the data currently registered.`
+    })
+  }
+
+  const grouped = groupSimilarByClass(hits, { focusId: isClass ? id : '', seedIds: used.map(s => s.id) })
+  return JSON.stringify({
+    tool: 'vfb_find_similar_neurons',
+    resolved: { id, label },
+    seed_neurons: used,
+    neurons_compared: grouped.neurons,
+    self_class: grouped.self,
+    similar_classes: grouped.others.slice(0, 12),
+    top_neurons: [...hits]
+      .sort((a, b) => b.score - a.score)
+      .filter((h, i, arr) => arr.findIndex(x => x.id === h.id) === i)
+      .slice(0, 10)
+      .map(h => ({ id: h.id, name: h.name, score: h.score, type: h.classes.map(c => c.text).join('; ') }))
+  })
+}
+
 function inferRegionFromUserMessage(userMessage = '', rawValue = '') {
   const rawText = String(rawValue || '').trim()
   if (rawText) {
@@ -8528,6 +8657,11 @@ async function executeFunctionTool(name, args, context = {}) {
   if (name === 'vfb_scrnaseq_gene_expression') {
     const client = await getMcpClientForContext('vfb', context)
     return scrnaseqGeneExpressionTool(client, normalizedArgs, context)
+  }
+
+  if (name === 'vfb_find_similar_neurons') {
+    const client = await getMcpClientForContext('vfb', context)
+    return findSimilarNeuronsTool(client, normalizedArgs, context)
   }
 
   if (name === 'vfb_summarize_region_connections') {

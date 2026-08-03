@@ -97,3 +97,25 @@ test('cards do not over-fire on a plain definitional question', () => {
   assert.deepEqual(selectCards('What is the mushroom body?').map(c => c.id), [])
   assert.deepEqual(selectCards('Where is the medulla located?').map(c => c.id), [])
 })
+
+test('similarity card fires for morphology questions, not for homology', () => {
+  const ids = (q) => selectCards(q).map(c => c.id)
+  for (const q of [
+    'What neurons are similar to LPLC2?',
+    'NBLAST matches for LPLC2',
+    'Which cell types are morphologically similar to LPLC2?',
+    'What does LPLC2 most closely resemble?'
+  ]) assert.ok(ids(q).includes('similarity'), q)
+  // "the larval equivalent of X" is homology; NBLAST does not answer it.
+  assert.ok(!ids('What is the larval equivalent of LPLC2?').includes('similarity'))
+  assert.ok(!ids('What is the mushroom body?').includes('similarity'))
+})
+
+test('similarity synth guidance demands the self-class figure first', () => {
+  // Dropping it inverts the answer: LPLC2's own neurons are both the most common
+  // and the highest-scoring neighbours, so a list of OTHER types read alone says
+  // "LPLC2 most resembles VPNd1", which the data does not say.
+  const g = synthGuidance('What neurons are similar to LPLC2?')
+  assert.match(g, /same cell type/)
+  assert.match(g, /per registered neuron/)
+})

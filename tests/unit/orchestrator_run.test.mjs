@@ -480,6 +480,70 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
+test('a step that ANSWERED suppresses the AVAILABLE VFB DATA fallback', async () => {
+  // The block is a rescue for a thin ledger. Supplied alongside a real answer, the
+  // system prompt's "point to the follow-up queries" appends the query catalogue
+  // as a tail — which is the read-back defect, re-entering through the back door.
+  // The follow-ons are already shown as chips beside the answer.
+  const plan = {
+    intent: 'neuron_profile', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['LPLC2'],
+    steps: [{ id: 's1', tool: 'vfb_find_similar_neurons', answers: ['x'], args: { neuron_type: 'LPLC2' } }]
+  }
+  let synthMessages = null
+  const deps = makeDeps({ plan })
+  deps.toolDefs = [...TOOL_DEFS, { name: 'vfb_find_similar_neurons', purpose: 'nblast', parameters: { type: 'object', required: ['neuron_type'], properties: { neuron_type: { type: 'string' } } } }]
+  const base = deps.runTool
+  deps.runTool = async (name, args) => {
+    if (name === 'vfb_get_term_info') return { Name: 'LPLC2', Id: 'FBbt_00111763',
+      Queries: [{ query: 'ListAllAvailableImages', label: 'Images of LPLC2', count: 723, preview_results: { rows: [] } }] }
+    if (name === 'vfb_search_terms') return { response: { docs: [{ short_form: 'FBbt_00111763', label: 'LPLC2' }] } }
+    if (name === 'vfb_find_similar_neurons') {
+      return { tool: 'vfb_find_similar_neurons', resolved: { id: 'FBbt_00111763', label: 'LPLC2' },
+        seed_neurons: [{ id: 'VFB_jrchk06p', label: 'LPLC2_R' }], neurons_compared: 100,
+        self_class: { id: 'FBbt_00111763', label: 'LPLC2', neurons: 69, bestScore: 0.8 },
+        similar_classes: [{ id: 'FBbt_00003874', label: 'lobula columnar neuron LC4', neurons: 30, bestScore: 0.46 }] }
+    }
+    return base(name, args)
+  }
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What neurons are similar to LPLC2?', deps)
+  assert.ok(synthMessages, 'synth ran')
+  assert.ok(!/AVAILABLE VFB DATA/.test(synthMessages[1].content), synthMessages[1].content.slice(0, 400))
+})
+
+test('a planner-chosen similarity step still gets the deterministic claim', async () => {
+  // The injector sets step.similarity_query, but the planner picks this tool from
+  // the catalogue on its own. That step used to reach the generic macro branch,
+  // which read seed_neurons as the answer and reported the neurons compared FROM
+  // as the neurons LPLC2 is similar TO — backwards, and confidently so.
+  const plan = {
+    intent: 'neuron_profile', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['LPLC2'],
+    steps: [{ id: 's1', tool: 'vfb_find_similar_neurons', answers: ['x'], args: { neuron_type: 'LPLC2' } }]
+  }
+  let synthMessages = null
+  const deps = makeDeps({ plan })
+  deps.toolDefs = [...TOOL_DEFS, { name: 'vfb_find_similar_neurons', purpose: 'nblast', parameters: { type: 'object', required: ['neuron_type'], properties: { neuron_type: { type: 'string' } } } }]
+  const base = deps.runTool
+  deps.runTool = async (name, args) => {
+    if (name === 'vfb_search_terms') return { response: { docs: [{ short_form: 'FBbt_00111763', label: 'LPLC2' }] } }
+    if (name === 'vfb_get_term_info') return { Name: 'LPLC2', Id: 'FBbt_00111763', Queries: [] }
+    if (name === 'vfb_find_similar_neurons') {
+      return { tool: 'vfb_find_similar_neurons', resolved: { id: 'FBbt_00111763', label: 'LPLC2' },
+        seed_neurons: [{ id: 'VFB_jrchk06p', label: 'LPLC2_R' }], neurons_compared: 100,
+        self_class: { id: 'FBbt_00111763', label: 'LPLC2', neurons: 69, bestScore: 0.8 },
+        similar_classes: [{ id: 'FBbt_00003874', label: 'lobula columnar neuron LC4', neurons: 30, bestScore: 0.46 }] }
+    }
+    return base(name, args)
+  }
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What neurons are similar to LPLC2?', deps)
+  const ev = synthMessages[1].content
+  assert.match(ev, /computed per registered neuron, not per class/)
+  assert.match(ev, /lobula columnar neuron LC4/)
+})
+
 // --- unmatched names must not become false absences -------------------------
 
 // Shared setup: a name the picker refuses to bind. "MBON-a1" shares no token
