@@ -663,6 +663,46 @@ test('the doc retrieve reads past a top hit that does not answer', async () => {
   assert.match(synthMessages[1].content, /DOCUMENTATION ANSWERED THIS/)
 })
 
+test('a docs question whose phrase is not an ontology term does not answer with the name failure', async () => {
+  // "What do confidence values mean on VFB?" answered "The term 'confidence
+  // values' could not be matched to a Virtual Fly Brain term ... I suggest
+  // searching for it on virtualflybrain.org" — an ontology-lookup report for a
+  // question about a UI feature, which was never going to have an ontology entry.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['confidence values'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: false, answered: false, claim: '', verbatim: '' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [] } }),
+    search_reviewed_docs: () => ({ results: [{ id: 'home', title: 'Virtual Fly Brain', url: 'https://virtualflybrain.org/' }] }),
+    get_reviewed_page: () => 'Virtual Fly Brain is an interactive atlas.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('What do confidence values mean on Virtual Fly Brain?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/)
+  assert.match(prompt, /not ontology terms VFB was ever going to hold/)
+  assert.match(prompt, /documentation does not appear to cover this/)
+  assert.ok(!/ask which was meant/.test(prompt), prompt)
+})
+
+test('a non-docs question with an unmatched name still asks which was meant', async () => {
+  // The softer wording is scoped to documentation intent: for an anatomy
+  // question a misspelt neuron name IS the thing to raise with the user.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['MBON-a1'], steps: []
+  }
+  const deps = makeDeps({ plan, tools: { vfb_search_terms: () => ({ response: { docs: [] } }) } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about MBON-a1', deps)
+  assert.match(synthMessages[1].content, /ask which was meant/)
+})
+
 test('no documentation disclaimer block when nothing came from the docs', async () => {
   // The block contradicts the standing absence rule, so it must appear only
   // when a documentation page actually answered.
