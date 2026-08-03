@@ -24,6 +24,7 @@ import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
+import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
@@ -729,8 +730,14 @@ function sanitizeInternalToolMentions(text = '') {
     .replace(/\bVirtual Fly Brain \(VFB\) output\b/gi, 'VFB')
     .replace(/\bthe Virtual Fly Brain \(VFB\) output\b/gi, 'VFB')
     .replace(/\bThe Virtual Fly Brain \(VFB\) database was searched\b/gi, 'VFB was checked')
-    .replace(/\bThe Hemibrain dataset contains neurons that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
-    .replace(/\bThere are neurons in the Hemibrain dataset that are morphologically similar to the fru\+ mAL neurons described in light microscopy studies\.\s*/gi, 'This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. ')
+    // Sentence-anchored on purpose: this rule substitutes a whole sentence, so
+    // it must only fire where a sentence starts. See lib/sentenceRewrite.mjs —
+    // unanchored it also matched the same words as a subordinate clause inside
+    // a hedge and spliced a capitalised sentence into the middle of it.
+    .replace(
+      sentenceStart('(?:The Hemibrain dataset contains neurons that are|There are neurons in the Hemibrain dataset that are) morphologically similar to the fru\\+ mAL neurons described in light microscopy studies\\.[ \\t]*'),
+      '$1This bounded VFB pass did not confirm Hemibrain neurons morphologically similar to the fru+ mAL neurons. '
+    )
     .replace(/\bcandidate fruitless mAL-related neuron classes\b/gi, 'fruitless mAL-related terms')
     .replace(/\bTherefore,\s*the final answer to the user's question is:\s*/gi, '')
     .replace(/\buse a different tool, such as VFB,\s*to find\b/gi, 'select a concrete VFB neuron or image candidate for')
