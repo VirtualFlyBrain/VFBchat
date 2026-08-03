@@ -11203,6 +11203,12 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     if (process.env.VFB_HARNESS_TRACE === 'true') {
       try { console.log('[VFBchat] HARNESS TRACE', JSON.stringify(live.trace)) } catch {}
       try { console.log('[VFBchat] HARNESS PLAN', JSON.stringify((live.ledger?.plan || []).map(s => ({ id: s.id, tool: s.tool, status: s.status, args: s.args, note: s.note })))) } catch {}
+      // The third thing worth knowing when an answer looks wrong: what the
+      // deterministic linkifiers had to work with. A name that stayed unlinked in
+      // the prose is either absent from termLinks (nothing registered it) or
+      // present and not matched (the model wrote it differently) — and those two
+      // have completely different fixes.
+      try { console.log('[VFBchat] HARNESS LINKS', JSON.stringify({ terms: (live.termLinks || []).length, names: (live.termLinks || []).slice(0, 8).map(t => t.name), counts: (live.countLinks || []).length })) } catch {}
     }
     const groundedIds = collectGroundedIds(userMessage, live.ledger)
     const leakedIds = findLeakedIds(rawAnswerText, groundedIds)
