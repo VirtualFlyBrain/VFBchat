@@ -3712,6 +3712,61 @@ function getSearchDocFacets(doc = {}) {
     : []
 }
 
+// VFB's search does not return a term's NAME in `label`. It returns a display
+// string built from whichever string matched:
+//
+//   label "Kenyon cell (FBbt_00003686)"            original_label "Kenyon cell"
+//   label "Kenyon cell (ACA) (alpha/beta posterior Kenyon cell)"
+//                                     original_label "alpha/beta posterior Kenyon cell"
+//
+// — the matched string, then the term's own label in parentheses, or the term's
+// short_form when the matched string WAS the label. There is no `synonym` field
+// on these documents at all; the matched string is the only place the synonym
+// the user typed ever appears.
+//
+// Reading `label` as though it were the name means no exact-name test can ever
+// succeed: nothing is literally called "Kenyon cell (FBbt_00003686)". Every
+// caller then falls through to whatever token heuristic sits below, and the
+// parenthesised id contributes junk tokens ("fbbt", "00003686") to that too.
+function getSearchDocName(doc = {}) {
+  return String(doc?.original_label || doc?.label || '').trim()
+}
+
+// Remove the FINAL balanced parenthetical. Scanning for the balance point rather
+// than the last "(" keeps labels that carry their own brackets intact — without
+// it "alpha/beta c(i) Kenyon cell (alpha/beta inner-core Kenyon cell)" would
+// yield the invented synonym "alpha/beta c".
+function stripTrailingParenthetical(text = '') {
+  const s = String(text || '').trim()
+  if (!s.endsWith(')')) return s
+  let depth = 0
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] === ')') depth++
+    else if (s[i] === '(') {
+      depth--
+      if (depth === 0) return s.slice(0, i).trim()
+    }
+  }
+  return s
+}
+
+// Every string this document could reasonably have been matched on: its own
+// name, any declared synonyms, and the string VFB says matched — the last only
+// when it differs from the name, since otherwise the parenthetical held the
+// short_form and is not something anyone would type.
+function getSearchDocNames(doc = {}) {
+  const out = []
+  const name = getSearchDocName(doc)
+  if (name) out.push(name)
+  const declared = Array.isArray(doc?.synonym) ? doc.synonym : (doc?.synonym ? [doc.synonym] : [])
+  for (const s of declared) if (s) out.push(String(s))
+  if (doc?.original_label && doc?.label) {
+    const matched = stripTrailingParenthetical(doc.label)
+    if (matched && matched.toLowerCase() !== String(doc.original_label).trim().toLowerCase()) out.push(matched)
+  }
+  return out
+}
+
 function looksLikeNeuronTypeQuestion(userMessage = '', queryText = '') {
   const text = normalizeEndpointSearchText(`${userMessage} ${queryText}`)
   if (!text) return false
@@ -7161,6 +7216,67 @@ async function getNeurotransmitterProfileTool(client, args = {}, context = {}) {
 // (anatScRNAseqQuery), then the per-gene expression table per cluster
 // (clusterExpression), and filters server-side to the genes the user asked about —
 // turning a ~450 KB-per-cluster payload into a compact, cited gene × cluster matrix.
+// Resolve a cell-type NAME to the class that actually carries scRNA-seq data.
+//
+// This macro used to borrow resolveComparisonUpstreamType, which is built for
+// connectivity endpoints: it filters to neurons, boosts has_neuron_connectivity
+// and then scores for the endpoint a connectivity query would want. Asked for
+// "Kenyon cell" it returned FBbt_00110931 (KCab-p) — a deep subtype with no
+// scRNA-seq — so the macro answered "VFB does not currently hold scRNA-seq
+// expression data for KCab-p" about Kenyon cells, for which VFB holds plenty
+// (FBbt_00003686 carries hasScRNAseq).
+//
+// What this macro wants is different and much simpler: the term the user NAMED,
+// and among equals the one flagged hasScRNAseq. Two searches, because VFB's
+// index does not stem multi-word phrases — "Kenyon cells" returns 51 subtype
+// documents with the general class absent entirely, while "Kenyon cell" returns
+// it at rank 6 — and then exact name first, never a rank-order guess.
+async function resolveScrnaseqTermId(client, requested = '') {
+  const queryText = String(requested || '').trim()
+  if (!queryText) return null
+
+  const searchOnce = async (q) => {
+    try {
+      return extractDocsFromSearchTermsPayload(await callVfbToolTextWithFallback(client, 'search_terms', { query: q, rows: 25, minimize_results: false }))
+    } catch {
+      return []
+    }
+  }
+  const docs = await searchOnce(queryText)
+  const singularQuery = singularizeEndpointSearchText(queryText)
+  if (singularQuery && singularQuery !== normalizeEndpointSearchText(queryText)) {
+    docs.push(...await searchOnce(singularQuery))
+  }
+
+  const classDocs = docs.filter(d => /^FBbt_\d{8}$/i.test(String(d?.short_form || d?.shortForm || '').trim()))
+  if (!classDocs.length) return null
+
+  const idOf = (d) => String(d.short_form || d.shortForm || '').trim()
+  const hasScrnaseq = (d) => getSearchDocFacets(d).includes('hasscrnaseq')
+  // getSearchDocNames, not d.label: the latter is VFB's display string for the
+  // match ("Kenyon cell (FBbt_00003686)"), which no user ever types, so testing
+  // it for an exact name can only ever fail.
+  const namesOf = (d) => getSearchDocNames(d).map(n => singularizeEndpointSearchText(n)).filter(Boolean)
+  const wanted = singularizeEndpointSearchText(queryText)
+  const exact = classDocs.filter(d => namesOf(d).includes(wanted))
+
+  // Exact name, preferring the one with data when a label and a synonym collide.
+  const exactWithData = exact.find(hasScrnaseq)
+  if (exactWithData) return idOf(exactWithData)
+  if (exact.length) return idOf(exact[0])
+
+  // No exact name. Take a flagged term only if it contains every word the user
+  // used, so "Kenyon cell" can reach a Kenyon cell subtype but never reaches an
+  // unrelated class that merely happens to sit high in the ranking.
+  const wantedWords = wanted.split(' ').filter(Boolean)
+  const contains = (d) => {
+    const labelWords = new Set(singularizeEndpointSearchText(getSearchDocName(d)).split(' ').filter(Boolean))
+    return wantedWords.length > 0 && wantedWords.every(w => labelWords.has(w))
+  }
+  const flagged = classDocs.find(d => hasScrnaseq(d) && contains(d))
+  return flagged ? idOf(flagged) : null
+}
+
 async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   const requested = String(args.neuron_type || '').trim()
   if (!requested) {
@@ -7173,8 +7289,16 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   if (/^FBbt_\d{8}$/i.test(id)) {
     const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
   } else {
-    const r = await resolveComparisonUpstreamType(client, requested)
-    if (r?.id) { id = r.id; label = r.label || requested; const ti = await getTermInfoEvidence(client, id); record = ti.record } else { id = '' }
+    // scRNAseq-aware resolution first; the connectivity resolver is the fallback
+    // for names it knows and this one does not (individuals, ">"-style endpoints).
+    const scrnaseqId = await resolveScrnaseqTermId(client, requested)
+    if (scrnaseqId) {
+      id = scrnaseqId
+      const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
+    } else {
+      const r = await resolveComparisonUpstreamType(client, requested)
+      if (r?.id) { id = r.id; label = r.label || requested; const ti = await getTermInfoEvidence(client, id); record = ti.record } else { id = '' }
+    }
   }
   if (!id) {
     return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_scrnaseq_gene_expression', recoverable: true })
