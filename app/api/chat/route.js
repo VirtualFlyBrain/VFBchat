@@ -8563,7 +8563,12 @@ async function executeFunctionTool(name, args, context = {}) {
         )
       }
 
-      const queryValidationError = await validateVfbRunQueryTypes({ client, cleanArgs, userMessage: context.userMessage || '' })
+      const queryValidationError = await validateVfbRunQueryTypes({
+        client,
+        cleanArgs,
+        userMessage: context.userMessage || '',
+        fromHarness: Boolean(context.fromHarness)
+      })
       if (queryValidationError) return queryValidationError
     }
 
@@ -8707,6 +8712,14 @@ async function executeFunctionTool(name, args, context = {}) {
       // need the retired-facet sanitiser (see UNSUPPORTED_VFB_SEARCH_FACETS).
       // This is the executor the role-loop harness uses, so a rejected search
       // here meant no term ever resolved.
+      // The args as they leave this process, after every normaliser, repair and
+      // override above has had a go at them. Off unless VFB_HARNESS_TRACE=true.
+      // Worth its keep: the #79 list-question defect was a query_type the caller
+      // never asked for, and no other log showed the difference between the
+      // requested args and the sent ones.
+      if (process.env.VFB_HARNESS_TRACE === 'true') {
+        try { console.log('[VFBchat] MCPARGS', mcpName, JSON.stringify(mcpArgs)) } catch {}
+      }
       const outputText = await callVfbToolTextWithFallback(client, mcpName, mcpArgs, {
         budget: getForceRefreshBudget(context)
       })
@@ -9056,7 +9069,54 @@ async function getAvailableVfbQueryTypesForTerm(client, termId = '') {
   }
 }
 
-async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = '' }) {
+// Spatial query types that the taxonomy override is allowed to replace. Anything
+// outside this set is left alone whatever the wording looks like.
+const TAXONOMY_OVERRIDABLE_QUERY_KEYS = new Set([
+  'neuronsparthere', 'neuronssynaptic', 'neuronspresynaptichere',
+  'neuronspostsynaptichere', 'partsof', 'componentsof'
+])
+
+/**
+ * Decide whether a run_query query_type should be replaced by a taxonomy query
+ * (SubclassesOf / PartsOf / ComponentsOf) inferred from the user's wording.
+ * Returns the replacement query_type, or null to leave the caller's choice alone.
+ *
+ * This is a guess made from WORDING, and it exists for the legacy relay loop,
+ * where the model picks a query_type freehand and often picks a spatial one for a
+ * "what types are there" question. The role harness does not guess:
+ * injectIntentQuerySteps reads the term's own Queries[] catalogue and picks
+ * deterministically, so rewriting its choice replaces evidence with a keyword
+ * hunch. Hence the fromHarness veto.
+ *
+ * That veto is not hypothetical. "List the neuron types that have some part in
+ * the medulla" contains "neuron types", so isTaxonomyStyleQuestion matched, and
+ * the harness's NeuronsPartHere (471 rows) was rewritten to SubclassesOf on
+ * FBbt_00003748 — a region, which has no subclasses. The query returned count 0,
+ * the list branch in runStep found no rows to name, and the user was told to go
+ * and run the query themselves. The rewrite, not the routing, was the whole
+ * defect.
+ */
+export function pickTaxonomyQueryTypeOverride({
+  currentQueryType = '',
+  availableQueryTypes = [],
+  userMessage = '',
+  fromHarness = false
+} = {}) {
+  if (fromHarness) return null
+  // An explicitly named query type is an instruction, not a hint — never override it.
+  if (extractRequestedVfbQueryShortNames(userMessage).length > 0) return null
+  if (!isTaxonomyStyleQuestion(userMessage)) return null
+
+  const currentKey = normalizeQueryTypeComparisonKey(currentQueryType)
+  if (!TAXONOMY_OVERRIDABLE_QUERY_KEYS.has(currentKey)) return null
+
+  const preferred = chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf'])
+  if (!preferred) return null
+  if (normalizeQueryTypeComparisonKey(preferred) === currentKey) return null
+  return preferred
+}
+
+async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = '', fromHarness = false }) {
   const candidates = []
 
   if (Array.isArray(cleanArgs.queries)) {
@@ -9095,16 +9155,14 @@ async function validateVfbRunQueryTypes({ client, cleanArgs = {}, userMessage = 
     }
 
     const availableQueryTypes = availableById.get(candidate.id) || []
-    const explicitQueryTypes = extractRequestedVfbQueryShortNames(userMessage)
-    const preferredTaxonomyQueryType = explicitQueryTypes.length === 0 && isTaxonomyStyleQuestion(userMessage)
-      ? chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf'])
-      : null
 
-    if (
-      preferredTaxonomyQueryType &&
-      normalizeQueryTypeComparisonKey(candidate.query_type) !== normalizeQueryTypeComparisonKey(preferredTaxonomyQueryType) &&
-      ['neuronsparthere', 'neuronssynaptic', 'neuronspresynaptichere', 'neuronspostsynaptichere', 'partsof', 'componentsof'].includes(normalizeQueryTypeComparisonKey(candidate.query_type))
-    ) {
+    const preferredTaxonomyQueryType = pickTaxonomyQueryTypeOverride({
+      currentQueryType: candidate.query_type,
+      availableQueryTypes,
+      userMessage,
+      fromHarness
+    })
+    if (preferredTaxonomyQueryType) {
       candidate.query_type = preferredTaxonomyQueryType
       if (typeof candidate.setQueryType === 'function') candidate.setQueryType(preferredTaxonomyQueryType)
     }
@@ -10996,6 +11054,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // entities in each digest) — are NOT leaks. Stripping them deleted the
     // user's own identifier mid-sentence ("the VFB ID of is AL.MB_CA.83") and
     // made the "…and list the VFB IDs" instruction impossible to satisfy.
+    // Post-mortem diagnostic, off unless VFB_HARNESS_TRACE=true. When an answer
+    // is wrong the two things worth knowing are which actions the controller
+    // chose (trace) and what each step ended up asking for and whether it was
+    // answered (plan). Together with the MCPARGS line in executeFunctionTool
+    // these localise a defect to routing, execution or synthesis in one run —
+    // which is how #79 was finally pinned on a query_type rewrite. No user text
+    // and no tool payloads are logged, only step metadata.
+    if (process.env.VFB_HARNESS_TRACE === 'true') {
+      try { console.log('[VFBchat] HARNESS TRACE', JSON.stringify(live.trace)) } catch {}
+      try { console.log('[VFBchat] HARNESS PLAN', JSON.stringify((live.ledger?.plan || []).map(s => ({ id: s.id, tool: s.tool, status: s.status, args: s.args, note: s.note })))) } catch {}
+    }
     const groundedIds = collectGroundedIds(userMessage, live.ledger)
     const leakedIds = findLeakedIds(rawAnswerText, groundedIds)
     const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText, groundedIds) : rawAnswerText
