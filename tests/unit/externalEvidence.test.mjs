@@ -114,6 +114,36 @@ test('planRetrieval: how-to question → documentation', () => {
   assert.equal(r.documentation, true)
 })
 
+test('planRetrieval: the planner\'s own documentation intent counts, not just the phrasing', () => {
+  // "How do I use the Virtual Fly Brain MCP tool?" was PLANNED as documentation
+  // and then had documentation retrieval decided against it by a regex that had
+  // never heard of MCP. The planner read the question; the regex pattern-matches.
+  const r = planRetrieval({ question: 'Tell me about the MCP endpoint', intent: 'documentation', vfbAnswered: true, vfbHasData: true })
+  assert.equal(r.documentation, true)
+  assert.ok(r.reasons.includes('doc-intent'))
+})
+
+test('needsDocumentation: questions about VFB ITSELF reach the docs', () => {
+  // Each of these has a documentation answer and no ontology answer at all, so
+  // missing the route does not degrade the answer — it removes it.
+  for (const q of [
+    'What was included in the latest Virtual Fly Brain release?',
+    'How should I cite Virtual Fly Brain in a publication?',
+    'Who funds Virtual Fly Brain and since when?',
+    'What is Virtual Fly Brain and who is it for?',
+    'What do confidence values mean on Virtual Fly Brain?',
+    'What are bridging registrations between brain templates in VFB?',
+    'Where can I access the FAFB or FANC CATMAID datasets via Virtual Fly Brain?',
+    'Is there a circuit diagram of the mushroom body available on Virtual Fly Brain?'
+  ]) assert.equal(needsDocumentation(q), true, q)
+})
+
+test('needsDocumentation: "release" in its synaptic sense is not a docs question', () => {
+  // The release/version alternatives are qualified for exactly this reason.
+  assert.equal(needsDocumentation('What triggers neurotransmitter release at this synapse?'), false)
+  assert.equal(needsDocumentation('Which neurons release dopamine in the mushroom body?'), false)
+})
+
 test('planRetrieval: explicit paper request always escalates literature', () => {
   const r = planRetrieval({ question: 'show me the papers on this', vfbAnswered: true, vfbHasData: true })
   assert.equal(r.literature, true)

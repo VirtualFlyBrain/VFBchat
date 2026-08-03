@@ -101,6 +101,73 @@ test('normalizePlan: bad intent → other; dedupes step ids; drops toolless step
   assert.notEqual(p.steps[0].id, p.steps[1].id)
 })
 
+test('normalizePlan: "what specific aspect" is an abstention, not a clarification', () => {
+  // Both of these are verbatim from the task battery. "How do I use the VFB MCP
+  // tool?" and "What was included in the latest VFB release?" each came back
+  // underspecified, and underspecified ALSO suppresses the concurrent doc search
+  // — so the two questions most obviously answerable from documentation were the
+  // two that never looked at any. Vetoing the flag drops them into the
+  // controller's documentation escalation instead.
+  for (const q of [
+    'What specific aspect of the latest Virtual Fly Brain release are you interested in?',
+    'What specific aspect of the Virtual Fly Brain Model Context Protocol tool do you need help with?',
+    'Which parts of the 3D viewer do you mean?',
+    'Could you be more specific?',
+    'What kind of information are you looking for?'
+  ]) {
+    const p = normalizePlan({ intent: 'documentation', underspecified: true, clarifying_question: q, steps: [] })
+    assert.equal(p.underspecified, false, q)
+    assert.equal(p.clarifying_question, '', q)
+  }
+})
+
+test('normalizePlan: a clarification that names the missing ENTITY survives', () => {
+  for (const q of [
+    'Which neuron do you mean?',
+    'Which dataset should I compare against?',
+    'What is the name of the neuron you are asking about?'
+  ]) {
+    const p = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: q, steps: [] })
+    assert.equal(p.underspecified, true, q)
+    assert.equal(p.clarifying_question, q, q)
+  }
+})
+
+test('normalizePlan: the VFB service itself is not a term to resolve', () => {
+  // VFB's ontology holds fly anatomy; it does not hold "Virtual Fly Brain".
+  // Asking anyway returned VFB_SYMBOL for the release question and nothing at all
+  // for the MCP one, and the latter turned the whole answer into "the name could
+  // not be matched to a VFB term".
+  const p = normalizePlan({
+    intent: 'documentation', underspecified: false,
+    terms_to_resolve: [
+      'Virtual Fly Brain',
+      'the VFB website',
+      'Virtual Fly Brain Model Context Protocol (MCP)',
+      'VFB-connect',
+      'mushroom body'
+    ],
+    steps: []
+  })
+  assert.deepEqual(p.terms_to_resolve, ['mushroom body'])
+})
+
+test('normalizePlan: a real term that merely mentions VFB is kept', () => {
+  const p = normalizePlan({
+    intent: 'term_info', underspecified: false,
+    terms_to_resolve: ['VFB_00101567', 'Kenyon cell', 'adult brain template'],
+    steps: []
+  })
+  assert.deepEqual(p.terms_to_resolve, ['VFB_00101567', 'Kenyon cell', 'adult brain template'])
+})
+
+test('normalizePlan: underspecified with no question to ask is dropped', () => {
+  // The controller needs both to clarify, so keeping the flag alone would only
+  // suppress the doc search and then fall through unanswered anyway.
+  const p = normalizePlan({ intent: 'other', underspecified: true, clarifying_question: '   ', steps: [] })
+  assert.equal(p.underspecified, false)
+})
+
 test('buildPlannerMessages: includes question + catalogue, instructs not to answer', () => {
   const m = buildPlannerMessages('what connects to DA1?', [{ name: 'vfb_query_connectivity', purpose: 'class-to-class connectivity' }])
   assert.match(m[0].content, /Do NOT answer/)

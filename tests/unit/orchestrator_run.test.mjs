@@ -599,6 +599,87 @@ test('a name VFB\'s search knows nothing about is worded differently from an amb
   assert.ok(!/not matched automatically/.test(prompt), 'must not imply candidates were offered')
 })
 
+test('an unmatched name does not veto an answer the documentation already gave', async () => {
+  // "How do I use the Virtual Fly Brain MCP tool?" came back as a request to
+  // clarify which VFB term "Virtual Fly Brain MCP" meant — while the doc search
+  // sat beside it. The instruction to ask which was meant is unconditional and
+  // outranked the evidence. An unresolved name is a reason not to claim absence,
+  // not a reason to withhold an answer found some other way.
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['the MCP tool'], steps: []
+  }
+  const deps = makeDeps({ plan, structured: {
+    extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } })
+  }, tools: {
+    vfb_search_terms: () => ({ response: { docs: [] } }),
+    search_reviewed_docs: () => ({ results: [{ id: 'mcp', title: 'VFB MCP', url: 'https://www.virtualflybrain.org/docs/mcp' }] }),
+    get_reviewed_page: () => 'Point your MCP client at mcp.virtualflybrain.org.'
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', deps)
+  const prompt = synthMessages[1].content
+  assert.match(prompt, /UNMATCHED NAMES/, 'still warned not to claim absence')
+  assert.match(prompt, /must NOT say VFB holds no data on them/)
+  assert.match(prompt, /Answer the question from the EVIDENCE above/)
+  assert.ok(!/ask which was meant/.test(prompt), prompt)
+})
+
+test('the doc retrieve reads past a top hit that does not answer', async () => {
+  // Search ranking is a keyword heuristic: for "How do I use the VFB MCP tool?"
+  // it puts the Term Context page first (the word "context") and the MCP guide
+  // second. Reading only the top hit turned a page that answers the question
+  // into "consult the documentation".
+  const plan = {
+    intent: 'documentation', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const fetched = []
+  const deps = makeDeps({ plan, structured: {
+    // Only the MCP guide answers; the first two pages are relevant-looking noise.
+    extract: messages => /vfb-mcp-guide/.test(messages[1].content)
+      ? { ok: true, value: { relevant: true, answered: true, claim: 'The MCP server is at mcp.virtualflybrain.org', verbatim: 'mcp.virtualflybrain.org' } }
+      : { ok: true, value: { relevant: true, answered: false, claim: '', verbatim: '' } }
+  }, tools: {
+    search_reviewed_docs: () => ({ results: [
+      { id: 'termcontext', title: 'The Term Context tab', url: 'https://www.virtualflybrain.org/docs/website-features/termcontext' },
+      { id: 'mcp', title: 'VFB Model Context Protocol (MCP) Tool Guide', url: 'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide' },
+      { id: 'tools', title: 'Tool landscape', url: 'https://www.virtualflybrain.org/docs/past-workshops/connectome/tools' }
+    ] }),
+    get_reviewed_page: ({ url }) => { fetched.push(url); return `page body for ${url}` }
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('How do I use the VFB MCP tool?', deps)
+  assert.deepEqual(fetched.slice(0, 2), [
+    'https://www.virtualflybrain.org/docs/website-features/termcontext',
+    'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide'
+  ])
+  assert.ok(!fetched.includes('https://www.virtualflybrain.org/docs/past-workshops/connectome/tools'), 'stops at the first page that answers')
+  assert.match(synthMessages[1].content, /mcp\.virtualflybrain\.org/)
+  // …and having answered from a doc page, the synthesiser is told not to close
+  // with "VFB does not currently hold instructions on this".
+  assert.match(synthMessages[1].content, /DOCUMENTATION ANSWERED THIS/)
+})
+
+test('no documentation disclaimer block when nothing came from the docs', async () => {
+  // The block contradicts the standing absence rule, so it must appear only
+  // when a documentation page actually answered.
+  const plan = {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  }
+  const deps = makeDeps({ plan, tools: {
+    vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+    vfb_get_term_info: () => ({ Name: 'medulla', Id: 'FBbt_00003748', Meta: { Description: 'The second optic neuropil.' }, Queries: [] })
+  } })
+  let synthMessages = null
+  deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
+  await runHarness('Tell me about the medulla', deps)
+  assert.ok(!/DOCUMENTATION ANSWERED THIS/.test(synthMessages[1].content))
+})
+
 test('no UNMATCHED NAMES block when every name resolved', async () => {
   // The block is a warning about a specific failure. Emitting it on a healthy
   // run would spend prompt budget and invite hedging on a well-grounded answer.
