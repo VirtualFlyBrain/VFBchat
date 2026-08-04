@@ -8,7 +8,9 @@ import {
   shouldColorEdgesByWeight,
   shouldUseStructuralColoring,
   summariseEdgeWeights,
-  formatGraphWeight
+  formatGraphWeight,
+  formatEdgeTooltip,
+  formatNodeTooltip
 } from '../../lib/graphVisual.mjs'
 
 // ── palette ──────────────────────────────────────────────────────────
@@ -219,4 +221,65 @@ test('every band has a label and a distinct colour for the legend', () => {
 test('bands are ordered strongest first, which is what the lookup relies on', () => {
   const thresholds = GRAPH_EDGE_WEIGHT_BANDS.map(band => band.threshold)
   assert.deepEqual(thresholds, thresholds.slice().sort((a, b) => b - a))
+})
+
+// ── hover text ───────────────────────────────────────────────────────
+
+test('an edge tooltip names both ends and reads the weight as synapses', () => {
+  assert.equal(
+    formatEdgeTooltip({
+      sourceLabel: 'DA1 lPN', targetLabel: 'Kenyon cell', label: '15', bandLabel: 'Weaker'
+    }),
+    'DA1 lPN → Kenyon cell\n15 synapses (weaker)'
+  )
+})
+
+test('an undirected edge tooltip does not claim a direction', () => {
+  const tip = formatEdgeTooltip({
+    sourceLabel: 'A', targetLabel: 'B', label: '5', directed: false
+  })
+  assert.ok(!tip.includes('→'))
+  assert.ok(tip.includes('A — B'))
+})
+
+test('a non-numeric edge label is passed through rather than called synapses', () => {
+  // The label is whatever the model wrote; only a bare number is a synapse count.
+  assert.equal(
+    formatEdgeTooltip({ sourceLabel: 'A', targetLabel: 'B', label: 'innervates' }),
+    'A → B\ninnervates'
+  )
+})
+
+test('an edge with no band still gets a tooltip, without a strength claim', () => {
+  const tip = formatEdgeTooltip({ sourceLabel: 'A', targetLabel: 'B', label: '5' })
+  assert.equal(tip, 'A → B\n5 synapses')
+})
+
+test('an edge with no label falls back to naming its ends', () => {
+  assert.equal(formatEdgeTooltip({ sourceLabel: 'A', targetLabel: 'B' }), 'A → B')
+})
+
+test('an edge tooltip with nothing to say is empty, not a stray arrow', () => {
+  assert.equal(formatEdgeTooltip({}), '')
+  assert.equal(formatEdgeTooltip(), '')
+  assert.equal(formatEdgeTooltip({ sourceLabel: 'A', label: '' }), '')
+})
+
+test('a node tooltip carries the full label, which the drawn one may truncate', () => {
+  assert.equal(
+    formatNodeTooltip({ label: 'adult ellipsoid body extrinsic ring neuron ExR5', group: 'ellipsoid body' }),
+    'adult ellipsoid body extrinsic ring neuron ExR5\nellipsoid body'
+  )
+})
+
+test('a node tooltip does not repeat the label back as its own group', () => {
+  assert.equal(formatNodeTooltip({ label: 'Kenyon cell', group: 'Kenyon cell' }), 'Kenyon cell')
+  assert.equal(formatNodeTooltip({ label: 'Kenyon cell', group: 'kenyon CELL' }), 'Kenyon cell')
+  assert.equal(formatNodeTooltip({ label: 'Kenyon cell' }), 'Kenyon cell')
+})
+
+test('a node tooltip handles missing pieces without printing undefined', () => {
+  assert.equal(formatNodeTooltip({}), '')
+  assert.equal(formatNodeTooltip(), '')
+  assert.equal(formatNodeTooltip({ group: 'mushroom body' }), 'mushroom body')
 })

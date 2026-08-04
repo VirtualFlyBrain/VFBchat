@@ -14,7 +14,9 @@ import {
   shouldColorEdgesByWeight,
   shouldUseStructuralColoring,
   summariseEdgeWeights,
-  formatGraphWeight
+  formatGraphWeight,
+  formatEdgeTooltip,
+  formatNodeTooltip
 } from '../lib/graphVisual.mjs'
 
 const FEEDBACK_REASON_LABELS = {
@@ -330,6 +332,13 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
             width: edge.data.width,
             band: band?.key || null,
             color: band?.color || GRAPH_EDGE_NEUTRAL,
+            title: formatEdgeTooltip({
+              sourceLabel: source.label,
+              targetLabel: target.label,
+              label: edge.data.label,
+              bandLabel: band?.label || '',
+              directed: isDirected
+            }),
             source,
             target
           }
@@ -478,6 +487,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
 
             return (
               <g key={edge.id}>
+                {edge.title && <title>{edge.title}</title>}
                 <line
                   x1={x1}
                   y1={y1}
@@ -506,6 +516,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           })}
           {svgGraph.nodes.map(node => (
             <g key={node.id}>
+              <title>{formatNodeTooltip({ label: node.label, group: node.group })}</title>
               <circle
                 cx={node.x}
                 cy={node.y}
