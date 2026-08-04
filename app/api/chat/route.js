@@ -205,7 +205,11 @@ function normalizeGraphSpec(rawSpec = {}) {
   const nodeIdSet = new Set()
   for (const rawNode of rawNodes.slice(0, 80)) {
     if (!rawNode || typeof rawNode !== 'object') continue
-    const id = String(rawNode.id || '').trim()
+    // A node whose only identifier is its label is still a usable node, and
+    // models emit that shape often enough that dropping it silently loses the
+    // whole graph. The edges are matched on the same string, so this stays
+    // internally consistent.
+    const id = String(rawNode.id || rawNode.label || '').trim()
     if (!id || nodeIdSet.has(id)) continue
     nodeIdSet.add(id)
 
@@ -230,8 +234,9 @@ function normalizeGraphSpec(rawSpec = {}) {
   const edges = []
   for (const rawEdge of rawEdges.slice(0, 200)) {
     if (!rawEdge || typeof rawEdge !== 'object') continue
-    const source = String(rawEdge.source || '').trim()
-    const target = String(rawEdge.target || '').trim()
+    // "from"/"to" is the other spelling models reach for unprompted.
+    const source = String(rawEdge.source || rawEdge.from || '').trim()
+    const target = String(rawEdge.target || rawEdge.to || '').trim()
     if (!source || !target) continue
 
     if (!knownNodeIds.has(source)) {
@@ -1675,7 +1680,7 @@ function getToolConfig() {
         upstream_type: { type: 'string', description: 'Upstream (presynaptic) neuron class plain FBbt ID (e.g. FBbt_00048241) or label — do NOT use markdown links or IRIs' },
         downstream_type: { type: 'string', description: 'Downstream (postsynaptic) neuron class plain FBbt ID (e.g. FBbt_00047039) or label — do NOT use markdown links or IRIs' },
         weight: { type: 'number', description: 'Minimum synapse count threshold (default 5)' },
-        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true)' },
+        group_by_class: { type: 'boolean', description: 'Aggregate by class instead of per-neuron pairs (default true). Grouped queries are faster and less likely to time out, so keep the default on a first attempt and on any retry after a timeout. If the grouped result comes back with only a handful of class pairs, a follow-up with group_by_class=false and a higher weight threshold returns per-neuron detail without a much larger result set.' },
         exclude_dbs: { type: 'array', items: { type: 'string' }, description: 'Dataset symbols to exclude, e.g. [\"hb\", \"fafb\"]' }
       },
       required: ['upstream_type', 'downstream_type']

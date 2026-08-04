@@ -5,6 +5,17 @@ import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
+import {
+  GRAPH_PALETTE,
+  GRAPH_ROLE_STYLES,
+  GRAPH_EDGE_NEUTRAL,
+  GRAPH_EDGE_WEIGHT_BANDS,
+  getEdgeWeightBand,
+  shouldColorEdgesByWeight,
+  shouldUseStructuralColoring,
+  summariseEdgeWeights,
+  formatGraphWeight
+} from '../lib/graphVisual.mjs'
 
 const FEEDBACK_REASON_LABELS = {
   helpful: 'Helpful',
@@ -42,14 +53,6 @@ function tableViewAllLabel(tbl) {
   return ''
 }
 
-const GRAPH_PALETTE = ['#4a9eff', '#4ade80', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#f87171', '#34d399']
-const GRAPH_ROLE_STYLES = {
-  source: { label: 'Source side', color: '#4a9eff' },
-  target: { label: 'Target side', color: '#4ade80' },
-  bridge: { label: 'Intermediate', color: '#f59e0b' },
-  isolated: { label: 'Other', color: '#94a3b8' }
-}
-
 function hashString(value = '') {
   let hash = 0
   for (let i = 0; i < value.length; i += 1) {
@@ -58,6 +61,10 @@ function hashString(value = '') {
   }
   return Math.abs(hash)
 }
+
+// Arrowhead size in user units, fixed rather than scaled by stroke width.
+// The node padding below (targetPad) leaves room for exactly this much.
+const GRAPH_ARROW_SIZE = 10
 
 function normalizeGraphGroup(value = '') {
   return typeof value === 'string' ? value.trim() : ''
@@ -137,11 +144,13 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     const providedGroups = Object.keys(groupCounts)
     const largestProvidedGroup = Object.values(groupCounts).reduce((max, count) => Math.max(max, count), 0)
     const hasDirectionalStructure = roleCounts.source > 0 && roleCounts.target > 0
-    const fragmentedProvidedGroups = providedGroups.length === 0
-      || providedGroups.length > 3
-      || providedGroups.length >= Math.max(3, Math.ceil(nodes.length * 0.75))
-      || largestProvidedGroup <= Math.max(1, Math.floor(nodes.length / 2))
-    const useStructuralColoring = isDirected && nodes.length >= 3 && hasDirectionalStructure && fragmentedProvidedGroups
+    const useStructuralColoring = shouldUseStructuralColoring({
+      providedGroupCount: providedGroups.length,
+      largestProvidedGroup,
+      nodeCount: nodes.length,
+      isDirected,
+      hasDirectionalStructure
+    })
 
     if (useStructuralColoring) {
       const legend = Object.entries(GRAPH_ROLE_STYLES)
@@ -300,17 +309,27 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     }))
     const laidOutNodeById = new Map(laidOutNodes.map(node => [node.id, node]))
 
+    const edgeWeights = graphEdges.map(edge => Number(edge.data.weight) || 1)
+    const maxEdgeWeight = Math.max(1, ...edgeWeights)
+    const weightsVary = shouldColorEdgesByWeight(edgeWeights)
+
     return {
       nodes: laidOutNodes,
+      weightsVary,
       edges: graphEdges
         .map(edge => {
           const source = laidOutNodeById.get(edge.data.source)
           const target = laidOutNodeById.get(edge.data.target)
           if (!source || !target) return null
+          const band = weightsVary
+            ? getEdgeWeightBand(edge.data.weight, maxEdgeWeight)
+            : null
           return {
             id: edge.data.id,
             label: edge.data.label,
             width: edge.data.width,
+            band: band?.key || null,
+            color: band?.color || GRAPH_EDGE_NEUTRAL,
             source,
             target
           }
@@ -335,6 +354,8 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
   if (nodes.length === 0 || edges.length === 0) return null
 
   const legendEntries = visualGrouping.legend
+  const weightStats = summariseEdgeWeights(edges)
+  const showWeightKey = svgGraph.weightsVary && isDirected
 
   return (
     <div ref={containerRef} style={{
@@ -370,6 +391,40 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           ))}
         </div>
       )}
+      {showWeightKey && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '6px', fontSize: '0.72em', color: '#8f9aad' }}>
+          <span>Connection strength</span>
+          {GRAPH_EDGE_WEIGHT_BANDS.map(band => (
+            <span key={band.key} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#ccc' }}>
+              <span style={{ width: 14, height: 2, backgroundColor: band.color, display: 'inline-block' }} />
+              {band.label}
+            </span>
+          ))}
+        </div>
+      )}
+      {weightStats && weightStats.edges > 1 && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(78px, 1fr))',
+          gap: '6px',
+          marginBottom: '8px',
+          fontSize: '0.7em'
+        }}>
+          {[
+            ['Connections', weightStats.edges],
+            ['Total weight', formatGraphWeight(weightStats.total)],
+            ['Min', formatGraphWeight(weightStats.min)],
+            ['Max', formatGraphWeight(weightStats.max)],
+            ['Mean', formatGraphWeight(weightStats.mean)],
+            ['Median', formatGraphWeight(weightStats.median)]
+          ].map(([label, value]) => (
+            <div key={label} style={{ backgroundColor: '#1a1a24', borderRadius: '6px', padding: '4px 6px' }}>
+              <div style={{ color: '#8f9aad' }}>{label}</div>
+              <div style={{ color: '#e5e7eb', fontWeight: 600 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
       <div
         style={{ width: svgSize.width, height: svgSize.height, backgroundColor: '#0f0f12' }}
       >
@@ -382,24 +437,38 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           style={{ display: 'block' }}
         >
           <defs>
-            <marker
-              id="graph-arrow"
-              markerWidth="8"
-              markerHeight="8"
-              refX="7"
-              refY="4"
-              orient="auto"
-              markerUnits="strokeWidth"
-            >
-              <path d="M0,0 L8,4 L0,8 Z" fill="#4b5563" />
-            </marker>
+            {/* One marker per edge colour so the arrowhead matches its line.
+                Ids are static rather than per-instance: every graph on the page
+                defines the same markers with the same fills, so a collision
+                between two graphs resolves to an identical arrow. */}
+            {[{ key: 'neutral', color: GRAPH_EDGE_NEUTRAL }, ...GRAPH_EDGE_WEIGHT_BANDS].map(band => (
+              <marker
+                key={band.key}
+                id={`graph-arrow-${band.key}`}
+                markerWidth={GRAPH_ARROW_SIZE}
+                markerHeight={GRAPH_ARROW_SIZE}
+                refX={GRAPH_ARROW_SIZE - 1}
+                refY={GRAPH_ARROW_SIZE / 2}
+                orient="auto"
+                // userSpaceOnUse, not the SVG default of strokeWidth: line width
+                // already carries the weight, and scaling the arrowhead by it
+                // too grew a heavy edge's head to five times the node radius,
+                // swallowing the node it pointed at.
+                markerUnits="userSpaceOnUse"
+              >
+                <path
+                  d={`M0,0 L${GRAPH_ARROW_SIZE},${GRAPH_ARROW_SIZE / 2} L0,${GRAPH_ARROW_SIZE} Z`}
+                  fill={band.color}
+                />
+              </marker>
+            ))}
           </defs>
           {svgGraph.edges.map(edge => {
             const dx = edge.target.x - edge.source.x
             const dy = edge.target.y - edge.source.y
             const distance = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)))
             const sourcePad = edge.source.radius + 2
-            const targetPad = edge.target.radius + 9
+            const targetPad = edge.target.radius + (isDirected ? GRAPH_ARROW_SIZE : 2)
             const x1 = edge.source.x + (dx / distance) * sourcePad
             const y1 = edge.source.y + (dy / distance) * sourcePad
             const x2 = edge.target.x - (dx / distance) * targetPad
@@ -414,9 +483,9 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
                   y1={y1}
                   x2={x2}
                   y2={y2}
-                  stroke="#4b5563"
+                  stroke={edge.color}
                   strokeWidth={edge.width}
-                  markerEnd={isDirected ? 'url(#graph-arrow)' : undefined}
+                  markerEnd={isDirected ? `url(#graph-arrow-${edge.band || 'neutral'})` : undefined}
                 />
                 {edge.label && (
                   <text
