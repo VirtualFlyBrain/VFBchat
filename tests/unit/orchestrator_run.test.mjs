@@ -595,8 +595,18 @@ test('a name VFB\'s search knows nothing about is worded differently from an amb
   await runHarness('What is MBON-a1?', deps)
   const prompt = synthMessages[1].content
   assert.match(prompt, /UNMATCHED NAMES/)
-  assert.match(prompt, /"MBON-a1" — VFB's name search returned nothing for this wording/)
+  assert.match(prompt, /"MBON-a1" — VFB's search returned nothing at all for this wording/)
   assert.ok(!/not matched automatically/.test(prompt), 'must not imply candidates were offered')
+  // T2.7 showed that "differently worded" is not enough on its own. With two
+  // unmatched names, one carrying candidates and one not, the model merged them
+  // into a single sentence and filled the candidate slot for the name that had
+  // none: "with search candidates including no relevant matches", "with
+  // candidates including zero matching terms". So the empty branch has to deny
+  // the slot outright rather than merely decline to open it.
+  assert.match(prompt, /NO candidate list for this name/)
+  // One unmatched name cannot be merged with another, so the merge instruction
+  // is not paid for here.
+  assert.ok(!/SEPARATE finding/.test(prompt), 'the multi-name rule stays out of a single-name prompt')
 })
 
 test('an unmatched name does not veto an answer the documentation already gave', async () => {

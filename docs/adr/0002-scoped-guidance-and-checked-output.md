@@ -131,16 +131,85 @@ a new way.
 - Adding a rule becomes: write the matcher, add a row to the matrix, state what
   it must be absent from. The cost of a new rule stops being invisible.
 - Some residuals are **not** prompt problems at all and this ADR does not claim
-  to fix them. D20 (the FANC CATMAID question) is a retrieval problem: the
-  reviewed-docs index holds 12 curated entries plus ~88 sitemap entries with
-  URL-humanised titles and placeholder summaries, and none mention `hosted`,
-  `catmaid` or `fanc`. No prompt reaches a page the index cannot find. The
-  durable fix is capturing each page's `<title>` and meta description at
-  discovery time.
-- T2.7's "with possible candidates including no exact matches" is the two
-  `unmatched` branches — "search returned: A; B" and "search returned nothing" —
-  being conflated by the model into one sentence. That is a wording fix inside
-  one card, not a new rule.
+  to fix them. D20 (the FANC CATMAID question) is a retrieval problem: no prompt
+  reaches a page the index cannot find. This ADR originally recorded the fix as
+  "capturing each page's `<title>` and meta description at discovery time".
+  **That was measured and found insufficient.** Across the real 96-page corpus,
+  document frequency for `fafb` and `fanc` over title + meta description +
+  headings is **zero** — the page that answers D20,
+  `/docs/data/em/`, names them only in a comparison table and a bulleted list.
+  The actual diagnosis is four compounding causes, all now fixed in
+  `lib/reviewedDocsSearch.js` and pinned by tests:
+  1. **An unanchored regex**, the largest single cause. `/\/data\//` in
+     `BLOCKED_PAGE_PATH_PATTERNS` was meant to exclude a top-level asset
+     directory and excluded the whole `/docs/data/` tree — seven pages,
+     including the one that answers D20. Anchored to `/^\/data\//`.
+  2. **Ranking on placeholders.** `rankEntries` ran before `enrichSearchResult`,
+     which fetched real pages only for the three entries that had already won.
+     Enrichment was cosmetic: it improved what was displayed, never what was
+     found. The index is now enriched in the background behind the placeholder
+     index, so the cold first query is unchanged.
+  3. **Index dilution.** 91 of 187 discovered URLs were readthedocs
+     `/en/vX.Y.Z/` archives — near-duplicate stale copies that pushed the
+     document frequency of every vfb-connect term above ninety, driving its
+     weight to the floor and so actively suppressing vfb-connect pages for
+     vfb-connect questions. Excluded; `/en/stable/` and `/en/latest/` survive.
+  4. **The extractor dropped the data carriers.** `extractContentBlocks` read
+     only `h1`-`h3`, `p` and `pre`. It now reads `<tr>` a row at a time (cells
+     joined with `" | "`) always, and `<li>` inside an isolated
+     `<main>`/`role="main"` region with `nav`/`aside`/`header`/`footer`
+     removed — which is what makes `<li>` safe to read at all, given a docs page
+     carries 400-1300 of them and nearly all are menu links.
+  Body text is indexed as the weakest scored field (1, against a title's 6), so
+  a passing mention cannot outrank a page that is about the word; it earns its
+  keep through the coverage multiplier instead. Verified end to end: D20 now
+  ranks `/docs/data/em` first, where it previously ranked `/about/accessibility`
+  first and never returned the answering page at all.
+- T2.7 was recorded here as one wording bug. **That diagnosis was wrong**, and
+  the correction is worth keeping because it is the same mistake this ADR is
+  about: a defect in the answer was read as a defect in the prompt. T2.7 asks
+  whether anything in the Hemibrain dataset resembles the fru+ mAL neurons, and
+  answered that neither name could be matched. Probing VFB's own `/search`
+  showed **four** faults, of which only the last is about wording, and all four
+  are now fixed in `lib/orchestrator.mjs` and pinned by
+  `tests/unit/nameVariants.test.mjs`:
+  1. **Datasets were inadmissible.** `validSearchDocs` accepted a document only
+     if its short_form began with an ontology prefix. VFB's dataset ids do not
+     (`Xu2020NeuronsV1point2point1`), so every dataset was dropped before
+     ranking — they could not be resolved, and could not even be offered as
+     candidates. `isResolvableVfbDoc` now admits an ontology id, an `Entity`
+     facet, or a `virtualflybrain.org/reports/` id, and `searchCandidateLabels`
+     shares it instead of carrying its own copy of the rule.
+  2. **One retry, of one shape.** The resolver retried a name only by
+     singularising it, and only when the search came back empty. `fru+ mAL
+     neurons` returns 33 rows — all gene records, `SMC6` and `nonC`, because the
+     `+` poisons the Solr query — so it was never retried, while `fru mAL
+     neuron` returns 305 rows with the right term first. `nameVariants` now
+     produces an ordered ladder (singular, marker-stripped, both, category-noun
+     stripped) and the retry fires whenever the search yields **no id**, not
+     only when it yields no rows. A variant is still only adopted if it resolves
+     under the *original* name, which is what keeps the 37 junk rows out.
+  3. **A category noun names a facet, not a word in a label.** "Hemibrain
+     dataset" returns 0 rows; "Hemibrain" returns 440, with the two real
+     `DataSet` records ranked 436th and 439th — last. Every stage of the ladder
+     was therefore guaranteed to answer with the wrong *kind* of record: the
+     top-hit fallback returned `AB(R) on JRC_FlyEM_Hemibrain`, a synaptic
+     neuropil domain, on a shared token. A new stage decides category
+     references outright — the unique facet match, or nothing — and never falls
+     through. Both Hemibrain datasets are legitimately "the Hemibrain dataset",
+     so it abstains and offers *them* as the candidates. A confident answer
+     about the wrong kind of record is worse than no answer.
+  4. **The wording.** This part of the original diagnosis stands. The two
+     `unmatched` branches were mergeable, so the model reported "candidates
+     including no exact matches" about a name that had none. The empty branch
+     now denies the candidate slot in terms ("There is NO candidate list for
+     this name"), and a separate instruction forbids merging two unmatched
+     names — gated on there being two, so a single-name question does not pay
+     for it.
+  The general lesson for this ADR: the prompt was the only place anyone had
+  been looking, and three of the four faults were upstream of it, in what the
+  ledger was allowed to contain. A rule added to the synthesiser could not have
+  fixed any of them, and would have been paid for by every other question.
 
 ## Status of the work
 
@@ -153,5 +222,13 @@ Landed on this branch:
   to the complex tier: three planner votes, 24 tool rounds.
 - `lib/sentenceRewrite.mjs` — `sentenceStart()`, for any rewrite rule that
   substitutes a whole sentence.
+- `lib/reviewedDocsSearch.js` — the four retrieval fixes for D20, with
+  `tests/unit/reviewedDocsRanking.test.mjs` and
+  `tests/unit/reviewedDocsPage.test.mjs`.
+- `lib/orchestrator.mjs` — the four resolver fixes for T2.7, with
+  `tests/unit/nameVariants.test.mjs` (24 tests).
+- `lib/planner.mjs` — the fast path drops a leading indefinite article, so
+  "What is a Kenyon cell?" resolves `Kenyon cell`. Lowercase-only, because `AN`
+  is the abbreviation for ascending neuron.
 
 Not yet done: layers 1 and 2 above.
