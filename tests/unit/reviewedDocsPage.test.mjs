@@ -106,3 +106,78 @@ test('an empty or tagless page is an empty list, not a throw', () => {
   assert.deepEqual(extractContentBlocks(''), [])
   assert.deepEqual(extractContentBlocks('<div>no blocks here</div>'), [])
 })
+
+// Shaped like the real /docs/data/em/ page, which is a Hugo Docsy page: the
+// site menu lives in <nav> and <aside> OUTSIDE <main>, and the answer to "where
+// can I access the FAFB or FANC CATMAID datasets?" lives entirely inside a
+// comparison table and a bulleted list. Both were dropped by the extractor, so
+// the words FAFB and FANC appeared nowhere in what the index or the model saw.
+const DOCSY = `
+<html><body>
+<header><nav class="td-navbar"><ul><li><a href="/docs/">Documentation</a></li></ul></nav></header>
+<main class="td-main" role="main">
+  <aside class="td-sidebar"><nav class="td-sidebar-nav"><ul><li><a href="/docs/apis/">API Reference</a></li></ul></nav></aside>
+  <h1>Electron Microscopy Data</h1>
+  <p>Virtual Fly Brain integrates several electron microscopy connectomics datasets, listed below.</p>
+  <h2>Datasets Hosted by VFB</h2>
+  <ul>
+    <li>FAFB (Full Adult Fly Brain) — served from a CATMAID instance hosted by VFB.</li>
+    <li>FANC (Female Adult Nerve Cord) — served from a CATMAID instance hosted by VFB.</li>
+  </ul>
+  <h2>Comparison Table of Integrated Datasets</h2>
+  <table>
+    <tr><th>Dataset</th><th>Scope</th><th>Browser</th></tr>
+    <tr><td>FAFB (FlyWire)</td><td>Full brain (adult female)</td><td>Codex</td></tr>
+    <tr><td>FANC</td><td>Full VNS (adult female)</td><td>CATMAID</td></tr>
+  </table>
+</main>
+<footer><nav><ul><li><a href="/about/">About us</a></li></ul></nav></footer>
+</body></html>
+`
+
+test('a table is read a row at a time, cells joined', () => {
+  // On the real page the words FAFB and FANC appear ONLY inside this table and
+  // the list above it. Dropping <td> made the question unanswerable while the
+  // answer sat on an indexed page.
+  const blocks = extractContentBlocks(DOCSY)
+  assert.ok(blocks.includes('FANC | Full VNS (adult female) | CATMAID'), blocks.join(' | '))
+  assert.ok(blocks.includes('Dataset | Scope | Browser'), blocks.join(' | '))
+})
+
+test('list items are read inside an isolated main region', () => {
+  // <li> was excluded outright because a docs page carries 400-1300 of them and
+  // nearly all are menu links — but that is a statement about the sidebar, not
+  // about lists. Once the sidebar is gone, the remaining list is the content.
+  const blocks = extractContentBlocks(DOCSY)
+  assert.ok(blocks.some(b => b.startsWith('FAFB (Full Adult Fly Brain)')), blocks.join(' | '))
+})
+
+test('chrome is stripped even when it is nested inside main', () => {
+  // The Docsy sidebar is <aside> wrapping <nav> wrapping the menu, and it sits
+  // INSIDE <main>. A non-greedy match closes on the first end tag, which would
+  // leave half the menu behind.
+  const blocks = extractContentBlocks(DOCSY).join(' | ')
+  assert.ok(!blocks.includes('API Reference'), blocks)
+  assert.ok(!blocks.includes('About us'), blocks)
+  assert.ok(!blocks.includes('Documentation'), blocks)
+})
+
+test('list items stay out when the page marks no main region', () => {
+  // Without a main marker there is nothing separating menu from content, so the
+  // old conservative rule still applies. PAGE has a bare <nav> and no <main>.
+  const blocks = extractContentBlocks(PAGE)
+  assert.ok(!blocks.some(b => b.includes('Quickstart Guide')), blocks.join(' | '))
+})
+
+test('role="main" counts as a main region, not just <main>', () => {
+  // readthedocs marks its article with <div role="main"> and has no <main>
+  // element at all; vfb-connect is a third of the reviewed corpus.
+  const rtd = `
+    <body>
+      <nav class="wy-nav-side"><ul><li><a href="/x">Menu entry</a></li></ul></nav>
+      <div role="main"><h1>Tutorials</h1><ul><li>Query VFB for neurons in a region of interest.</li></ul></div>
+    </body>`
+  const blocks = extractContentBlocks(rtd)
+  assert.ok(blocks.some(b => b.startsWith('Query VFB for neurons')), blocks.join(' | '))
+  assert.ok(!blocks.some(b => b.includes('Menu entry')), blocks.join(' | '))
+})

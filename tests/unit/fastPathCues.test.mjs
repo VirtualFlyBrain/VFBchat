@@ -89,6 +89,21 @@ test('the definitional lookups the fast path exists for still take it', () => {
   }
 })
 
+test('a leading indefinite article is not part of the name', () => {
+  // "a Kenyon cell" went to VFB verbatim, which costs the exact-label match and
+  // leaves the term to be recovered by the weakest stage of the resolver.
+  assert.deepEqual(detectFastPath('What is a Kenyon cell?').terms_to_resolve, ['Kenyon cell'])
+  assert.deepEqual(detectFastPath('What is an olfactory projection neuron?').terms_to_resolve,
+    ['olfactory projection neuron'])
+})
+
+test('an abbreviation that looks like an article survives', () => {
+  // AN is the abbreviation for ascending neuron. Stripping articles
+  // case-insensitively would send this question to VFB as "neurons", so the
+  // strip is lowercase-only and this is the test that says why.
+  assert.deepEqual(detectFastPath('What are AN neurons?').terms_to_resolve, ['AN neurons'])
+})
+
 test('a vetoed question is vetoed, not merely unresolved', () => {
   // Both are null, but for different reasons, and the distinction is the point:
   // the first has a perfectly good subject and is held back on its cue, the

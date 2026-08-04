@@ -11,7 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rankEntries, tokenizeQuery } from '../../lib/reviewedDocsSearch.js'
+import { rankEntries, tokenizeQuery, isIndexableReviewedUrl } from '../../lib/reviewedDocsSearch.js'
 import { pickDocCandidates } from '../../lib/orchestrator.mjs'
 
 // A miniature stand-in for the real index: one page per topic, all on the same
@@ -78,6 +78,103 @@ test('answering more of the question beats matching one word louder', () => {
   const r = rank('How do I report a problem or contribute data to Virtual Fly Brain?')
   assert.equal(r[0], 'contact', r.join(','))
   assert.ok(r.indexOf('contact') < r.indexOf('reports'), r.join(','))
+})
+
+// The EM page as the index now holds it, versus the same page as the index used
+// to hold it. A sitemap gives a URL and nothing else, so every discovered entry
+// was titled by Title-Casing its last path segment and summarised as "Approved
+// page on ... at ...". Ranking ran on THOSE; the real page was fetched
+// afterwards, for the three entries that had already won. So enrichment only
+// ever changed what was displayed, never what was found.
+const EM_URL = 'https://www.virtualflybrain.org/docs/data/em/'
+const EM_PLACEHOLDER = {
+  id: 'em',
+  title: 'Em',
+  url: EM_URL,
+  domain: 'www.virtualflybrain.org',
+  pathname: '/docs/data/em/',
+  summary: 'Approved page on www.virtualflybrain.org at /docs/data/em/.',
+  keywords: ['docs', 'data', 'em'],
+  headings: [],
+  text: ''
+}
+// Titles, headings and body text as they come off the live page. FAFB, FANC and
+// CATMAID appear nowhere in the title or the meta description — they are cells
+// in the "Comparison Table of Integrated Datasets" and items in the "Datasets
+// Hosted by VFB" list, which is why capturing <title> and meta description at
+// discovery time was not enough on its own.
+const EM_ENRICHED = {
+  ...EM_PLACEHOLDER,
+  title: 'Electron Microscopy Data',
+  summary: 'Connectomics datasets integrated into Virtual Fly Brain.',
+  headings: ['Datasets Hosted by VFB', 'Comparison Table of Integrated Datasets', 'Accessing the data'],
+  text: [
+    'FAFB (FlyWire) | fw | Full brain (adult female) | Dense | Codex | Dorkenwald et al. (2024)',
+    'FANC | N/A | Full VNS (adult female) | Sparse | CATMAID | Phelps et al. (2021)',
+    'Hemibrain | hb | Central brain (adult female) | Dense | neuPrint | Scheffer et al. (2020)',
+    'The FAFB and FANC datasets are served from CATMAID instances hosted by VFB.'
+  ].join(' \n ')
+}
+
+// The three plausible distractors that beat the EM page before this change:
+// a page whose path stems to "acces" (so it matched "access"), a blog post
+// naming both "datasets" and the site, and the site root.
+const ACCESSIBILITY = { id: 'accessibility', title: 'Accessibility', url: 'https://www.virtualflybrain.org/about/accessibility', domain: 'www.virtualflybrain.org', pathname: '/about/accessibility', summary: 'Approved page on www.virtualflybrain.org at /about/accessibility.', keywords: ['about', 'accessibility'], headings: [], text: '' }
+const BLOG = { id: 'blog', title: 'Ontologies And Datasets', url: 'https://www.virtualflybrain.org/blog/ontologies/datasets', domain: 'www.virtualflybrain.org', pathname: '/blog/ontologies/datasets', summary: 'Approved page on www.virtualflybrain.org at /blog/ontologies/datasets.', keywords: ['blog', 'ontologies', 'datasets'], headings: [], text: '' }
+
+const D20 = 'Where can I access the FAFB or FANC CATMAID datasets via Virtual Fly Brain?'
+const rankIds = (entries, q) => rankEntries(entries, tokenizeQuery(q)).map(e => e.id)
+
+test('D20: a URL-shaped placeholder cannot be found by the words that answer it', () => {
+  // The failing state, pinned so the fix cannot silently regress into it. The
+  // page that answers the question is in the index and is not returned at all,
+  // because nothing in its indexed fields says FAFB, FANC or CATMAID.
+  const ranked = rankIds([EM_PLACEHOLDER, ACCESSIBILITY, BLOG, ...ENTRIES], D20)
+  assert.notEqual(ranked[0], 'em', ranked.join(','))
+})
+
+test('D20: the enriched page wins on the words that only its body carries', () => {
+  const ranked = rankIds([EM_ENRICHED, ACCESSIBILITY, BLOG, ...ENTRIES], D20)
+  assert.equal(ranked[0], 'em', ranked.join(','))
+})
+
+test('body text is the weakest field, not a louder one', () => {
+  // Body text scores 1 against a title's 6 on purpose: a page that merely
+  // MENTIONS a word must not outrank a page that is ABOUT it. It earns its keep
+  // through coverage instead — matching a further word anywhere lifts the whole
+  // score, because coverage multiplies.
+  const mentions = { id: 'mentions', title: 'Release Notes', url: 'https://www.virtualflybrain.org/blog/notes', domain: 'www.virtualflybrain.org', pathname: '/blog/notes', summary: 'Recent changes.', keywords: [], headings: [], text: 'We added a link to the new MCP guide this month.' }
+  const about = ENTRIES.find(e => e.id === 'mcp')
+  const ranked = rankIds([mentions, about], 'MCP')
+  assert.equal(ranked[0], 'mcp', ranked.join(','))
+})
+
+test('the asset-path blocker does not exclude the documentation tree', () => {
+  // One unanchored regex, /\/data\//, was the largest single cause of D20: it
+  // was meant to keep a top-level asset directory out of the index and instead
+  // excluded all seven pages under /docs/data/ — including the one page that
+  // says where the FAFB and FANC CATMAID instances live. An over-broad blocker
+  // is invisible from the outside; it just quietly makes a page unanswerable.
+  const allow = ['www.virtualflybrain.org', 'vfb-connect.readthedocs.io']
+  assert.equal(isIndexableReviewedUrl(EM_URL, allow), true)
+  assert.equal(isIndexableReviewedUrl('https://www.virtualflybrain.org/docs/data/templates/', allow), true)
+  assert.equal(isIndexableReviewedUrl('https://www.virtualflybrain.org/data/logo-set/', allow), false)
+})
+
+test('readthedocs version archives stay out, stable and latest stay in', () => {
+  // Ninety-one of 187 discovered URLs were /en/vX.Y.Z/ archives: near-duplicate
+  // stale copies that pushed the document frequency of every vfb-connect term
+  // above ninety, driving its weight to the floor and so actively SUPPRESSING
+  // vfb-connect pages for vfb-connect questions.
+  const allow = ['vfb-connect.readthedocs.io']
+  assert.equal(isIndexableReviewedUrl('https://vfb-connect.readthedocs.io/en/stable/', allow), true)
+  assert.equal(isIndexableReviewedUrl('https://vfb-connect.readthedocs.io/en/latest/tutorials.html', allow), true)
+  assert.equal(isIndexableReviewedUrl('https://vfb-connect.readthedocs.io/en/v2.1.3/', allow), false)
+})
+
+test('an off-allow-list host is never indexable, whatever its path', () => {
+  assert.equal(isIndexableReviewedUrl('https://github.com/VirtualFlyBrain/VFB2', ['www.virtualflybrain.org']), false)
+  assert.equal(isIndexableReviewedUrl('not a url', ['www.virtualflybrain.org']), false)
 })
 
 test('pickDocCandidates: ranked, de-duplicated, capped, url-or-link', () => {
