@@ -455,6 +455,11 @@ test('plural cell phrase with no matching region resolves to the cell class', ()
 })
 
 test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', async () => {
+  // "and its neurons" is load-bearing: a bare "tell me about X" is a
+  // DEFINITIONAL question, answered by the term description, with no data ask to
+  // guard and nothing to be constructive about — so it deliberately gets no
+  // catalogue at all (see the test below). Name a data noun and it becomes a
+  // data question, and the digest's counts have to reach the synthesiser.
   const plan = {
     intent: 'region_connections', underspecified: false, clarifying_question: '',
     terms_to_resolve: ['medulla'], steps: []
@@ -471,7 +476,7 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
     return baseRunTool(name, args)
   }
   deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
-  await runHarness('Tell me about the medulla', deps)
+  await runHarness('Tell me about the medulla and its neurons', deps)
   assert.ok(synthMessages, 'synth ran')
   assert.match(synthMessages[1].content, /AVAILABLE VFB DATA/)
   assert.match(synthMessages[1].content, /Neurons with presynaptic terminals in medulla \(262\)/)
@@ -480,11 +485,22 @@ test('synthesiser is given an AVAILABLE VFB DATA block from the term digest', as
   assert.ok(!/FBbt_00003748/.test(synthMessages[1].content), 'synth prompt must not contain ontology ids')
 })
 
-test('a step that ANSWERED suppresses the AVAILABLE VFB DATA fallback', async () => {
-  // The block is a rescue for a thin ledger. Supplied alongside a real answer, the
-  // system prompt's "point to the follow-up queries" appends the query catalogue
-  // as a tail — which is the read-back defect, re-entering through the back door.
-  // The follow-ons are already shown as chips beside the answer.
+test('a step that ANSWERED still gets the catalogue — as a prohibition, not a licence to recite', async () => {
+  // This test used to assert the block was ABSENT here, and that was the bug.
+  //
+  // It was written for a real defect: supplied alongside a real answer, the
+  // system prompt's "point to the follow-up queries" turned the catalogue into a
+  // tail — this very LPLC2 answer came back fully scored and correct, then closed
+  // with "VFB holds various data related to LPLC2, including available images,
+  // splits targeting it, …". Suppressing the whole block stopped the padding and
+  // took the absence prohibition down with it, so one query running was enough to
+  // let the next sentence deny everything that had not.
+  //
+  // The block does two separable jobs. FORBIDDING a denial has to be
+  // unconditional — it costs one sentence and it is the whole point. LICENSING a
+  // recital is what pads, so it is scoped to WORTH SAYING: queries this question
+  // asked for that nothing already run covers. An NBLAST answer covers the
+  // similarity ask, so nothing here qualifies, and the block says so out loud.
   const plan = {
     intent: 'neuron_profile', underspecified: false, clarifying_question: '',
     terms_to_resolve: ['LPLC2'],
@@ -509,7 +525,15 @@ test('a step that ANSWERED suppresses the AVAILABLE VFB DATA fallback', async ()
   deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
   await runHarness('What neurons are similar to LPLC2?', deps)
   assert.ok(synthMessages, 'synth ran')
-  assert.ok(!/AVAILABLE VFB DATA/.test(synthMessages[1].content), synthMessages[1].content.slice(0, 400))
+  const prompt = synthMessages[1].content
+  // The prohibition is here — it costs one sentence and it is the whole point.
+  assert.match(prompt, /AVAILABLE VFB DATA/, 'the catalogue is present even though a step answered')
+  assert.match(prompt, /Images of LPLC2 \(723\)/, 'with the images VFB is holding but did not run')
+  assert.match(prompt, /FORBIDDEN/, 'and an explicit ban on denying them')
+  // The licence is not. The NBLAST answer covers the similarity ask; the images
+  // query is not what was asked for, so it may not be offered as a follow-up.
+  assert.ok(!/WORTH SAYING/.test(prompt), 'nothing unrun answers THIS question')
+  assert.match(prompt, /Do not list the HELD group back to the reader/, 'so the recital is banned outright')
 })
 
 test('a planner-chosen similarity step still gets the deterministic claim', async () => {

@@ -218,15 +218,24 @@ test('an unmatched anatomical name does ask which term was meant', async () => {
   assert.match(prompt, /mushroom body output neuron; adult mushroom body/, 'the near misses are offered')
 })
 
-test('the available-data catalogue is offered only to a ledger no step answered', async () => {
-  // Supplied unconditionally it became a tail on every answer: the LPLC2
-  // similarity answer came back fully scored and correct, then closed with "VFB
-  // holds various data related to LPLC2, including available images, splits …".
-  // The follow-up queries are already rendered as chips beside the answer.
+test('the available-data catalogue reaches every data question, and no definitional one', async () => {
+  // The gate used to be "did any step answer?", and that was the bug: one query
+  // running was enough to take the whole block down, prohibition included, so
+  // the next sentence could freely deny the four queries that had not run.
   //
-  // Not a "what is X?" question: that shape is claimed by detectFastPath, which
-  // plans a term-info step whatever the plan below says — and term-info always
-  // answers, so the thin case is unreachable through it.
+  // What that gate was really written for was a REAL defect — supplied as a
+  // licence, the catalogue became a tail on every answer: the LPLC2 similarity
+  // answer came back fully scored and correct, then closed with "VFB holds
+  // various data related to LPLC2, including available images, splits …". The
+  // fix is to split the block's two jobs rather than suppress both. Forbidding a
+  // denial is unconditional; licensing a recital is scoped to WORTH SAYING.
+  //
+  // So the surviving gate is about the QUESTION, not the ledger. A definitional
+  // question is answered by the term description; it makes no data claim, so
+  // there is no absence to guard and nothing to be constructive about.
+  //
+  // Not a "what is X?" question below: that shape is claimed by detectFastPath,
+  // which plans a term-info step whatever the plan says.
   const thin = await synthPrompt('Which GAL4 lines label the mushroom body?', {
     plan: {
       intent: 'genetic_tools', underspecified: false, clarifying_question: '', terms_to_resolve: ['mushroom body'],
@@ -234,10 +243,10 @@ test('the available-data catalogue is offered only to a ledger no step answered'
     },
     stepEvidence: false
   })
-  assert.match(thin, BLOCKS.available, 'a thin ledger gets the catalogue')
+  assert.match(thin, BLOCKS.available, 'a data question gets the catalogue')
 
-  const answered = await synthPrompt('What is the mushroom body?', { plan: ANATOMY_PLAN })
-  assert.ok(!BLOCKS.available.test(answered), 'a ledger a step answered does not')
+  const definitional = await synthPrompt('What is the mushroom body?', { plan: ANATOMY_PLAN })
+  assert.ok(!BLOCKS.available.test(definitional), 'a definitional question does not')
 })
 
 test('the catalogue arrives as a prohibition, and absence needs a lookup that happened', async () => {
@@ -248,19 +257,40 @@ test('the catalogue arrives as a prohibition, and absence needs a lookup that ha
   // nothing relevant") could not tell QUERIED AND EMPTY from NEVER QUERIED, and
   // a permission loses to a rule. Both halves are pinned here: the block says
   // its queries are unrun, and the system rule keys absence on a lookup.
+  //
+  // TWO digest queries, deliberately. One is picked up and run by the
+  // sufficiency injector and fails extraction, landing in TRIED, NO RESULT; the
+  // other is never attempted and stays HELD. That is the exact pair the old
+  // model could not tell apart — it called both of them "nothing relevant" —
+  // and each licenses a different sentence, so both groups are asserted here.
   const thin = await synthPrompt('Which GAL4 lines label the mushroom body?', {
     plan: {
       intent: 'genetic_tools', underspecified: false, clarifying_question: '', terms_to_resolve: ['mushroom body'],
       steps: [{ id: 's1', tool: 'vfb_find_genetic_tools', answers: ['which GAL4 lines label the mushroom body'] }]
     },
-    stepEvidence: false
+    stepEvidence: false,
+    digestQueries: [{ label: 'NeuronsPartHere', count: 12 }, { label: 'TransgeneExpressionHere', count: 40 }]
   })
   assert.match(thin, /HAVE NOT BEEN RUN/, 'the catalogue must say these are unrun, not empty')
+  assert.match(thin, /NeuronsPartHere \(12\)/, 'with the held count attached to it')
   assert.match(thin, /FORBIDDEN/, 'and forbid an absence about anything it covers')
+
+  // A lookup that fell over says nothing about the holdings, so it may not be
+  // reported as an absence either — and the count stays on the line, because
+  // "VFB holds 40 records here and the lookup did not complete" is an answer
+  // where "the lookup did not complete" on its own is a shrug.
+  assert.match(thin, /TRIED, NO RESULT/, 'a failed lookup is its own state')
+  assert.match(thin, /TransgeneExpressionHere \(40\)/, 'and keeps the count it is holding')
+
+  // The prohibition is unconditional; the LICENCE to name a query is not. This
+  // question's one relevant query was already attempted, so nothing qualifies.
+  assert.ok(!/WORTH SAYING/.test(thin), 'nothing unrun answers this question, so nothing is offered')
+  assert.match(thin, /Do not list the HELD group back to the reader/, 'and the rest is explicitly not for reciting')
 
   const system = lastSynthMessages[0].content
   assert.match(system, /ABSENCE REQUIRES A LOOKUP THAT HAPPENED/)
-  assert.match(system, /came back empty/, 'absence is keyed on a query that ran, not on an empty block')
+  assert.match(system, /RUN, CAME BACK EMPTY — this state, and only this state, licenses an absence/,
+    'absence is keyed on a query that ran and returned nothing, not on an empty block')
   assert.ok(!/Only say VFB lacks something if AVAILABLE VFB DATA/.test(system),
     'the old permission-shaped gate must not come back')
 })
