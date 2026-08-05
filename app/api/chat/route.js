@@ -29,6 +29,8 @@ import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
+import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
+import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
@@ -7523,6 +7525,50 @@ async function findSimilarNeuronsTool(client, args = {}, context = {}) {
   }
 
   const grouped = groupSimilarByClass(hits, { focusId: isClass ? id : '', seedIds: used.map(s => s.id) })
+
+  // The dataset axis. Two distinct things the question can want from the same
+  // hit list, and 3.9.2 answered neither:
+  //
+  //   "...and which datasets they come from" (W5.B) -> the whole breakdown.
+  //   "...the closest neuron IN THE HEMIBRAIN"  (W2.B) -> one dataset, filtered.
+  //
+  // Both are computed unconditionally. by_dataset costs one pass over hits we
+  // already hold, and a result that carries its own provenance is better evidence
+  // for every similarity question, not just the two that name a dataset out loud.
+  const wanted = datasetAsked(context.userMessage || '')
+  let requestedDataset = null
+  if (wanted) {
+    // The seed's own cell types, for "are they annotated as the same type?".
+    // Read from term-info rather than from the hit list, because the seed is NOT
+    // in its own SimilarMorphologyTo result set — the one place its types could
+    // otherwise have come from for free.
+    let seedClasses = []
+    try {
+      const ti = await getTermInfoEvidence(client, id)
+      seedClasses = parseMarkdownLinks(String(ti?.record?.Meta?.Types || '')).filter(c => /^FBbt_/.test(c.target))
+    } catch { /* an unnamed seed type degrades the verdict, not the match */ }
+    const best = bestHitInDataset(hits, wanted, { seedClasses })
+    if (best) {
+      requestedDataset = {
+        ...best,
+        label: wanted.label,
+        seedTypes: seedClasses.map(c => c.text),
+        hit: {
+          id: best.hit.id,
+          name: best.hit.name,
+          score: best.hit.score,
+          source: best.hit.source,
+          type: best.hit.classes.map(c => c.text).join('; ')
+        }
+      }
+    } else {
+      // Saying nothing here is how "closest neuron in the hemibrain" got answered
+      // with a FlyWire neuron. An empty filtered set is a real finding — VFB has
+      // no NBLAST-registered neighbour there — and has to be stated, not skipped.
+      requestedDataset = { label: wanted.label, hit: null, considered: 0, empty: true }
+    }
+  }
+
   return JSON.stringify({
     tool: 'vfb_find_similar_neurons',
     resolved: { id, label },
@@ -7530,11 +7576,13 @@ async function findSimilarNeuronsTool(client, args = {}, context = {}) {
     neurons_compared: grouped.neurons,
     self_class: grouped.self,
     similar_classes: grouped.others.slice(0, 12),
+    by_dataset: groupHitsByDataset(hits).map(d => ({ id: d.id, label: d.label, count: d.count, bestScore: d.bestScore })),
+    requested_dataset: requestedDataset,
     top_neurons: [...hits]
       .sort((a, b) => b.score - a.score)
       .filter((h, i, arr) => arr.findIndex(x => x.id === h.id) === i)
       .slice(0, 10)
-      .map(h => ({ id: h.id, name: h.name, score: h.score, type: h.classes.map(c => c.text).join('; ') }))
+      .map(h => ({ id: h.id, name: h.name, score: h.score, dataset: h.source, type: h.classes.map(c => c.text).join('; ') }))
   })
 }
 
