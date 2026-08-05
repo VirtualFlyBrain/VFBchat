@@ -42,6 +42,9 @@ const BLOCKS = {
   docGapWording: /documentation does not appear to cover/
 }
 
+/** The last synthesis call's full message pair, for tests that need the system half. */
+let lastSynthMessages = null
+
 /**
  * Run the harness with mocked I/O and return the synthesiser's user message.
  *
@@ -116,6 +119,7 @@ async function synthPrompt(question, {
   }
   await runHarness(question, deps)
   assert.ok(messages, `synthesis did not run for "${question}"`)
+  lastSynthMessages = messages
   return messages[1].content
 }
 
@@ -234,6 +238,31 @@ test('the available-data catalogue is offered only to a ledger no step answered'
 
   const answered = await synthPrompt('What is the mushroom body?', { plan: ANATOMY_PLAN })
   assert.ok(!BLOCKS.available.test(answered), 'a ledger a step answered does not')
+})
+
+test('the catalogue arrives as a prohibition, and absence needs a lookup that happened', async () => {
+  // Seven of twenty workshop answers denied records this very block was
+  // advertising — "VFB does not currently hold data on the input and output
+  // neurons of the mushroom body", over 366 presynaptic and 304 postsynaptic.
+  // The old gate ("only say VFB lacks something if AVAILABLE VFB DATA shows
+  // nothing relevant") could not tell QUERIED AND EMPTY from NEVER QUERIED, and
+  // a permission loses to a rule. Both halves are pinned here: the block says
+  // its queries are unrun, and the system rule keys absence on a lookup.
+  const thin = await synthPrompt('Which GAL4 lines label the mushroom body?', {
+    plan: {
+      intent: 'genetic_tools', underspecified: false, clarifying_question: '', terms_to_resolve: ['mushroom body'],
+      steps: [{ id: 's1', tool: 'vfb_find_genetic_tools', answers: ['which GAL4 lines label the mushroom body'] }]
+    },
+    stepEvidence: false
+  })
+  assert.match(thin, /HAVE NOT BEEN RUN/, 'the catalogue must say these are unrun, not empty')
+  assert.match(thin, /FORBIDDEN/, 'and forbid an absence about anything it covers')
+
+  const system = lastSynthMessages[0].content
+  assert.match(system, /ABSENCE REQUIRES A LOOKUP THAT HAPPENED/)
+  assert.match(system, /came back empty/, 'absence is keyed on a query that ran, not on an empty block')
+  assert.ok(!/Only say VFB lacks something if AVAILABLE VFB DATA/.test(system),
+    'the old permission-shaped gate must not come back')
 })
 
 test('card guidance reaches only the questions its matcher claims', async () => {
