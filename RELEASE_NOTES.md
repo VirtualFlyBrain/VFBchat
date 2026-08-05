@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v3.7.0
+- Release v3.7.0: Absence in an answer now requires a lookup that actually happened. Seven of twenty workshop questions were answered "VFB does not currently hold data on X" about terms whose own digests advertised exactly X, with the query sitting available and un-run — nothing distinguished QUERIED AND EMPTY from NEVER QUERIED. Three layers: the synthesis absence gate now keys on a query having run and come back empty, and the AVAILABLE VFB DATA block states its queries are unrun and forbids an absence about anything it covers; a new ledger-level sufficiency check runs before synthesis, asking which of the un-run queries would answer the question and injecting it (one shot, deterministically pre-filtered, on the ledger rather than the streamed prose so it can still re-plan); and three deterministic injectors were widened to reach a region asked a connectivity question, a counted query asked for its members, and a question resolving two terms.
+
 ## v3.3.0
 - Release v3.3.0: Reviewed-docs search plane — run an approved-domain documentation search in parallel to supplement every answer, with page citations in Sources; scRNA-seq gene-expression rendered as deterministic gene x subtype tables; published neuron-count estimates surfaced with their citation; role-harness reliability work — deterministic connectivity-graph routing for neuron types, intent-scoped guidance cards, answer-grounding guards, and more robust token-superset term resolution; route dataset-listing questions to vfb_list_connectome_datasets; split VFB MCP timeouts by call weight; thumbnail link/label fixes; and VFB3-MCP 1.9.1 compatibility (run_query paging/image controls, FlyBase stock/combination-publication query_types, parallel population).
 
