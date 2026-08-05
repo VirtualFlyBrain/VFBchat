@@ -171,7 +171,19 @@ test('ledgerIsThin is about STEPS, not about evidence existing', () => {
   assert.equal(ledgerIsThin({ evidence: [] }), true)
   assert.equal(ledgerIsThin({ evidence: [{ claim: 'a', source: 'vfb' }] }), true,
     'term-info evidence carries no stepId — resolving a term is not answering a question')
-  assert.equal(ledgerIsThin({ evidence: [{ claim: 'a', source: 'vfb', stepId: 's2' }] }), false)
+  // A ledger with a step but NO resolved term carries no query catalogue, so
+  // there is nothing to compare the question against. That used to return false
+  // — "not thin", i.e. sufficient — which infers adequacy from ignorance: an
+  // absent shelf is the least the ledger ever knows, not the most. It is the
+  // same mistake as reading VFBquery's count -1 as zero, and the same mistake
+  // renderNoCoverageFloor exists to stop on the prompt side.
+  //
+  // Saying so costs nothing: shouldCheckSufficiency's last gate is
+  // unrunQueries(), which reads the same digests and is necessarily empty on
+  // this branch, so no extra model call can fire from the change.
+  const noShelf = { evidence: [{ claim: 'a', source: 'vfb', stepId: 's2' }] }
+  assert.equal(ledgerIsThin(noShelf), true, 'no catalogue is not the same as nothing missing')
+  assert.equal(shouldCheckSufficiency(noShelf), false, 'and it must still not buy a model call')
 })
 
 test('isDefinitionalQuestion separates "what IS it" from "what data does it have"', () => {

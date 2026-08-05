@@ -25,6 +25,8 @@ import { runLiveHarness } from '../../../lib/liveHarness.mjs'
 import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
 import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
+import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
+import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
@@ -910,9 +912,17 @@ function buildSuccessfulTextResult({ responseText, responseId, toolUsage, toolRo
   const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, outboundAllowList)
   const { textWithoutGraphs, graphs: inlineGraphs } = extractGraphSpecsFromResponseText(sanitizedText)
   const toolGraphSpecs = Array.isArray(graphSpecs) ? graphSpecs : []
-  const userSafeText = sanitizeInternalToolMentions(textWithoutGraphs)
-    .replace(/\bcreate_basic_graph(?:\s+tool)?\b/gi, 'graph view')
-    .replace(/`?graph view`?\s+tool outputs?/gi, 'the graph view')
+  // Last gate before the reader. sanitizeInternalToolMentions renames the
+  // apparatus; this removes the sentences that are ABOUT the apparatus — the
+  // pending-query notes and the "not in the provided evidence" claims that the
+  // synthesis prompt has forbidden in three separate places and that shipped
+  // anyway. It runs before linkify so a surviving holding still gets its count
+  // turned into a clickable follow-up.
+  const userSafeText = stripHarnessFraming(
+    sanitizeInternalToolMentions(textWithoutGraphs)
+      .replace(/\bcreate_basic_graph(?:\s+tool)?\b/gi, 'graph view')
+      .replace(/`?graph view`?\s+tool outputs?/gi, 'the graph view')
+  )
   const scopedUserSafeText = ensureRegionSurveyConnectomicsScope(userSafeText, toolUsage)
   const linkedResponseText = linkifyFollowUpQueryItems(scopedUserSafeText)
   const images = extractImagesFromResponseText(linkedResponseText)
@@ -1071,11 +1081,30 @@ const VFB_FAST_TOOLS = new Set([
   'get_term_info', 'search_terms', 'resolve_entity', 'resolve_combination',
   'vfb_get_term_info', 'vfb_search_terms', 'vfb_resolve_entity', 'vfb_resolve_combination'
 ])
-function mcpCallOptions(name) {
-  const ms = VFB_FAST_TOOLS.has(name) ? VFB_MCP_FAST_TIMEOUT_MS : VFB_MCP_SLOW_TIMEOUT_MS
+function mcpPerAttemptMs(name) {
+  return VFB_FAST_TOOLS.has(name) ? VFB_MCP_FAST_TIMEOUT_MS : VFB_MCP_SLOW_TIMEOUT_MS
+}
+function mcpCallOptions(name, timeoutMs) {
+  const ms = timeoutMs > 0 ? timeoutMs : mcpPerAttemptMs(name)
   return { timeout: ms, maxTotalTimeout: ms }
 }
 const VFB_MCP_MAX_RETRIES = normalizeInteger(process.env.VFB_MCP_MAX_RETRIES, 2, 0, 5)
+
+// The TOTAL wall clock one logical call may consume — every attempt and every
+// backoff between them. The per-call timeouts above say how long ONE attempt may
+// take; without a total, the retry count silently multiplies them, and a fast
+// lookup that is supposed to cost at most 30 s costs ~95 s (30 + 2 + 30 + 3 +
+// 30) before anyone is told. That multiplication is the whole of the 181-second
+// resolve stall. See lib/callBudget.mjs for the argument.
+//
+// Chosen so one full attempt plus a genuinely short second one fits: the point
+// is to survive a dropped connection, not to sit through the same timeout three
+// times. Both are env-overridable for operators who would rather wait.
+const VFB_MCP_FAST_TOTAL_MS = normalizeInteger(process.env.VFB_MCP_FAST_TOTAL_MS, 45000, 5000, 300000)
+const VFB_MCP_SLOW_TOTAL_MS = normalizeInteger(process.env.VFB_MCP_SLOW_TOTAL_MS, 210000, 10000, 900000)
+function mcpTotalMs(name) {
+  return VFB_FAST_TOOLS.has(name) ? VFB_MCP_FAST_TOTAL_MS : VFB_MCP_SLOW_TOTAL_MS
+}
 
 // Is this MCP error worth retrying (transient: timeout/network/5xx), vs a real
 // client error (e.g. invalid query_type) that retrying won't fix?
@@ -1085,24 +1114,41 @@ function isTransientMcpError(error) {
 }
 
 /**
- * Call an MCP tool, retrying TRANSIENT failures after a SHORT RANDOM delay.
- * Jitter avoids retrying in lockstep with other requests. The per-call timeout
- * is NOT shortened — a slow-but-responding call is allowed to finish, since
- * cutting it off early just wastes the work already in flight.
+ * Call an MCP tool, retrying TRANSIENT failures after a SHORT RANDOM delay,
+ * inside a TOTAL wall-clock budget shared by every attempt and every backoff.
+ *
+ * The first attempt gets the full per-call timeout: a slow-but-responding call
+ * should be allowed to finish, because cutting it off early throws away work
+ * already in flight. Later attempts get whatever the budget has left, which is
+ * the correction — after the first timeout we are no longer guessing about this
+ * call's speed, we have measured it, and re-granting the identical allowance
+ * three times is what turned a 30-second lookup into a 95-second one.
  */
-async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_RETRIES } = {}) {
+async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_RETRIES, totalMs } = {}) {
+  const perAttemptMs = mcpPerAttemptMs(name)
+  const budgetMs = totalMs > 0 ? totalMs : mcpTotalMs(name)
+  const startedAt = Date.now()
+  let attemptTimeoutMs = Math.min(perAttemptMs, budgetMs)
   let lastError
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await client.callTool({ name, arguments: args }, undefined, mcpCallOptions(name))
+      return await client.callTool({ name, arguments: args }, undefined, mcpCallOptions(name, attemptTimeoutMs))
     } catch (error) {
       lastError = error
       const transient = isTransientMcpError(error)
+      const elapsedMs = Date.now() - startedAt
+      const next = planNextAttempt({
+        attempt, retries, transient, perAttemptMs, totalMs: budgetMs, elapsedMs,
+        jitterMs: Math.floor(Math.random() * 2000)
+      })
       // Detailed failure report to stdout (container log) for every failed call.
-      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | args=${JSON.stringify(args).slice(0, 300)} | error=${error?.message || error}`)
-      if (attempt >= retries || !transient) throw error
-      const wait = 1000 * (attempt + 1) + Math.floor(Math.random() * 2000) // ~1-3s, growing
-      await new Promise(resolve => setTimeout(resolve, wait))
+      // `spent` and `next` are the two facts that were missing when this was
+      // diagnosed from logs alone: a stall looks exactly like a server refusing
+      // three times unless the line says which budget ran out.
+      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${JSON.stringify(args).slice(0, 300)} | error=${error?.message || error}`)
+      if (!next.retry) throw error
+      attemptTimeoutMs = next.timeoutMs
+      if (next.waitMs > 0) await new Promise(resolve => setTimeout(resolve, next.waitMs))
     }
   }
   throw lastError
