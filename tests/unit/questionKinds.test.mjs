@@ -13,7 +13,17 @@
 //   W6.C "What genes are expressed in Kenyon cells?"
 //        vs "Single cell transcriptomics data for Kenyon cell"           → 0
 //   W7.C1 "What neuron types are intrinsic to the mushroom body?"
-//        vs "Neurons with some part in mushroom body"                    → 0
+//        vs "Subclasses of mushroom body intrinsic neuron"               → 0
+//
+// The W7.C1 fixture originally paired that question with "Neurons with some
+// part in mushroom body", because that was the query the shelf was ranking to
+// the top. Making it VISIBLE was still the right fix; making it the ANSWER was
+// not. "Some part in" is a spatial-overlap relation that holds of every MBON,
+// DAN and projection neuron crossing the calyx — the extrinsic neurons — so it
+// returned 602 rows to a question whose answer is one class, with extrinsic
+// examples named. The intrinsic route is ontological: the class "mushroom body
+// intrinsic neuron" (FBbt_00007484) and its SubclassesOf. Same defect, same
+// zero, corrected object.
 //
 // A zero is not "a bit less relevant". unansweredAsks filters on relevance > 0,
 // so a zero makes the query invisible BOTH to the sufficiency pre-filter (it
@@ -133,10 +143,10 @@ const CASES = [
     query: { query_type: 'anatScRNAseqQuery', label: 'Single cell transcriptomics data for Kenyon cell' }
   },
   {
-    name: 'W7.C1 — a neuron-type question finds the class-list query',
+    name: 'W7.C1 — an intrinsic question finds the intrinsic class’s subclasses',
     q: 'What neuron types are intrinsic to the mushroom body?',
-    digest: { name: 'mushroom body' },
-    query: { query_type: 'NeuronsPartHere', label: 'Neurons with some part in mushroom body' }
+    digest: { name: 'mushroom body intrinsic neuron' },
+    query: { query_type: 'SubclassesOf', label: 'Subclasses of mushroom body intrinsic neuron' }
   },
   {
     name: 'W3.C — a "looks like" question finds the images query',
@@ -177,6 +187,20 @@ test('the query that answers the question is now the top unanswered ask', () => 
             { query_type: 'TransgeneExpressionHere', label: 'Transgene expression in mushroom body', count: 40, countKind: 'exact' }
           ]
         }
+      },
+      // The term intrinsicTermNames adds. The planner never writes this name —
+      // the question does not contain it — which is exactly why the injection
+      // exists.
+      FBbt_00007484: {
+        id: 'FBbt_00007484',
+        label: 'mushroom body intrinsic neuron',
+        digest: {
+          name: 'mushroom body intrinsic neuron',
+          queries: [
+            { query_type: 'SubclassesOf', label: 'Subclasses of mushroom body intrinsic neuron', count: -1, countKind: 'unknown' },
+            { query_type: 'TransgeneExpressionHere', label: 'Transgene expression in mushroom body intrinsic neuron', count: -1, countKind: 'unknown' }
+          ]
+        }
       }
     },
     plan: [],
@@ -184,7 +208,34 @@ test('the query that answers the question is now the top unanswered ask', () => 
   }
   const asks = unansweredAsks(buildShelf(ledger))
   assert.ok(asks.length, 'the class-list query must be asked for, not silently dropped')
-  assert.equal(asks[0].query_type, 'NeuronsPartHere')
+  assert.equal(asks[0].query_type, 'SubclassesOf')
+  assert.ok(!asks.some(a => a.query_type === 'NeuronsPartHere'),
+    'a spatial-overlap query must not be offered as the answer to an intrinsic question')
+})
+
+test('“extrinsic neurons of the mushroom body” keeps the spatial query', () => {
+  // The mirror case, and the reason the veto reads the whole phrase rather than
+  // the word "intrinsic": extrinsic-ness IS part-overlap, so NeuronsPartHere is
+  // the right query here and must survive.
+  const ledger = {
+    question: 'What extrinsic neurons does the mushroom body have?',
+    terms: {
+      FBbt_00005801: {
+        id: 'FBbt_00005801',
+        label: 'mushroom body',
+        digest: {
+          name: 'mushroom body',
+          queries: [
+            { query_type: 'NeuronsPartHere', label: 'Neurons with some part in mushroom body', count: 602, countKind: 'exact' }
+          ]
+        }
+      }
+    },
+    plan: [],
+    evidence: []
+  }
+  const asks = unansweredAsks(buildShelf(ledger))
+  assert.equal(asks[0]?.query_type, 'NeuronsPartHere')
 })
 
 test('a kind set computed once matches one computed per query', () => {

@@ -407,7 +407,11 @@ async function runWithTimeout(work, timeoutMs) {
   }
 }
 
-const TOOL_STATUS_MESSAGE_REGEX = /\b(searching vfb|looking up term|running vfb|comparing connectome|resolving entity|resolving split|finding available stocks|searching combination|listing connectome|searching publications|searching preprints|searching reviewed|reading approved|inspecting stored tool data|reading stored tool data|preparing graph view)\b/i
+// Every phase the server emits on a `status` event: 'llm' for work the model
+// does with what it already has, and one of these for work that leaves the
+// process. getStatusForTool in app/api/chat/route.js and emit() in
+// lib/orchestrator.mjs are the only two producers, so this set is closed.
+const TOOL_STATUS_PHASES = new Set(['mcp', 'tool', 'pubmed', 'biorxiv', 'docs'])
 const BENCHMARK_FACTUAL_QUESTION_REGEX = /\b(drosophila|fruit fly|vfb|virtual fly brain|flybase|fbbt_|vfb_|neuron|neurons|brain|medulla|lobula|mushroom body|central complex|ellipsoid body|fan-shaped body|antennal lobe|glomerulus|lateral horn|subesophageal|sez|connectivity|connectome|synapse|synaptic|presynaptic|postsynaptic|input|inputs|output|outputs|nblast|morphology|gal4|split-gal4|driver|stock|expression|gene|lineage|cell type|dopaminergic|serotonergic|cholinergic|gabaergic|glutamatergic|mbon|dan|projection neuron|olfactory|visual system|descending neuron|giant fiber)\b/i
 const TOOL_CLAIM_REGEX = /\b(vfb_[a-z_]+|tool output|tool result|tool call|query returned|queried|i used|i ran|according to (?:vfb|virtual fly brain)|virtual fly brain|vfb database|database result)\b/i
 const DISAMBIGUATION_REGEX = /\b(connectivity endpoint is broader|not a neuron class|reply with one class id|candidate .* neuron classes|requires_user_selection|choose one .* neuron class|pick which|select which)\b/i
@@ -415,13 +419,29 @@ const INVESTIGATION_PLAN_REGEX = /\b(verified so far|not yet verified|recommende
 const NOT_VERIFIED_REGEX = /\b(not verified|unverified|could not verify|couldn't verify|unable to verify|cannot verify|no results|no matching|did not return|didn't return|failed|timed out|timeout)\b/i
 const GRAPH_FAILURE_REGEX = /\b(create_basic_graph|invalid graph spec|graph(?:s)? (?:could not|cannot|failed|unavailable)|unable to (?:build|create|generate) (?:a )?graph)\b/i
 
+/**
+ * Did this run actually reach out to a data source, or did it answer from what
+ * the model already had?
+ *
+ * The phase is the answer, and it is the ONLY answer. This used to fall back to
+ * matching the status TEXT whenever the phase was 'llm', and that fallback could
+ * not do what it was for: the status vocabulary has moved on ("Resolving 2
+ * term(s) in VFB", "Querying VFB connectivity", "Checking the literature"), so
+ * it matched none of the messages a real tool round now emits. What it DID still
+ * match were three messages the server deliberately labels phase 'llm' —
+ * "Preparing graph view", "Inspecting stored tool data", "Reading stored tool
+ * data" — all three of which describe the model working over data it had already
+ * fetched. So the fallback's only reachable effect was to mark a tool-free run
+ * as having used a tool: a false positive on the exact flag it existed to raise,
+ * and the flag feeds the answer-quality classification below.
+ *
+ * A status with NO phase is a producer this harness does not know about. Reading
+ * that as "no tool ran" is the safe direction — it under-reports rather than
+ * inventing evidence of a query that may never have happened.
+ */
 function resultHasToolStatus(result = {}) {
   const statuses = Array.isArray(result.status_messages) ? result.status_messages : []
-  return statuses.some(status => {
-    const phase = String(status?.phase || '').toLowerCase()
-    if (phase && phase !== 'llm') return true
-    return TOOL_STATUS_MESSAGE_REGEX.test(String(status?.message || ''))
-  })
+  return statuses.some(status => TOOL_STATUS_PHASES.has(String(status?.phase || '').toLowerCase()))
 }
 
 function responseWordCount(text = '') {

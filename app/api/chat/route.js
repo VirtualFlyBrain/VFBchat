@@ -4507,7 +4507,13 @@ function inferRunQueryTypeFromUserMessage(userMessage = '', availableQueryTypes 
   const text = normalizeEndpointSearchText(userMessage)
 
   if (/\b(classif(?:y|ied|ication)|taxonomy|taxonomic|hierarchy|hierarchical|organised|organized|neuron type|neuron types|cell type|cell types)\b/.test(text)) {
-    return chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf', 'NeuronsPartHere'])
+    // NeuronsPartHere is NOT a taxonomy query. It means "has some part in this
+    // region" — a spatial-overlap relation between a region and the neurons
+    // crossing it, which is the opposite axis from "how is this classified".
+    // Listed last it looked like a harmless fallback, and it was the fallback
+    // that fired: a region has no SubclassesOf/PartsOf over NEURONS, so every
+    // "what neuron types …" question about a region landed on it.
+    return chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'ComponentsOf'])
   }
 
   if (/\b(component|components|part|parts|subdivision|subdivisions|structure|structures|contain|contains|contained|hierarchy|organized|organisation|organization)\b/.test(text)) {
@@ -4515,7 +4521,7 @@ function inferRunQueryTypeFromUserMessage(userMessage = '', availableQueryTypes 
   }
 
   if (/\b(subclass|subclasses|type|types|kind|kinds)\b/.test(text)) {
-    return chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf', 'NeuronsPartHere'])
+    return chooseAvailableQueryType(availableQueryTypes, ['SubclassesOf', 'PartsOf'])
   }
 
   if (/\b(image|images|thumbnail|visuali[sz]e|show)\b/.test(text)) {
