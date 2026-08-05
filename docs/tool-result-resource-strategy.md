@@ -38,15 +38,19 @@ above twice the current cached medulla term-info payload size (about 24.8k
 minified / 36.8k pretty-printed). Basic term metadata should therefore reach the
 LLM intact. The default can be tuned with `VFB_DATA_RESOURCE_INLINE_MAX_CHARS`.
 
-Small outputs are still relayed inline. Inline relay truncation and fallback
-evidence compression are aligned with the same threshold by default:
+Small outputs are still relayed inline, verbatim. There is no second size
+mechanism: the resource threshold is the only thing standing between a large
+tool result and the prompt, so anything that survives it is small enough to send
+whole.
 
-- `VFB_TOOL_OUTPUT_TRUNCATE_CHARS` defaults to `DATA_RESOURCE_INLINE_MAX_CHARS`
-- `VFB_TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS` defaults to
-  `DATA_RESOURCE_INLINE_MAX_CHARS * 2`
-
-Very large relay payloads retain the fallback evidence-compression pass, but
-resource handles should avoid most raw clipping.
+An earlier design also carried a truncate-and-chunk fallback for oversized relay
+payloads, configured by `VFB_TOOL_OUTPUT_TRUNCATE_CHARS`,
+`VFB_TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS`,
+`VFB_TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS`,
+`VFB_TOOL_OUTPUT_COMPRESSION_MAX_INPUT_CHARS` and
+`VFB_DISABLE_TOOL_RESULT_COMPRESSION`. Resource handles made it unreachable and
+it was removed in 3.9.1; those five variables are no longer read. Setting them
+does nothing, and if a deployment still has them set they can be deleted.
 
 ## Reading Resources
 

@@ -3233,11 +3233,6 @@ function shouldStoreToolOutputAsDataResource({ name, output, parsedPayload, over
 }
 
 
-
-function getRelayToolOutput(item = {}) {
-  return item.relayOutput !== undefined ? item.relayOutput : item.output
-}
-
 function getDataResourceOrError(store, resourceId = '') {
   if (!store) {
     return { error: 'No data resource store is available for this request.' }
@@ -10241,106 +10236,11 @@ function stableJsonValue(value) {
 
 
 
-const TOOL_OUTPUT_TRUNCATE_CHARS = normalizeInteger(
-  process.env.VFB_TOOL_OUTPUT_TRUNCATE_CHARS,
-  DATA_RESOURCE_INLINE_MAX_CHARS,
-  12000,
-  1_000_000
-)
-const TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS = normalizeInteger(
-  process.env.VFB_TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS,
-  DATA_RESOURCE_INLINE_MAX_CHARS * 2,
-  TOOL_OUTPUT_TRUNCATE_CHARS,
-  2_000_000
-)
-const TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS = normalizeInteger(
-  process.env.VFB_TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS,
-  Math.min(24000, TOOL_OUTPUT_TRUNCATE_CHARS),
-  1000,
-  TOOL_OUTPUT_TRUNCATE_CHARS
-)
-const TOOL_OUTPUT_COMPRESSION_MAX_INPUT_CHARS = normalizeInteger(
-  process.env.VFB_TOOL_OUTPUT_COMPRESSION_MAX_INPUT_CHARS,
-  Math.max(TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS, DATA_RESOURCE_INLINE_MAX_CHARS * 2),
-  TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS,
-  2_000_000
-)
-
 function stringifyToolOutput(output = '') {
   if (typeof output === 'string') return output
   const json = JSON.stringify(output)
   return json === undefined ? String(output ?? '') : json
 }
-
-function truncateToolOutput(output = '', maxChars = TOOL_OUTPUT_TRUNCATE_CHARS) {
-  const text = stringifyToolOutput(output)
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`
-}
-
-function shouldCompressToolOutputs(toolOutputs = []) {
-  if (process.env.VFB_DISABLE_TOOL_RESULT_COMPRESSION === 'true') return false
-
-  const lengths = toolOutputs.map(item => stringifyToolOutput(getRelayToolOutput(item)).length)
-  const totalLength = lengths.reduce((sum, length) => sum + length, 0)
-  return lengths.some(length => length > TOOL_OUTPUT_TRUNCATE_CHARS) || totalLength > TOOL_OUTPUT_COMPRESSION_TOTAL_TRIGGER_CHARS
-}
-
-function buildToolOutputCompressionChunks(toolOutputs = []) {
-  const chunks = []
-  let includedChars = 0
-  let omittedChars = 0
-  let originalChars = 0
-  let inputBudgetExhausted = false
-
-  for (let toolIndex = 0; toolIndex < toolOutputs.length; toolIndex += 1) {
-    const item = toolOutputs[toolIndex]
-    const outputText = stringifyToolOutput(getRelayToolOutput(item))
-    originalChars += outputText.length
-
-    const chunkCount = Math.max(1, Math.ceil(outputText.length / TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS))
-    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-      const chunkStart = chunkIndex * TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS
-      const chunkText = outputText.slice(chunkStart, chunkStart + TOOL_OUTPUT_COMPRESSION_CHUNK_CHARS)
-      if (!chunkText && outputText.length > 0) continue
-
-      if (includedChars + chunkText.length > TOOL_OUTPUT_COMPRESSION_MAX_INPUT_CHARS) {
-        omittedChars += Math.max(0, outputText.length - chunkStart)
-        inputBudgetExhausted = true
-        break
-      }
-
-      chunks.push({
-        tool_index: toolIndex,
-        name: item.name,
-        arguments: item.arguments,
-        chunk_index: chunkIndex + 1,
-        chunk_count: chunkCount,
-        output_chars: outputText.length,
-        content: chunkText
-      })
-      includedChars += chunkText.length
-    }
-
-    if (inputBudgetExhausted) {
-      for (let remainingIndex = toolIndex + 1; remainingIndex < toolOutputs.length; remainingIndex += 1) {
-        const remainingText = stringifyToolOutput(getRelayToolOutput(toolOutputs[remainingIndex]))
-        originalChars += remainingText.length
-        omittedChars += remainingText.length
-      }
-      break
-    }
-  }
-
-  return {
-    chunks,
-    originalChars,
-    includedChars,
-    omittedChars
-  }
-}
-
-
 
 function parseToolOutputPayload(rawOutput) {
   if (rawOutput === null || rawOutput === undefined) return null
