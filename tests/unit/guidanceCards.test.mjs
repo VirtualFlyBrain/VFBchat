@@ -87,10 +87,12 @@ test('scrnaseq card fires for gene/receptor-expression questions', () => {
 })
 
 test('classifyComplexity scales effort: simple < standard < complex', () => {
-  // simple definitional lookup -> one planner vote, shallow budget
+  // simple definitional lookup -> shallow budget, but still TWO planner votes:
+  // v4.0.0 escalates on disagreement, and k=1 has nothing to disagree with.
   const simple = classifyComplexity('What is the mushroom body?')
   assert.equal(simple.tier, 'simple')
-  assert.equal(simple.plannerVotes, 1)
+  assert.equal(simple.plannerVotes, 2)
+  assert.equal(simple.maxToolRounds, 10)
   // standard single-tool intent
   const standard = classifyComplexity('What GAL4 driver lines label the mushroom body?')
   assert.equal(standard.tier, 'standard')

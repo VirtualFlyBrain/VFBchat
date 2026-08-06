@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep } from '../../lib/orchestrator.mjs'
+import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep, MAX_EXTRACT_CHARS } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
   { name: 'vfb_search_terms', purpose: 'search terms', parameters: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, rows: { type: 'number' }, minimize_results: { type: 'boolean' } } } },
@@ -185,10 +185,16 @@ test('term-info Description/Relationships answers function → no literature', a
 })
 
 test('large result: question-aware map-reduce finds an answer past the first chunk', async () => {
-  // Result is > MAX_EXTRACT_CHARS; the answer sits after ~7000 chars of padding,
-  // so a blind first-chunk truncation would miss it. The map step must read each
+  // Result is > MAX_EXTRACT_CHARS; the answer sits past the first chunk, so a
+  // blind first-chunk truncation would miss it. The map step must read each
   // chunk given the question and still find it.
-  const bigResult = { padding: 'x'.repeat(7000), tail: 'ANSWER_MARKER the medulla has 10 layers M1-M10' }
+  //
+  // The padding is sized off the LIVE cap, not a literal. v4.0.0 raised the cap
+  // from 6,000 to 48,000 chars (Qwen holds the needle at 97k where Llama lost it
+  // at 97k), and the hard-coded 7,000 stopped triggering chunking at all — the
+  // test passed on the earlier version and would have quietly stopped exercising
+  // map-reduce forever.
+  const bigResult = { padding: 'x'.repeat(MAX_EXTRACT_CHARS + 1000), tail: 'ANSWER_MARKER the medulla has 10 layers M1-M10' }
   const plan = {
     intent: 'term_info', underspecified: false, clarifying_question: '', terms_to_resolve: [],
     steps: [{ id: 's1', tool: 'vfb_query_connectivity', answers: ['how many medulla layers'] }]
