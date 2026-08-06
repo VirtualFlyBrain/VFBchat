@@ -6,12 +6,12 @@ import assert from 'node:assert/strict'
 import {
   createLedger, setPlan, addTerm, getTermId, resolveArgs, ledgerHasRefs,
   addEvidence, markStepNotFound, recordToolRound, outOfBudget,
-  vfbAnswered, vfbHasData, isComplete, pendingSteps
+  vfbAnswered, vfbHasData, isComplete, pendingSteps, recordTermId
 } from '../../lib/ledger.mjs'
-import { PLAN_SCHEMA, INTENTS, buildPlannerMessages, normalizePlan, detectFastPath } from '../../lib/planner.mjs'
+import { PLAN_SCHEMA, INTENTS, buildPlannerMessages, normalizePlan, detectFastPath, detectFocusPlan } from '../../lib/planner.mjs'
 import { nextAction, decideRetrieval, statusSummary } from '../../lib/controller.mjs'
 import { validateAgainstSchema } from '../../lib/structuredOutput.mjs'
-import { pickBestQueryForQuestion, maybeInjectCountQueryStep } from '../../lib/orchestrator.mjs'
+import { pickBestQueryForQuestion, maybeInjectCountQueryStep, knownIdForName, unmatchedTermEntries } from '../../lib/orchestrator.mjs'
 
 const PLAN = {
   intent: 'connectivity',
@@ -426,4 +426,126 @@ test('maybeInjectCountQueryStep: no-op for non-count questions and when a run_qu
   assert.equal(l2.plan[0].tool, 'vfb_run_query')
   assert.equal(l2.plan[0].args.query_type, 'ImagesNeurons')
   assert.equal(l2.plan[0].count_query, true)
+})
+
+// ---- clicked follow-on: the chip's own address becomes the plan ----
+
+test('detectFocusPlan: a validated chip address runs the query it names', () => {
+  // The medulla defect in one test. Turn 1 built this chip from a digest that
+  // already knew both halves; clicking it must run THAT query against THAT id,
+  // not re-read the chip's English sentence as if the id had never been known.
+  const p = detectFocusPlan(
+    'Which neurons receive output from the medulla?',
+    { id: 'FBbt_00003748', query_type: 'NeuronsPostsynapticHere' }
+  )
+  assert.ok(p, 'a well-formed focus should produce a plan')
+  assert.deepEqual(p.terms_to_resolve, ['FBbt_00003748'])
+  assert.equal(p.steps.length, 1)
+  assert.equal(p.steps[0].tool, 'vfb_run_query')
+  assert.deepEqual(p.steps[0].args, { id: 'FBbt_00003748', query_type: 'NeuronsPostsynapticHere' })
+  // the question is carried so the step still knows what it is answering
+  assert.deepEqual(p.steps[0].answers, ['Which neurons receive output from the medulla?'])
+  assert.equal(p.underspecified, false)
+})
+
+test('detectFocusPlan: a malformed focus falls through to the ordinary planner', () => {
+  const q = 'Which neurons receive output from the medulla?'
+  // This arrives from the CLIENT, so every one of these is reachable. Returning
+  // null (not throwing, not planning) is what makes the turn degrade to the
+  // behaviour it would have had without the chip, rather than failing outright.
+  assert.equal(detectFocusPlan(q, null), null, 'no focus at all')
+  assert.equal(detectFocusPlan(q, {}), null, 'neither half')
+  assert.equal(detectFocusPlan(q, { id: 'FBbt_00003748' }), null, 'id without query_type')
+  assert.equal(detectFocusPlan(q, { query_type: 'NeuronsPostsynapticHere' }), null, 'query_type without id')
+  assert.equal(detectFocusPlan(q, { id: 'medulla', query_type: 'NeuronsPostsynapticHere' }), null, 'a label is not an id')
+  assert.equal(detectFocusPlan(q, { id: 'FBXX_00003748', query_type: 'NeuronsPostsynapticHere' }), null, 'unknown id prefix')
+  // a query_type is an identifier we will put in a tool call — anything that is
+  // not one is a client that has been tampered with, not a query we should try.
+  assert.equal(detectFocusPlan(q, { id: 'FBbt_00003748', query_type: 'Neurons Postsynaptic Here' }), null, 'spaces')
+  assert.equal(detectFocusPlan(q, { id: 'FBbt_00003748', query_type: 'drop; MATCH (n)' }), null, 'punctuation')
+  assert.equal(detectFocusPlan(q, { id: 'FBbt_00003748', query_type: '' }), null, 'empty query_type')
+  assert.equal(detectFocusPlan(q, { id: 'FBbt_00003748', query_type: 42 }), null, 'non-string query_type')
+})
+
+// ---- the self-contradicting answer ----
+
+test('unmatchedTermEntries: a name the session has an id for is NOT unmatched', () => {
+  // Robbie's turn 2, reduced to its ledger: a stale entry for "medulla" with no
+  // id sitting beside a registry entry that resolved it perfectly well. The old
+  // code printed "the term 'medulla' was not matched to a specific VFB entity in
+  // this session" and then listed five downstream neuron types from the very
+  // evidence that entry's id had fetched.
+  const l = createLedger('Which neurons receive output from the medulla?')
+  recordTermId(l, 'medulla', 'FBbt_00003748', { canonical: true })
+  addTerm(l, 'medulla', { id: null, label: 'medulla', attempted: true })
+  assert.deepEqual(unmatchedTermEntries(l), [], 'the session knows what the medulla is')
+  assert.equal(knownIdForName(l, 'medulla'), 'FBbt_00003748')
+})
+
+test('unmatchedTermEntries: the registry lookup forgives the wordings the planner writes', () => {
+  // The registry stores VFB's label; the planner writes the user's. If only an
+  // exact match counted, "the medulla" would still announce a failure the
+  // session did not have.
+  const l = createLedger('q')
+  recordTermId(l, 'medulla', 'FBbt_00003748', { canonical: true })
+  for (const wording of ['the medulla', 'Medulla', 'medullas', '  medulla  ', '[medulla](https://vfb/FBbt_00003748)']) {
+    assert.equal(knownIdForName(l, wording), 'FBbt_00003748', `should recognise: ${wording}`)
+  }
+  // …and a seeded (carried, non-canonical) entry counts too — that is the whole
+  // point of carrying it: turn 1 resolved it, so turn 2 must not deny it.
+  const l2 = createLedger('q')
+  recordTermId(l2, 'optic  lobe', 'FBbt_00003748')
+  addTerm(l2, 'the optic lobe', { id: null, label: 'the optic lobe', attempted: true })
+  assert.deepEqual(unmatchedTermEntries(l2), [])
+})
+
+test('unmatchedTermEntries: a name the session genuinely does not know IS still unmatched', () => {
+  // The suppression must not swallow the block it was carved out of — a real
+  // naming failure still has to reach synthesis, or a false absence takes its
+  // place ("VFB does not currently hold data on X").
+  const l = createLedger('q')
+  recordTermId(l, 'medulla', 'FBbt_00003748', { canonical: true })
+  addTerm(l, 'SMC6', { id: null, label: 'SMC6', attempted: true, candidates: ['Smc5'] })
+  // never looked up -> not a finding either way
+  addTerm(l, 'nonC', { id: null, label: 'nonC' })
+  // a speculative broadening is our guess, not the user's name
+  addTerm(l, 'nonC gene', { id: null, label: 'nonC gene', attempted: true, speculative: true })
+  const out = unmatchedTermEntries(l)
+  assert.deepEqual(out.map(t => t.label), ['SMC6'])
+  assert.equal(knownIdForName(l, 'SMC6'), null)
+})
+
+test('knownIdForName: a registry entry without an id cannot vouch for a name', () => {
+  const l = createLedger('q')
+  l.registry = { medulla: { label: 'medulla' } }
+  assert.equal(knownIdForName(l, 'medulla'), null)
+  assert.equal(knownIdForName(l, ''), null)
+  assert.equal(knownIdForName(l, null), null)
+  assert.equal(knownIdForName({}, 'medulla'), null)
+})
+
+test('buildPlannerMessages: resolved ids sit ABOVE the prior conversation', () => {
+  // Order is the point. The history is where the planner GUESSES what the user
+  // meant; this block is where it does not have to — and it is the half that
+  // survives the 2000-char slice the history gets.
+  const context = {
+    v: 1,
+    terms: [{ id: 'FBbt_00003748', label: 'medulla', queries: [{ query_type: 'NeuronsPostsynapticHere', count: 333 }] }],
+    registry: []
+  }
+  const history = [
+    { role: 'user', content: 'what is the medulla?' },
+    { role: 'assistant', content: 'The medulla is the largest neuropil of the optic lobe ...' }
+  ]
+  const m = buildPlannerMessages('Which neurons receive output from it?', [], history, context)
+  const body = m[1].content
+  assert.match(body, /ALREADY RESOLVED/i)
+  assert.match(body, /FBbt_00003748/)
+  assert.ok(
+    body.indexOf('FBbt_00003748') < body.indexOf('PRIOR CONVERSATION'),
+    'the resolved block must precede the history'
+  )
+  // no context -> no block, and the 3-arg callers above keep working unchanged
+  const m2 = buildPlannerMessages('Which neurons receive output from it?', [], history)
+  assert.doesNotMatch(m2[1].content, /ALREADY RESOLVED/i)
 })

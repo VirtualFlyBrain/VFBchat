@@ -3,6 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { buildFollowOns } from '../../lib/followOns.mjs'
 import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep, MAX_EXTRACT_CHARS } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
@@ -1128,4 +1129,85 @@ test('class connectivity is ranked by an intensive quantity, so generality canno
   // Partner ids are recorded so the interface can link them.
   assert.equal(r.ledger.registry?.['mushroom body output neuron']?.id, 'FBbt_90000029')
   assert.equal(r.ledger.registry?.['mushroom body modulatory input neuron']?.id, 'FBbt_90000028')
+})
+
+// --- adoption: the turn that uses the carried context best must not go bare ---
+//
+// The context block works, and that is the problem. Once the planner is shown
+// "medulla = FBbt_00003748" it has no reason to put the name in
+// `terms_to_resolve` — so `resolveTerms` never runs, `ledger.terms` ends the turn
+// empty, and everything built from resolved terms (follow-on chips, sources, term
+// links) silently vanishes. The live medulla trace showed it exactly: turn 1
+// offered six follow-ups, turn 2 offered none and dead-ended the conversation.
+
+const MEDULLA_CONTEXT = {
+  v: 1,
+  terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748', queries: [{ query_type: 'NeuronsPostsynapticHere', label: 'Neurons with postsynaptic terminals here', count: 333 }] }],
+  registry: [{ name: 'medulla', id: 'FBbt_00003748' }]
+}
+
+test('a carried term the question still names is resolved this turn, not merely known', async () => {
+  // The planner asks for nothing — it can already see the id — which is exactly
+  // the state that used to empty the ledger.
+  const plan = {
+    intent: 'connectivity', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [],
+    steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['which neurons receive output from the medulla'] }]
+  }
+  const deps = makeDeps({ plan, tools: {
+    vfb_get_term_info: (a) => ({ Id: a.id, Name: 'medulla', Meta: { Description: 'second optic neuropil' }, Publications: [] })
+  } })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('Which neurons receive output from the medulla?', deps)
+
+  // Resolved, and resolved by the cheap route: the id goes straight to term-info,
+  // never back through the lexical search it was found by last turn.
+  assert.equal(r.ledger.terms['medulla']?.id, 'FBbt_00003748')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'vfb_search_terms'),
+    'a carried id must take the directId short-circuit, not re-search')
+  assert.ok(deps.calls.tools.some(t => t.name === 'vfb_get_term_info' && t.args.id === 'FBbt_00003748'),
+    'the digest must be refreshed this turn — a count is a fact with an age')
+
+  // The adoption is visible in the trace, because a silent one is what took two
+  // live runs to find.
+  const adopt = r.trace.find(e => e.step === 'adopt_context_terms')
+  assert.deepEqual(adopt?.ids, ['FBbt_00003748'])
+
+  // And the user gets somewhere to go next.
+  const { chips } = buildFollowOns(r.ledger)
+  assert.ok(chips.length > 0, 'the best-informed turn must still offer follow-ups')
+})
+
+test('adoption is skipped when the plan already reaches the term, by either route', async () => {
+  // By name — the planner wrote "medulla", which priorTermId maps to the same id.
+  const byName = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  } })
+  byName.context = MEDULLA_CONTEXT
+  const rName = await runHarness('tell me more about the medulla', byName)
+  assert.equal(rName.trace.filter(e => e.step === 'adopt_context_terms').length, 0)
+  assert.equal(byName.calls.tools.filter(t => t.name === 'vfb_get_term_info').length, 1,
+    'one entity, one term-info call — not resolved twice under two names')
+
+  // By id — the clicked-chip plan from detectFocusPlan asks for the id itself.
+  const byId = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['FBbt_00003748'], steps: []
+  } })
+  byId.context = MEDULLA_CONTEXT
+  const rId = await runHarness('Which neurons receive output from the medulla?', byId)
+  assert.equal(rId.trace.filter(e => e.step === 'adopt_context_terms').length, 0)
+  assert.equal(byId.calls.tools.filter(t => t.name === 'vfb_get_term_info').length, 1)
+})
+
+test('a carried term the question does not name is left alone', async () => {
+  const deps = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  } })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('what is the lobula?', deps)
+  assert.equal(r.trace.filter(e => e.step === 'adopt_context_terms').length, 0,
+    'adopting an unnamed entity spends a round trip and hangs its chips off an unrelated answer')
 })
