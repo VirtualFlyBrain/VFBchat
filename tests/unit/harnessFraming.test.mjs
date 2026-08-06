@@ -123,3 +123,81 @@ test('the detector fires on exactly what the stripper removes', () => {
     assert.equal(hasHarnessFraming(ok), false, ok)
   }
 })
+
+// --- W4.C: the opener the cut left behind -----------------------------------
+//
+// The whole answer, verbatim from the 3.9.1 live battery. INPUT_SENTENCE
+// already removed the first sentence in 3.9.0; what shipped was the seam.
+
+test('an orphaned contrastive opener is removed and the next word recapitalised', () => {
+  const input = 'Neuron VFB_jrchjtdb is not mentioned in the provided evidence. '
+    + 'However, they include v2LN30_R with 73 synapses.'
+  assert.equal(stripHarnessFraming(input), 'They include v2LN30_R with 73 synapses.')
+})
+
+test('every orphaned opener form is handled', () => {
+  for (const opener of ['However,', 'But', 'Yet', 'Additionally,', 'Also,', 'Moreover,',
+    'Furthermore,', 'Nevertheless,', 'Nonetheless,', 'In addition,', 'That said,',
+    'Even so,', 'On the other hand,', 'Instead,', 'Still,']) {
+    const input = `This is not mentioned in the provided evidence. ${opener} DA1_lPN_R has 73 synapses.`
+    assert.equal(stripHarnessFraming(input), 'DA1_lPN_R has 73 synapses.', opener)
+  }
+})
+
+test('a connective that still has a sentence in front of it is left alone', () => {
+  const input = 'VFB records 73 synapses onto v2LN30_R. However, the totals differ by dataset. '
+    + 'This query has not been run yet.'
+  assert.equal(
+    stripHarnessFraming(input),
+    'VFB records 73 synapses onto v2LN30_R. However, the totals differ by dataset.'
+  )
+})
+
+test('an opener the model wrote itself, with nothing cut, is not touched', () => {
+  // This module edits its own wreckage and nothing else.
+  const input = 'However, DA1_lPN_R has 73 synapses onto v2LN30_R.'
+  assert.equal(stripHarnessFraming(input), input)
+})
+
+// --- W4.C: the input promoted to subject ------------------------------------
+
+test('evidence-as-subject hands the verb back to VFB', () => {
+  const cases = [
+    [
+      'However, the evidence does provide information on the strongest outputs of a neuron, '
+      + 'which are: v2LN30_R (FlyEM-HB:1671620613) with 73 synapses.',
+      'VFB records the strongest outputs of a neuron, which are: '
+      + 'v2LN30_R (FlyEM-HB:1671620613) with 73 synapses.'
+    ],
+    [
+      'The evidence provides details about Kenyon cell partners.',
+      'VFB records Kenyon cell partners.'
+    ],
+    [
+      'This evidence shows that Kenyon cells synapse onto MBONs.',
+      'VFB records that Kenyon cells synapse onto MBONs.'
+    ]
+  ]
+  for (const [input, want] of cases) assert.equal(stripHarnessFraming(input), want)
+})
+
+test('a negative evidence claim is never rewritten into a claim about VFB', () => {
+  // "the evidence does not provide X" is a fact about this answer's reach.
+  // "VFB does not record X" is a fact about the database, and nobody checked it.
+  const input = 'The evidence does not provide information on its lineage.'
+  const out = stripHarnessFraming(input)
+  assert.ok(!/VFB records/.test(out), out)
+  assert.ok(!/VFB does not/.test(out), out)
+})
+
+test('the W4.C answer, end to end', () => {
+  const input = 'However, the evidence does provide information on the strongest outputs of a '
+    + 'neuron, which are: v2LN30_R (FlyEM-HB:1671620613) with 73 synapses, DA1_vPN_R '
+    + '(FlyEM-HB:733316908) with 61 synapses, and lLN2T_c(Tortuous)_R (FlyEM-HB:1704347707) '
+    + 'with 61 synapses.'
+  const out = stripHarnessFraming(input)
+  assert.ok(out.startsWith('VFB records the strongest outputs'), out)
+  assert.ok(!/^However/.test(out), out)
+  assert.ok(out.includes('73 synapses'), out)
+  assert.equal(hasHarnessFraming(out), false, out)
+})

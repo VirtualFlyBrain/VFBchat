@@ -26,6 +26,8 @@ import { buildConnectivityGraphs } from '../../../lib/connectivityGraph.mjs'
 import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
 import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
 import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
+import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
+import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
@@ -5532,28 +5534,18 @@ async function compareDownstreamTargetsTool(client, args = {}) {
   })
 }
 
-// High-level neuron superclasses that every neuron rolls up into. They
-// accumulate the largest aggregate connectivity weights and would otherwise
-// dominate the ranked partners, so they are flagged as aggregate (not specific
-// partner types). Matches only the pure superclass labels, anchored, so
-// specific types like "mushroom body output neuron" are NOT flagged.
-const GENERIC_NEURON_SUPERCLASS_RE = /^(adult |larval |embryonic |juvenile )?(cns |central nervous system |central brain |peripheral nervous system |nervous system |brain |supr?aesophageal ganglion |sub[o]?esophageal ganglion |gnathal ganglion )?(neuron|interneuron|cns neuron)$/
-
+// Which partner labels name a level of the ontology rather than a kind of
+// neuron. This route had its own copy of the rule; the shared one in
+// lib/classPartners.mjs is the same test plus the structural roll-ups
+// (input/output neuron, secondary neuron, "<x> intrinsic/extrinsic neuron",
+// "<x> lineage neuron", neurosecretory neuron) that the class-connectivity work
+// found also crowding out real partners. One rule, one place to fix it.
+//
+// normalizeEndpointSearchText and normalizePartnerLabel are the same four
+// substitutions, so delegating changes nothing about which labels normalise to
+// what — only which of them are recognised.
 function isLikelyAggregateConnectivityPartner(summary = {}, partnerFilter = '') {
-  const label = normalizeEndpointSearchText(summary.label || '')
-  const filter = normalizeEndpointSearchText(partnerFilter)
-  if (!label) return false
-
-  // Generic abstract neuron superclasses are always aggregate, regardless of filter.
-  if (GENERIC_NEURON_SUPERCLASS_RE.test(label)) return true
-
-  if (filter.includes('dopaminergic') || /\bdans?\b/.test(filter)) {
-    return label === 'adult dopaminergic neuron' ||
-      label === 'dopaminergic neuron' ||
-      label === 'mushroom body dopaminergic neuron'
-  }
-
-  return /\b(adult|larval)?\s*(cholinergic|gabaergic|glutamatergic|dopaminergic|serotonergic|peptidergic|octopaminergic|tyraminergic|aminergic|monoaminergic)\s+neuron\b/.test(label)
+  return isAggregateClassPartner(summary?.label || '', partnerFilter)
 }
 
 async function findConnectivityPartnersTool(client, args = {}) {
@@ -11370,7 +11362,17 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     }
     const groundedIds = collectGroundedIds(userMessage, live.ledger)
     const leakedIds = findLeakedIds(rawAnswerText, groundedIds)
-    const rawAnswer = leakedIds.length ? stripLeakedIds(rawAnswerText, groundedIds) : rawAnswerText
+    const deIded = leakedIds.length ? stripLeakedIds(rawAnswerText, groundedIds) : rawAnswerText
+    // A figure this run disproved must not survive into the prose. The digest
+    // was corrected the moment the query returned (orchestrator ->
+    // recordObservedCount), so the count links and the chips are already right;
+    // this catches the case where the model had seen the advertised number
+    // BEFORE the query ran and quoted it anyway, which is how W7.C4 shipped an
+    // answer saying 42 and then 92 for the same query. Before the grounding
+    // audit, so the audit reports what actually ships, and before linkifyCounts,
+    // so a stale figure can never be turned into a link that opens a query
+    // returning a different total.
+    const rawAnswer = stripSupersededFigures(deIded, live.supersededCounts || [])
     try {
       const grounded = collectGroundedNumbers(
         (live.terms || []).map(t => t),

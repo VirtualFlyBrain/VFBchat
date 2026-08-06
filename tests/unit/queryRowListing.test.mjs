@@ -128,16 +128,43 @@ test('caps how many rows land in the digest', () => {
   assert.equal(q.exampleEntities.length, 5)
 })
 
-test('never downgrades a preview that already has rows or an exact count', () => {
+test('never downgrades a preview that already has rows', () => {
   const existingRows = [{ name: 'already here', id: 'FBbt_9', thumbnail: '', tags: [] }]
   const ledger = ledgerWith({
-    ...EMPTY_PREVIEW, previewRows: existingRows, examples: ['already here'], count: 7, countKind: 'exact'
+    ...EMPTY_PREVIEW, previewRows: existingRows, examples: ['already here'], count: 262, countKind: 'exact'
   })
   const parsed = { count: 262, count_status: 'exact', rows: [row('FBbt_1', 'Mi1')] }
   assert.equal(backfillDigestPreview(ledger, { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' }, parsed), false)
   const q = ledger.terms.medulla.digest.queries[0]
   assert.deepEqual(q.previewRows, existingRows)
-  assert.equal(q.count, 7)
+  assert.equal(q.count, 262)
+})
+
+test('an observed count overrules the advertised one, and says so', () => {
+  // W7.C4. Term-info advertised 92 TransgeneExpressionHere records for Kenyon
+  // cell; running the query returned 42 rows and count 42, uncapped. The old
+  // guard defended the advertisement because it was already "exact", so both
+  // numbers reached the synthesiser and the answer contradicted itself.
+  const existingRows = [{ name: 'already here', id: 'FBbt_9', thumbnail: '', tags: [] }]
+  const ledger = ledgerWith({
+    ...EMPTY_PREVIEW, previewRows: existingRows, examples: ['already here'], count: 92, countKind: 'exact'
+  })
+  const parsed = { count: 42, count_status: 'exact', capped: false, rows: [row('FBbt_1', 'Mi1')] }
+  assert.equal(backfillDigestPreview(ledger, { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' }, parsed), true)
+  const q = ledger.terms.medulla.digest.queries[0]
+  assert.equal(q.count, 42)
+  assert.equal(q.advertisedCount, 92, 'the disproved figure is kept so prose quoting it can be found')
+  assert.equal(q.countObserved, true)
+  assert.deepEqual(q.previewRows, existingRows, 'rows are still never downgraded')
+})
+
+test('a capped result is a floor, so it cannot overrule an advertised total', () => {
+  const ledger = ledgerWith({ ...EMPTY_PREVIEW, count: 5000, countKind: 'exact' })
+  const parsed = { count: 1000, count_status: 'exact', capped: true, rows: [row('FBbt_1', 'Mi1')] }
+  backfillDigestPreview(ledger, { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' }, parsed)
+  const q = ledger.terms.medulla.digest.queries[0]
+  assert.equal(q.count, 5000)
+  assert.equal(q.advertisedCount, undefined)
 })
 
 test('an uncounted run populates the rows but leaves the count unresolved', () => {

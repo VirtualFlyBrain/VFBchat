@@ -1037,3 +1037,89 @@ test('maybeInjectRegionGraphStep routes a region GRAPH request to the region sum
   maybeInjectRegionGraphStep(neuron, 'graph the connectivity of Tm1')
   assert.equal(neuron.plan.length, 0)
 })
+
+// --- the sixth confused axis: granularity -----------------------------------
+//
+// W7.C3, "What are the main synaptic partners of Kenyon cells?", answered in
+// 3.9.1 with "interneurons, adult interneurons, dopaminergic neurons and
+// mushroom body intrinsic neurons" — every one of which is a class Kenyon cell
+// itself belongs to, and all of which are true of almost any neuron in the
+// brain. Nothing was hallucinated: VFB's class-connectivity table really does
+// rank those first, because it ranks by TOTAL synaptic weight and a bigger class
+// accumulates more of it. The table ranks the ontology, not the biology.
+//
+// Rows are the real live figures from
+//   run_query?query_type=DownstreamClassConnectivity&id=FBbt_00003686
+// (abridged to the rows that decide the ranking).
+test('class connectivity is ranked by an intensive quantity, so generality cannot buy a place', async () => {
+  const LIVE = [
+    ['neuron', 'FBbt_00005106', 2058877, 630396, 10216, 64, 3.27],
+    ['interneuron', 'FBbt_90000005', 1979940, 608249, 10188, 64, 3.26],
+    ['adult interneuron', 'FBbt_90000006', 1942792, 600384, 10016, 63, 3.24],
+    ['dopaminergic neuron', 'FBbt_90000010', 1217607, 516633, 8610, 54, 2.36],
+    ['mushroom body intrinsic neuron', 'FBbt_90000013', 1194247, 424465, 9403, 59, 2.81],
+    ['adult Kenyon cell', 'FBbt_90000017', 802431, 405124, 8955, 56, 1.98],
+    ['mushroom body modulatory input neuron', 'FBbt_90000028', 171671, 87691, 6853, 43, 1.96],
+    ['mushroom body output neuron', 'FBbt_90000029', 591432, 83379, 9441, 59, 7.09]
+  ]
+  const rows = LIVE.map(([label, id, w, pw, cn, pc, avg]) => ({
+    id, query_id: 'FBbt_00003686', total_n: 15994, connected_n: cn, percent_connected: pc,
+    pairwise_connections: pw, total_weight: w, avg_weight: avg,
+    downstream_class: `[${label}](${id})`, upstream_class: '[Kenyon cell](FBbt_00003686)'
+  }))
+  const termInfo = {
+    Name: 'Kenyon cell', Id: 'FBbt_00003686',
+    SuperTypes: ['Class', 'Anatomy', 'Neuron', 'Cell'],
+    Meta: { Name: '[Kenyon cell](FBbt_00003686)', Description: 'Intrinsic neuron of the mushroom body.' },
+    Queries: [
+      { query: 'DownstreamClassConnectivity', label: 'Downstream neuron classes of Kenyon cell', count: 10073, preview_results: { rows: [] } }
+    ],
+    Publications: []
+  }
+  const plan = {
+    intent: 'connectivity', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['Kenyon cell'],
+    steps: [{ id: 's1', tool: 'vfb_run_query', args: { id: 'FBbt_00003686', query_type: 'DownstreamClassConnectivity' }, answers: ['what are the main synaptic partners of Kenyon cells'] }]
+  }
+  const deps = makeDeps({
+    plan,
+    structured: {
+      // The 3.9.1 answer, verbatim. If it ever appears in the evidence, the
+      // deterministic branch did not fire.
+      extract: () => ({ ok: true, value: { relevant: true, answered: true, claim: 'The main synaptic partners of Kenyon cells include interneurons, adult interneurons, dopaminergic neurons and mushroom body intrinsic neurons.', verbatim: '' } })
+    },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003686', label: 'Kenyon cell' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({ count: 10073, count_status: 'exact', headers: {}, rows })
+    }
+  })
+  const r = await runHarness('What are the main synaptic partners of Kenyon cells?', deps)
+  const fromQuery = r.ledger.evidence.filter(e => e.tool === 'vfb_run_query').map(e => e.claim)
+  assert.ok(fromQuery.length >= 1, 'the class-connectivity step must produce evidence')
+  const claim = fromQuery.find(c => /synapses per connected pair/.test(c))
+  assert.ok(claim, `no ranked claim in: ${JSON.stringify(fromQuery)}`)
+  assert.ok(!/^The main synaptic partners of Kenyon cells include interneurons/.test(claim),
+    `the 3.9.1 extractor answer leaked through: ${claim}`)
+
+  // The textbook answer, first, with the number that put it there.
+  assert.match(claim, /strongest specific targets of Kenyon cell are: mushroom body output neuron/)
+  assert.match(claim, /7\.09 synapses per connected pair/)
+  // …and the reader is told what the roll-up rows were, not left to wonder why
+  // VFB's own listing looks nothing like this.
+  assert.match(claim, /roll-up classes VFB ranks above these/)
+  assert.match(claim, /ranked by total synaptic weight/)
+
+  // The abstractions must not be sold as partners. Order matters: "interneuron"
+  // is allowed to appear in the roll-up sentence, never in the ranked list.
+  const rankedSentence = claim.split('The roll-up classes')[0]
+  for (const generic of ['interneuron', 'dopaminergic neuron', 'mushroom body intrinsic neuron']) {
+    assert.ok(!rankedSentence.includes(generic), `${generic} was ranked as a specific partner: ${rankedSentence}`)
+  }
+  // Kenyon cell's connections to other Kenyon cells are reported as such.
+  assert.match(claim, /also connects to itself \(adult Kenyon cell/)
+
+  // Partner ids are recorded so the interface can link them.
+  assert.equal(r.ledger.registry?.['mushroom body output neuron']?.id, 'FBbt_90000029')
+  assert.equal(r.ledger.registry?.['mushroom body modulatory input neuron']?.id, 'FBbt_90000028')
+})
