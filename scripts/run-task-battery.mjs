@@ -248,6 +248,21 @@ function startServer({ port, command, runId, concurrency = 1 }) {
       PORT: String(port),
       RATE_LIMIT_PER_IP: process.env.RATE_LIMIT_PER_IP || '10000',
       LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`),
+      // Opt-in harness trace on the spawned server. The workflow cannot pass
+      // this through (changing it needs a scope this token does not have), and
+      // without it a CI failure gives the answer text and no way to see which
+      // tool produced it — which is how the same wrong hypothesis about C12
+      // survived three attempts. TASK_BATTERY_TRACE is read here so it can be
+      // set from the runner's own environment or its command line.
+      // ...and ON BY DEFAULT for a run limited to named ids, because that is
+      // what a diagnostic run looks like: you pass `ids` when you already know
+      // which case you are chasing. A full run stays quiet, so this costs
+      // nothing on the runs that matter for timing.
+      ...(process.env.TASK_BATTERY_TRACE === 'true' ||
+          process.env.VFB_HARNESS_TRACE === 'true' ||
+          String(process.env.TASK_BATTERY_IDS || '').trim()
+        ? { VFB_HARNESS_TRACE: 'true' }
+        : {}),
       // The heap the server is allowed, scaled to the concurrency WE chose.
       //
       // Answering is expensive in proportion to how many questions are in flight
