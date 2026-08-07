@@ -1749,6 +1749,9 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         </a>{' | '}
         <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Accessibility Statement
+        </a>{' | '}
+        <a href="/terms" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
+          Terms of Use
         </a>.
       </footer>
 
