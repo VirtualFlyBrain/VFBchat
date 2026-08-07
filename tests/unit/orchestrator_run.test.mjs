@@ -3,6 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { buildFollowOns } from '../../lib/followOns.mjs'
 import { runHarness, pickBestTermId, maybeInjectConnectivityStep, maybeInjectRegionNeuronCountStep, maybeInjectRegionGraphStep, maybeInjectScrnaseqStep, MAX_EXTRACT_CHARS } from '../../lib/orchestrator.mjs'
 
 const TOOL_DEFS = [
@@ -43,10 +44,18 @@ function makeDeps({ plan, structured = {}, tools = {}, text = 'FINAL ANSWER' } =
     }
   }
 }
+// What the constrained repair decode returns for a step the planner authored.
+// It matters that this is populated rather than {}: `normalizePlan` strips args
+// from every model-authored step, so on the planner branch EVERY step arrives
+// with none, and the repair call is the only thing standing between the plan and
+// a tool invoked with nothing. Returning {} here does not model "the planner
+// omitted an argument" — it models a repair that failed, which the harness now
+// treats as a step that must not be dispatched at all.
 function defaultArgs(tool) {
   if (tool === 'vfb_query_connectivity') return { upstream_type: 'FBbt_1', downstream_type: 'FBbt_2' }
   if (tool === 'vfb_search_terms') return { query: 'mushroom body' }
   if (tool === 'vfb_get_neurotransmitter_profile') return { neuron_type: 'Kenyon cell' }
+  if (tool === 'vfb_find_similar_neurons') return { neuron_type: 'LPLC2' }
   return {}
 }
 
@@ -1128,4 +1137,363 @@ test('class connectivity is ranked by an intensive quantity, so generality canno
   // Partner ids are recorded so the interface can link them.
   assert.equal(r.ledger.registry?.['mushroom body output neuron']?.id, 'FBbt_90000029')
   assert.equal(r.ledger.registry?.['mushroom body modulatory input neuron']?.id, 'FBbt_90000028')
+})
+
+// --- adoption: the turn that uses the carried context best must not go bare ---
+//
+// The context block works, and that is the problem. Once the planner is shown
+// "medulla = FBbt_00003748" it has no reason to put the name in
+// `terms_to_resolve` — so `resolveTerms` never runs, `ledger.terms` ends the turn
+// empty, and everything built from resolved terms (follow-on chips, sources, term
+// links) silently vanishes. The live medulla trace showed it exactly: turn 1
+// offered six follow-ups, turn 2 offered none and dead-ended the conversation.
+
+// The real MCP catalogue declares vfb_run_query's required arguments; the
+// abbreviated TOOL_DEFS at the top of this file does not list the tool at all,
+// which means a run_query step there has no schema, nothing is ever "missing",
+// and the argument machinery under test is bypassed entirely. Tests that assert
+// on that machinery must add it back.
+const RUN_QUERY_DEF = {
+  name: 'vfb_run_query',
+  purpose: 'run a catalogue query',
+  parameters: {
+    type: 'object',
+    required: ['id', 'query_type'],
+    properties: { id: { type: 'string' }, query_type: { type: 'string' } }
+  }
+}
+
+const MEDULLA_CONTEXT = {
+  v: 1,
+  terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748', queries: [{ query_type: 'NeuronsPostsynapticHere', label: 'Neurons with postsynaptic terminals here', count: 333 }] }],
+  registry: [{ name: 'medulla', id: 'FBbt_00003748' }]
+}
+
+test('a carried term the question still names is resolved this turn, not merely known', async () => {
+  // The planner asks for nothing — it can already see the id — which is exactly
+  // the state that used to empty the ledger.
+  //
+  // The question deliberately is NOT a chip: "and its role" makes it compound, so
+  // resolveQuestionToChip declines it and the planner branch below is the one
+  // under test. The chip-shaped phrasing has its own test further down.
+  const plan = {
+    intent: 'connectivity', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [],
+    steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['what is known about the medulla'] }]
+  }
+  const deps = makeDeps({ plan, tools: {
+    vfb_get_term_info: (a) => ({ Id: a.id, Name: 'medulla', Meta: { Description: 'second optic neuropil' }, Publications: [] })
+  } })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('What is known about the medulla and its role in vision?', deps)
+
+  // Resolved, and resolved by the cheap route: the id goes straight to term-info,
+  // never back through the lexical search it was found by last turn.
+  assert.equal(r.ledger.terms['medulla']?.id, 'FBbt_00003748')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'vfb_search_terms'),
+    'a carried id must take the directId short-circuit, not re-search')
+  assert.ok(deps.calls.tools.some(t => t.name === 'vfb_get_term_info' && t.args.id === 'FBbt_00003748'),
+    'the digest must be refreshed this turn — a count is a fact with an age')
+
+  // The adoption is visible in the trace, because a silent one is what took two
+  // live runs to find.
+  const adopt = r.trace.find(e => e.step === 'adopt_context_terms')
+  assert.deepEqual(adopt?.ids, ['FBbt_00003748'])
+
+  // And the user gets somewhere to go next.
+  const { chips } = buildFollowOns(r.ledger)
+  assert.ok(chips.length > 0, 'the best-informed turn must still offer follow-ups')
+})
+
+test('a typed follow-up that IS a carried chip skips the planner entirely', async () => {
+  // The measured defect: turn 1 offered "Which neurons receive output from the
+  // medulla?" as a chip and cost 10s. Typing it — or typing it with a pronoun —
+  // used to reach the planner, where the votes disagree and the escalation round
+  // is bought, and the same turn cost 381s. It is the same query either way.
+  for (const question of [
+    'Which neurons receive output from the medulla?',
+    'which neurons receive output from it?'
+  ]) {
+    const deps = makeDeps({
+      plan: { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: [], steps: [] },
+      tools: {
+        vfb_get_term_info: (a) => ({ Id: a.id, Name: 'medulla', Meta: { Description: 'second optic neuropil' }, Publications: [] }),
+        vfb_run_query: () => ({ rows: [{ id: 'FBbt_00003774', label: 'Dm7' }] })
+      }
+    })
+    deps.context = MEDULLA_CONTEXT
+    const r = await runHarness(question, deps)
+
+    const planned = r.trace.find(e => e.step === 'plan')
+    assert.equal(planned?.via, 'context-chip', question)
+    assert.equal(planned?.id, 'FBbt_00003748')
+    assert.equal(planned?.query_type, 'NeuronsPostsynapticHere')
+
+    // The whole point: no model was asked anything to get here.
+    assert.equal(deps.calls.structured.filter(c => c.schemaName === 'plan').length, 0,
+      'a question we generated ourselves must not cost a planner call')
+
+    // And it runs the SAME query the chip would have run.
+    assert.ok(deps.calls.tools.some(t =>
+      t.name === 'vfb_run_query' &&
+      t.args.id === 'FBbt_00003748' &&
+      t.args.query_type === 'NeuronsPostsynapticHere'), question)
+  }
+})
+
+test('a follow-up the resolver cannot pin down still reaches the planner', async () => {
+  // Precision over recall: anything ambiguous must degrade to today's behaviour,
+  // not to a confident answer to a different question.
+  const deps = makeDeps({
+    plan: { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: ['medulla'], steps: [] },
+    tools: { vfb_get_term_info: (a) => ({ Id: a.id, Name: 'medulla', Publications: [] }) }
+  })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('which neurons receive output from it, and how strong are those connections?', deps)
+  assert.equal(r.trace.find(e => e.step === 'plan')?.via, 'planner')
+})
+
+test('adoption is skipped when the plan already reaches the term, by either route', async () => {
+  // By name — the planner wrote "medulla", which priorTermId maps to the same id.
+  const byName = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['medulla'], steps: []
+  } })
+  byName.context = MEDULLA_CONTEXT
+  const rName = await runHarness('tell me more about the medulla', byName)
+  assert.equal(rName.trace.filter(e => e.step === 'adopt_context_terms').length, 0)
+  assert.equal(byName.calls.tools.filter(t => t.name === 'vfb_get_term_info').length, 1,
+    'one entity, one term-info call — not resolved twice under two names')
+
+  // By id — the clicked-chip plan from detectFocusPlan asks for the id itself.
+  const byId = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['FBbt_00003748'], steps: []
+  } })
+  byId.context = MEDULLA_CONTEXT
+  const rId = await runHarness('Which neurons receive output from the medulla?', byId)
+  assert.equal(rId.trace.filter(e => e.step === 'adopt_context_terms').length, 0)
+  assert.equal(byId.calls.tools.filter(t => t.name === 'vfb_get_term_info').length, 1)
+})
+
+test('a carried term the question does not name is left alone', async () => {
+  const deps = makeDeps({ plan: {
+    intent: 'term_info', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  } })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('what is the lobula?', deps)
+  assert.equal(r.trace.filter(e => e.step === 'adopt_context_terms').length, 0,
+    'adopting an unnamed entity spends a round trip and hangs its chips off an unrelated answer')
+})
+
+test('a template-planned query is not run twice by the intent router', async () => {
+  // The dedupe in injectIntentQuerySteps keyed on the step's LITERAL args.id.
+  // Every step this file plans before resolution carries "$term:NAME" there, not
+  // an id, so the key never matched the resolved id and the router injected a
+  // second, identical run: "which neurons are presynaptic in the medulla? list
+  // them" ran NeuronsPresynapticHere twice and paid twice.
+  const termInfo = {
+    Name: 'medulla', Id: 'FBbt_00003748',
+    SuperTypes: ['Class', 'Anatomy', 'Synaptic_neuropil'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Optic-lobe neuropil.' },
+    Queries: [{ query: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals in medulla', count: -1, preview_results: { rows: [] } }],
+    Publications: []
+  }
+  const deps = makeDeps({
+    plan: { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: [], steps: [] },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003748', label: 'medulla' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({ count: 262, count_status: 'exact', headers: {}, rows: [{ id: 'FBbt_00110060', label: '[Mi1](FBbt_00110060)', tags: 'Neuron' }] })
+    }
+  })
+  const r = await runHarness('Which neurons provide input to the medulla?', deps)
+  assert.equal(r.trace.find(e => e.step === 'plan')?.via, 'template', 'this is the cold template route')
+  const ran = deps.calls.tools.filter(t => t.name === 'vfb_run_query').map(t => t.args.query_type)
+  assert.deepEqual(ran, ['NeuronsPresynapticHere'], 'exactly one run of the query the template named')
+  assert.ok(!deps.calls.structured.includes('plan'), 'and no planner round at all')
+})
+
+test('a template query the resolved term does not offer is withdrawn, not run into a denial', async () => {
+  // The template is read before anything is resolved, so it can only name the
+  // query the WORDS ask for. "Which neurons provide input to the Kenyon cell?"
+  // is a NeuronsPresynapticHere sentence, but that is a query a REGION offers —
+  // a neuron type has none, so running it returns not_found and the controller
+  // reads that as "VFB holds nothing" about a cell with hundreds of partners.
+  // Withdrawing the step restores exactly the no-step state the injectors expect.
+  const termInfo = {
+    Name: 'Kenyon cell', Id: 'FBbt_00003686',
+    SuperTypes: ['Class', 'Anatomy', 'Neuron', 'Cell'],
+    Meta: { Name: '[Kenyon cell](FBbt_00003686)', Description: 'MB intrinsic neuron.' },
+    Queries: [{ query: 'SubclassesOf', label: 'Subclasses of Kenyon cell', count: 12, preview_results: { rows: [] } }],
+    Publications: []
+  }
+  const deps = makeDeps({
+    plan: { intent: 'other', underspecified: false, clarifying_question: '', terms_to_resolve: [], steps: [] },
+    tools: {
+      vfb_search_terms: () => ({ response: { docs: [{ short_form: 'FBbt_00003686', label: 'Kenyon cell' }] } }),
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({ count: 0, rows: [] })
+    }
+  })
+  const r = await runHarness('Which neurons provide input to the Kenyon cell?', deps)
+  assert.ok(r.trace.some(e => e.withdraw === 'vfb_run_query' && e.reason === 'template-query-not-offered'),
+    'the unoffered step is withdrawn')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'vfb_run_query' && t.args.query_type === 'NeuronsPresynapticHere'),
+    'and never runs')
+  // The connectivity injector then answers it on the evidence of the resolved
+  // term, which is the whole point of withdrawing rather than failing.
+  assert.ok(deps.calls.tools.some(t => t.name === 'vfb_find_connectivity_partners'),
+    'the specialist route takes over')
+})
+
+// ---------------------------------------------------------------------------
+// The self-contradicting denial (C5 / C10)
+// ---------------------------------------------------------------------------
+//
+// Measured live on 4.0.2, and the reason tier 7 exists:
+//
+//   turn 1  "What are the anatomical parts of the medulla? List them."
+//   turn 2  "And which neurons have part of their arbour there?"
+//
+//     The term "[medulla](.../FBbt_00003748)" from your question could not be
+//     matched to a specific VFB record in this session, so no list of neurons
+//     with arbours in that region can be generated from the database.
+//
+// The sentence denies the id it is printing. No prose-grading judge flags that —
+// it is fluent, hedged, and internally consistent in tone. It is a STATE failure:
+// the question names no term, so the planner honestly asks for none, nothing is
+// adopted because nothing is named, the steps dispatch with empty args, the
+// resulting rejections are recorded as not_found, and not_found is rendered as a
+// fact about VFB.
+
+test('a follow-up whose subject is only in the conversation adopts it, and never denies it', async () => {
+  // The planner behaves exactly as it did live: the question names nothing, so it
+  // asks to resolve nothing and plans steps with no args. That is not a planner
+  // bug — there is genuinely no term in the sentence — so the fix cannot live there.
+  const plan = {
+    intent: 'neuron_count', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [],
+    steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['which neurons have arbours there'] }]
+  }
+  const termInfo = {
+    Id: 'FBbt_00003748', Name: 'medulla',
+    SuperTypes: ['Class', 'Anatomy', 'Synaptic_neuropil'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'Second optic neuropil.' },
+    Queries: [{ query: 'NeuronsPartHere', label: 'Neurons with part here', count: 613, preview_results: { rows: [] } }],
+    Publications: []
+  }
+  const deps = makeDeps({
+    plan,
+    tools: {
+      vfb_get_term_info: () => termInfo,
+      vfb_run_query: () => ({ count: 613, count_status: 'exact', headers: {}, rows: [{ id: 'FBbt_00110060', label: '[Mi1](FBbt_00110060)', tags: 'Neuron' }] })
+    },
+    // The repair route is given nothing to work with on purpose: this is what it
+    // faced live — a question naming no term and, this early in the turn, an empty
+    // evidence context. If the fix depended on the model guessing well, it would
+    // be the same fix that already failed.
+    structured: { repair: () => ({ ok: false }) }
+  })
+  deps.toolDefs = [...TOOL_DEFS, RUN_QUERY_DEF]
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('And which neurons have part of their arbour there?', deps)
+
+  assert.ok(r.trace.some(e => e.step === 'adopt_anaphor_terms' && e.ids.includes('FBbt_00003748')),
+    'the entity under discussion is adopted as this turn\'s subject')
+  assert.equal(r.ledger.terms['medulla']?.id, 'FBbt_00003748',
+    'and RESOLVED this turn — a carried digest is a memory of counts, not evidence about now')
+  // The point of the whole exercise: the step reaches VFB carrying the id, so
+  // whatever it reports is a fact about the database rather than about our own
+  // bookkeeping.
+  assert.ok(deps.calls.tools.some(t => t.name === 'vfb_run_query' && t.args.id === 'FBbt_00003748'),
+    'the query runs against the adopted id')
+  assert.ok(r.trace.some(e => e.backfill?.includes('id') && e.source === 'ledger'),
+    'and the id was looked up, not inferred')
+  assert.ok(!r.ledger.plan.some(s => s.status === 'not_found'),
+    'nothing is recorded as "VFB had nothing" on a turn where VFB was asked properly')
+})
+
+test('an unaddressable step abstains rather than testifying against VFB', async () => {
+  // The belt-and-braces half. If the subject cannot be recovered by ANY route —
+  // no conversation to inherit from, no term in the question, no repair — the
+  // step must not be dispatched, because its rejection is indistinguishable
+  // downstream from VFB answering "nothing".
+  const plan = {
+    intent: 'other', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [],
+    steps: [{ id: 's1', tool: 'vfb_run_query', answers: ['which neurons'] }]
+  }
+  const deps = makeDeps({ plan, structured: { repair: () => ({ ok: false }) } })
+  deps.toolDefs = [...TOOL_DEFS, RUN_QUERY_DEF]
+  const r = await runHarness('And which ones are there?', deps)
+
+  assert.ok(r.trace.some(e => e.withdraw === 'vfb_run_query' && e.reason === 'unaddressable-step'),
+    'the step is withdrawn')
+  assert.ok(!deps.calls.tools.some(t => t.name === 'vfb_run_query'),
+    'and never dispatched')
+  assert.ok(!r.ledger.plan.some(s => s.status === 'not_found'),
+    'a call that was never made leaves no claim about the database behind it')
+})
+
+test('a real change of subject is not answered about the previous entity', async () => {
+  // The guard that makes the adoption safe. A question the planner simply failed
+  // to extract a term from is NOT a question pointing backwards, and answering it
+  // about whatever was discussed last would be a new way to be confidently wrong —
+  // strictly worse than the denial being fixed, because it reads as correct.
+  const plan = {
+    intent: 'other', underspecified: false, clarifying_question: '',
+    terms_to_resolve: [], steps: []
+  }
+  const deps = makeDeps({ plan })
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('Which connectomics datasets does VFB hold?', deps)
+  assert.equal(r.trace.filter(e => e.step === 'adopt_anaphor_terms').length, 0)
+})
+
+test('the anaphor net never fires on a turn that already has a subject', async () => {
+  // Two ways a turn can already be addressed, both of which must win over the
+  // net. Adopting alongside either would resolve a second entity nobody asked
+  // about and hang its follow-on chips off the answer.
+  const termInfo = {
+    Id: 'FBbt_00003748', Name: 'medulla', SuperTypes: ['Class', 'Anatomy'],
+    Meta: { Name: '[medulla](FBbt_00003748)', Description: 'x' }, Queries: [], Publications: []
+  }
+  const plan = {
+    intent: 'other', underspecified: false, clarifying_question: '',
+    terms_to_resolve: ['lobula'], steps: [{ id: 's1', tool: 'vfb_get_term_info', answers: ['q'] }]
+  }
+  const named = makeDeps({ plan, tools: { vfb_get_term_info: () => termInfo } })
+  named.context = MEDULLA_CONTEXT
+  const r1 = await runHarness('And what about it?', named)
+  assert.equal(r1.trace.filter(e => e.step === 'adopt_anaphor_terms').length, 0,
+    'the planner named a term')
+
+  // A clicked chip. detectFocusPlan writes the id into BOTH terms_to_resolve and
+  // the step's args, so the guard holds it twice over — and it never reaches the
+  // planner, so its args are still there to be seen.
+  const clicked = makeDeps({ plan: null, tools: { vfb_run_query: () => ({ count: 2, rows: [] }) } })
+  clicked.toolDefs = [...TOOL_DEFS, RUN_QUERY_DEF]
+  clicked.context = MEDULLA_CONTEXT
+  clicked.focus = { id: 'FBbt_00003748', query_type: 'PartsOf' }
+  const r2 = await runHarness('And what about it?', clicked)
+  assert.equal(r2.trace.filter(e => e.step === 'adopt_anaphor_terms').length, 0,
+    'a step carries the id outright')
+})
+
+test('a plan that resolves no term but targets one is still a plan with a subject', async () => {
+  // The third guard clause, and the only shape that needs it. "Which datasets are
+  // those?" reaches detectFastPath, which answers it with the whole-VFB
+  // AllDatasets query against a fixed template id — no term is resolved, so the
+  // first two clauses see a subjectless turn, and "those" is a pro-form the net
+  // would happily bind to whatever was discussed last. Doing so would resolve the
+  // medulla and attach its chips to an answer listing every dataset VFB holds.
+  const deps = makeDeps({ plan: null, tools: { vfb_run_query: () => ({ count: 1, rows: [{ id: 'VFB_x', label: 'FAFB' }] }) } })
+  deps.toolDefs = [...TOOL_DEFS, RUN_QUERY_DEF]
+  deps.context = MEDULLA_CONTEXT
+  const r = await runHarness('Which datasets are those?', deps)
+  assert.ok(r.trace.some(e => e.step === 'plan' && e.via === 'fast-path'), 'the fast path claims it')
+  assert.equal(r.trace.filter(e => e.step === 'adopt_anaphor_terms').length, 0,
+    'and its own target id counts as the subject')
 })

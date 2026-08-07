@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs, isEmptyArgValue } from '../../lib/toolRepair.mjs'
+import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs, isEmptyArgValue, backfillIdArgs } from '../../lib/toolRepair.mjs'
 
 const PARAMS = new Map([
   ['vfb_get_term_info', { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }],
@@ -70,4 +70,72 @@ test('mergeRepairedArgs: non-empty repaired values win, empties ignored', () => 
   assert.deepEqual(mergeRepairedArgs({ id: '' }, { id: 'FBbt_1' }), { id: 'FBbt_1' })
   assert.deepEqual(mergeRepairedArgs({ id: 'X', rows: 10 }, { id: '' }), { id: 'X', rows: 10 })
   assert.deepEqual(mergeRepairedArgs({}, { id: 'A', query_type: 'B' }), { id: 'A', query_type: 'B' })
+})
+
+// ---------------------------------------------------------------------------
+// backfillIdArgs — look it up rather than infer it
+// ---------------------------------------------------------------------------
+
+test('backfillIdArgs: a missing id comes from the resolved term, not a model', () => {
+  const { args, filled } = backfillIdArgs({}, ['id'], [{ id: 'FBbt_00003748', label: 'medulla' }])
+  assert.deepEqual(filled, ['id'])
+  assert.equal(args.id, 'FBbt_00003748')
+})
+
+test('backfillIdArgs: the first resolved term is the antecedent', () => {
+  // Resolution order, not alphabetical or "best": on a subjectless turn the
+  // orchestrator adopts the entity under discussion FIRST, so position carries
+  // the meaning here.
+  const { args } = backfillIdArgs({}, ['id'], [
+    { id: 'FBbt_00003748', label: 'medulla' },
+    { id: 'FBbt_00003852', label: 'lobula' }
+  ])
+  assert.equal(args.id, 'FBbt_00003748')
+})
+
+test('backfillIdArgs: never overwrites an id the step already carries', () => {
+  // `missing` is what the caller found empty. An id that is present is not in it,
+  // so a step targeting a specific term cannot be retargeted by this.
+  const original = { id: 'FBbt_00003852', query_type: 'PartsOf' }
+  const { args, filled } = backfillIdArgs(original, ['query_type'], [{ id: 'FBbt_00003748' }])
+  assert.deepEqual(filled, [])
+  assert.equal(args.id, 'FBbt_00003852')
+})
+
+test('backfillIdArgs: only the argument named exactly "id"', () => {
+  // A dataset_id or template_id names a different KIND of thing. Filling an
+  // anatomy term into one produces a call that runs, returns nothing, and reads
+  // as data absence — the failure this fixes, one layer down.
+  const { args, filled } = backfillIdArgs({}, ['dataset_id'], [{ id: 'FBbt_00003748' }])
+  assert.deepEqual(filled, [])
+  assert.deepEqual(args, {})
+})
+
+test('backfillIdArgs: nothing resolved, nothing filled', () => {
+  for (const terms of [[], [{ id: null }], [{ label: 'medulla' }], [{ id: 'not-an-id' }], null]) {
+    const { filled } = backfillIdArgs({}, ['id'], terms)
+    assert.deepEqual(filled, [], JSON.stringify(terms))
+  }
+})
+
+test('backfillIdArgs: an unresolved term is skipped, not used', () => {
+  // A resolve attempt that failed leaves an entry with id null. Skipping to the
+  // next one is right; using it would put `null` in a URL.
+  const { args } = backfillIdArgs({}, ['id'], [{ id: null, label: 'gobbledegook' }, { id: 'FBbt_00003748' }])
+  assert.equal(args.id, 'FBbt_00003748')
+})
+
+test('backfillIdArgs: the result is a copy, never a mutation', () => {
+  // runStep holds `step.args` across retries; mutating it would make the second
+  // attempt see arguments the plan never contained.
+  const original = {}
+  const { args } = backfillIdArgs(original, ['id'], [{ id: 'FBbt_00003748' }])
+  assert.deepEqual(original, {})
+  assert.notEqual(args, original)
+})
+
+test('backfillIdArgs: junk in, no throw', () => {
+  for (const missing of [null, undefined, 'id', {}, []]) {
+    assert.doesNotThrow(() => backfillIdArgs({}, missing, [{ id: 'FBbt_00003748' }]))
+  }
 })

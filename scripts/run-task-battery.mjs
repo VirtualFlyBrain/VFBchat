@@ -5,6 +5,14 @@ import fsSync from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync, spawn } from 'node:child_process'
+import {
+  normalizeBatteryTask,
+  selectAskChip,
+  chipFocus,
+  checkTurn,
+  classifyConversationQuality,
+  CONVERSATION_QUALITY_FLAGS
+} from '../lib/battery/conversation.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..')
@@ -54,7 +62,15 @@ Options:
   --concurrency <number>      Number of questions to run in parallel. Default: 1.
   --limit <number>            Limit number of selected tasks.
   --ids <csv>                 Comma-separated task IDs, e.g. T1.1,T3.4.
-  --tier <number>             Run a single tier, e.g. 1.
+  --tier <number>             Run a single tier, e.g. 1. Tier 7 is the multi-turn
+                              conversation set: each task is a list of turns, the
+                              merged context is echoed back between them, and a
+                              "click_followon" turn posts a chip's (id, query_type)
+                              exactly as the UI does. Tier-7 tasks are graded on
+                              deterministic STATE — does the id survive the turn
+                              boundary, does every chip carry its address, is the
+                              answered question offered back — and on follow-up
+                              latency, none of which the prose reveals.
   --out <path>                Output JSON path. Default: test-results/task-battery/<run-id>.json.
   --output-dir <path>         Output directory. Default: test-results/task-battery.
   --timeout-ms <number>       Per-question timeout. Default: 600000.
@@ -114,12 +130,12 @@ function parseTaskBattery(markdown) {
       throw new Error(`Could not parse question for ${heading.id}`)
     }
 
-    return {
+    return normalizeBatteryTask({
       id: heading.id,
       tier: Number.parseInt(heading.id.match(/^T(\d+)/)?.[1] || '0', 10),
       title: heading.title,
       question
-    }
+    }, index)
   })
 }
 
@@ -129,27 +145,10 @@ function parseTaskListJson(rawJson) {
     throw new Error('Task JSON must be an array of task objects.')
   }
 
-  return parsed.map((task, index) => {
-    const id = String(task.id || '').trim()
-    const title = String(task.title || '').trim()
-    const question = String(task.question || '').trim()
-    const tier = Number.parseInt(task.tier ?? id.match(/^T(\d+)/)?.[1] ?? '', 10)
-    const requiresGraph = Boolean(task.requires_graph || task.requiresGraph)
-    const minGraphs = normalizeInteger(task.min_graphs ?? task.minGraphs ?? 1, 1, 1, 20)
-
-    if (!id || !Number.isFinite(tier) || !title || !question) {
-      throw new Error(`Invalid task JSON entry at index ${index}. Required fields: id, tier, title, question.`)
-    }
-
-    return {
-      id,
-      tier,
-      title,
-      question,
-      requires_graph: requiresGraph,
-      min_graphs: requiresGraph ? minGraphs : 0
-    }
-  })
+  // A task is either a single question or a list of turns; normalizeBatteryTask
+  // canonicalises both into turns so the runner has one shape to execute, and
+  // rejects a malformed conversation here rather than part-way through a live run.
+  return parsed.map((task, index) => normalizeBatteryTask(task, index))
 }
 
 async function loadTasksFromFile(taskFile) {
@@ -452,6 +451,7 @@ function looksLikeClarificationOnly(text = '') {
   return /^(?:could you|can you|please clarify|please provide|which|what exactly|i need more|i can't help|sorry,)/i.test(String(text || '').trim())
 }
 
+
 function classifyResultQuality(result = {}) {
   const response = String(result.response || result.error || '')
   const question = String(result.question || '')
@@ -477,14 +477,23 @@ function classifyResultQuality(result = {}) {
     ),
     used_data_resource: /\b(inspecting stored tool data|reading stored tool data)\b/i.test(statusText),
     response_chars: response.length,
-    status_count: Array.isArray(result.status_messages) ? result.status_messages.length : 0
+    status_count: Array.isArray(result.status_messages) ? result.status_messages.length : 0,
+    // Only for multi-turn tasks: on a one-turn task every one of these is
+    // vacuously false, and emitting them anyway would pad every single-question
+    // row with flags that could never fire.
+    ...(result.conversation ? classifyConversationQuality(result) : {})
   }
 }
 
-async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
-  const startedAt = Date.now()
-  const chatUrl = new URL('/api/chat', baseUrl)
-
+/**
+ * One turn of a conversation: post it, read the SSE stream, return what came back.
+ *
+ * `context` is the merged context the previous turn returned, echoed back
+ * verbatim — the server is stateless, so this is the only thing that makes a
+ * sequence of requests a conversation. `focus` is the address of a clicked
+ * follow-on chip.
+ */
+async function postTurn(chatUrl, { messages, context, focus }, runId, timeoutMs) {
   return runWithTimeout(async (signal) => {
     const response = await fetch(chatUrl, {
       method: 'POST',
@@ -493,11 +502,10 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
         'x-forwarded-for': `task-battery-${runId}`
       },
       body: JSON.stringify({
-        messages: [
-          { role: 'system', content: PROVENANCE_PROMPT },
-          { role: 'user', content: task.question }
-        ],
-        scene: {}
+        messages,
+        scene: {},
+        ...(context ? { context } : {}),
+        ...(focus ? { focus } : {})
       }),
       signal
     })
@@ -507,58 +515,164 @@ async function askQuestion(baseUrl, task, repetition, timeoutMs, runId) {
       throw new Error(`HTTP ${response.status}: ${errorText.slice(0, 500)}`)
     }
 
-    const parsed = await readSseResponse(response)
-    const durationMs = Date.now() - startedAt
+    return readSseResponse(response)
+  }, timeoutMs)
+}
+
+/**
+ * Run a task — one question or a whole conversation — and record it.
+ *
+ * A single-question task is a one-turn conversation (normalizeBatteryTask makes
+ * every task that shape), so there is one execution path and the recorded fields
+ * a single question used to produce are unchanged. What a conversation adds is
+ * the turn-by-turn record plus the deterministic expectation checks, which are
+ * assertions about STATE (did the id survive the boundary, does a chip carry its
+ * address, is the answered question being offered back) rather than about prose
+ * — the judge grades the words, this grades the machinery.
+ */
+async function runTask(baseUrl, task, repetition, timeoutMs, runId) {
+  const startedAt = Date.now()
+  const chatUrl = new URL('/api/chat', baseUrl)
+  const minGraphs = task.requires_graph ? normalizeInteger(task.min_graphs || 1, 1, 1, 20) : 0
+
+  const messages = [{ role: 'system', content: PROVENANCE_PROMPT }]
+  const turnRecords = []
+  const problems = []
+  let context = null
+  let lastResult = null
+  let lastParsed = null
+  let hardError = null
+
+  for (const [index, turn] of task.turns.entries()) {
+    let text = turn.question
+    let focus = null
+
+    if (turn.click_followon !== null) {
+      const chip = selectAskChip(lastResult?.followOns, turn.click_followon)
+      if (!chip) {
+        hardError = `Turn ${index + 1}: follow-on ${turn.click_followon} was never offered.`
+        break
+      }
+      text = chip.query
+      focus = chipFocus(chip)
+      if (!focus) problems.push(`turn ${index + 1}: the clicked chip carries no (id, query_type)`)
+    }
+
+    messages.push({ role: 'user', content: text })
+    const turnStartedAt = Date.now()
+    const parsed = await postTurn(chatUrl, { messages, context, focus }, runId, timeoutMs)
+    lastParsed = parsed
 
     if (!parsed.ok) {
-      const result = {
-        task_id: task.id,
-        tier: task.tier,
-        title: task.title,
-        question: task.question,
-        requires_graph: Boolean(task.requires_graph),
-        min_graphs: task.requires_graph ? normalizeInteger(task.min_graphs || 1, 1, 1, 20) : 0,
-        repetition,
+      hardError = `Turn ${index + 1}: ${parsed.error?.message || parsed.error || 'Unknown SSE error'}`
+      turnRecords.push({
+        turn: index + 1,
+        question: text,
+        focus,
+        clicked: turn.click_followon,
+        duration_ms: Date.now() - turnStartedAt,
         ok: false,
-        duration_ms: durationMs,
-        status_messages: parsed.statuses,
-        event_count: parsed.eventCount,
-        error: parsed.error?.message || parsed.error || 'Unknown SSE error',
-        request_id: parsed.error?.requestId || null,
-        response_id: parsed.error?.responseId || null
-      }
-      result.quality_flags = classifyResultQuality(result)
-      return result
+        error: hardError
+      })
+      break
     }
 
-    const minGraphs = task.requires_graph ? normalizeInteger(task.min_graphs || 1, 1, 1, 20) : 0
-    const graphs = Array.isArray(parsed.result?.graphs) ? parsed.result.graphs : []
-    const result = {
-      task_id: task.id,
-      tier: task.tier,
-      title: task.title,
-      question: task.question,
-      requires_graph: Boolean(task.requires_graph),
-      min_graphs: minGraphs,
-      repetition,
+    const answer = parsed.result?.response || ''
+    const followOns = Array.isArray(parsed.result?.followOns) ? parsed.result.followOns : []
+    const reproduction = parsed.result?.reproduction || null
+    const turnProblems = checkTurn(turn.expect, { answer, followOns, context: parsed.result?.context, focus, reproduction })
+    problems.push(...turnProblems.map(problem => `turn ${index + 1}: ${problem}`))
+
+    turnRecords.push({
+      turn: index + 1,
+      question: text,
+      focus,
+      clicked: turn.click_followon,
+      duration_ms: Date.now() - turnStartedAt,
       ok: true,
-      duration_ms: durationMs,
-      status_messages: parsed.statuses,
-      event_count: parsed.eventCount,
-      request_id: parsed.result?.requestId || null,
-      response_id: parsed.result?.responseId || null,
-      images_count: Array.isArray(parsed.result?.images) ? parsed.result.images.length : 0,
-      graphs_count: graphs.length,
-      response: parsed.result?.response || '',
-      ...(graphs.length > 0 ? { graphs } : {})
-    }
-    if (result.requires_graph && result.graphs_count < minGraphs) {
-      result.ok = false
-      result.error = `Expected at least ${minGraphs} graph(s), received ${result.graphs_count}.`
+      response: answer,
+      followons: followOns.filter(chip => chip?.kind === 'ask').map(chip => ({
+        id: chip.id || null,
+        query_type: chip.query_type || null,
+        query: chip.query
+      })),
+      context_terms: (parsed.result?.context?.terms || []).map(term => ({ id: term?.id, label: term?.label })),
+      // Recorded on every turn, not just the ones that ask: a turn whose
+      // reproduction drifts from the ids in its own answer is a bug worth
+      // seeing in the artefact even when no expectation named it.
+      reproduction: reproduction
+        ? {
+            ids: (reproduction.ids || []).map(t => ({ id: t.id, label: t.label })),
+            calls: (reproduction.calls || []).map(c => ({ id: c.id, query_type: c.query_type, fn: c.fn })),
+            unmapped: (reproduction.unmapped || []).map(u => u.query_type)
+          }
+        : null,
+      status_count: parsed.statuses.length,
+      problems: turnProblems
+    })
+
+    messages.push({ role: 'assistant', content: answer })
+    context = parsed.result?.context || context
+    lastResult = parsed.result
+  }
+
+  const durationMs = Date.now() - startedAt
+  const base = {
+    task_id: task.id,
+    tier: task.tier,
+    title: task.title,
+    question: task.question,
+    requires_graph: Boolean(task.requires_graph),
+    min_graphs: minGraphs,
+    repetition,
+    duration_ms: durationMs,
+    // Classification is about the ANSWER the user is left with, so it reads the
+    // last turn's statuses; every turn keeps its own record above.
+    status_messages: lastParsed?.statuses || [],
+    event_count: lastParsed?.eventCount || 0,
+    ...(task.conversation ? { conversation: true, turns: turnRecords } : {})
+  }
+
+  if (hardError) {
+    const result = {
+      ...base,
+      ok: false,
+      error: hardError,
+      request_id: lastParsed?.error?.requestId || null,
+      response_id: lastParsed?.error?.responseId || null,
+      ...(problems.length > 0 ? { expectation_problems: problems } : {})
     }
     result.quality_flags = classifyResultQuality(result)
     return result
-  }, timeoutMs)
+  }
+
+  const graphs = Array.isArray(lastResult?.graphs) ? lastResult.graphs : []
+  const result = {
+    ...base,
+    ok: true,
+    request_id: lastResult?.requestId || null,
+    response_id: lastResult?.responseId || null,
+    images_count: Array.isArray(lastResult?.images) ? lastResult.images.length : 0,
+    graphs_count: graphs.length,
+    response: lastResult?.response || '',
+    ...(graphs.length > 0 ? { graphs } : {}),
+    ...(problems.length > 0 ? { expectation_problems: problems } : {})
+  }
+
+  if (result.requires_graph && result.graphs_count < minGraphs) {
+    result.ok = false
+    result.error = `Expected at least ${minGraphs} graph(s), received ${result.graphs_count}.`
+  }
+  // A conversation that answers every turn beautifully and loses the term on the
+  // way is not a pass. An unmet expectation fails the task the same way a missing
+  // graph does.
+  if (problems.length > 0) {
+    result.ok = false
+    result.error = result.error || `Unmet expectations: ${problems.join('; ')}`
+  }
+
+  result.quality_flags = classifyResultQuality(result)
+  return result
 }
 
 function buildAttempts(tasks, repetitions) {
@@ -590,7 +704,12 @@ function summariseResults(results) {
     'not_verified_or_no_results_answer',
     'graph_failure_mentioned',
     'missing_required_graph',
-    'used_data_resource'
+    'used_data_resource',
+    // Conversation flags. They only ever fire on tier-7 tasks, and they are
+    // listed alongside the rest so one summary table covers the whole run. The
+    // list comes from the module that produces them, so adding a flag there
+    // cannot leave it uncounted here.
+    ...CONVERSATION_QUALITY_FLAGS
   ]
   const quality = Object.fromEntries(
     qualityFlagNames.map(flagName => [flagName, { count: 0, task_ids: [] }])
@@ -611,12 +730,34 @@ function summariseResults(results) {
     }
   }
 
+  const conversations = results.filter(result => result.conversation)
+  const followUpDurations = conversations
+    .flatMap(result => (Array.isArray(result.turns) ? result.turns.slice(1) : []))
+    .map(turn => Number(turn?.duration_ms || 0))
+    .filter(ms => ms > 0)
+    .sort((a, b) => a - b)
+
   return {
     total: results.length,
     ok,
     errors,
     by_tier: byTier,
     quality,
+    ...(conversations.length > 0 ? {
+      conversation: {
+        total: conversations.length,
+        ok: conversations.filter(result => result.ok).length,
+        turns: conversations.reduce((sum, result) => sum + (result.turns?.length || 0), 0),
+        followup_turns: followUpDurations.length,
+        // The distribution, not the mean. The failure mode this tier was built
+        // for is a MINORITY of follow-ups falling through to the planner, and a
+        // mean over a dozen fast turns and one 381s turn reports "fine".
+        followup_median_ms: followUpDurations.length
+          ? followUpDurations[Math.floor((followUpDurations.length - 1) / 2)]
+          : 0,
+        followup_max_ms: followUpDurations.length ? followUpDurations[followUpDurations.length - 1] : 0
+      }
+    } : {}),
     mean_duration_ms: results.length
       ? Math.round(results.reduce((sum, result) => sum + (result.duration_ms || 0), 0) / results.length)
       : 0
@@ -668,14 +809,20 @@ async function runAttemptsWithConcurrency({
       console.log(`[${completed + 1}/${attempts.length}] worker ${workerId}: ${label} ...`)
 
       try {
-        const result = await askQuestion(baseUrl, attempt.task, attempt.repetition, timeoutMs, runId)
+        const result = await runTask(baseUrl, attempt.task, attempt.repetition, timeoutMs, runId)
         payload.results.push({
           attempt_index: attempt.attemptIndex,
           task_index: attempt.taskIndex,
           ...result
         })
         completed += 1
-        console.log(`[${completed}/${attempts.length}] ${label}: ${result.ok ? 'ok' : 'error'} (${result.duration_ms} ms)`)
+        // A conversation's total tells you nothing useful on its own, so print
+        // the per-turn breakdown: one slow turn among fast ones is the signal.
+        const turnTimes = result.conversation
+          ? ` [${(result.turns || []).map(t => `${Math.round((t.duration_ms || 0) / 1000)}s`).join(' + ')}]`
+          : ''
+        console.log(`[${completed}/${attempts.length}] ${label}: ${result.ok ? 'ok' : 'error'} (${result.duration_ms} ms)${turnTimes}`)
+        for (const problem of result.expectation_problems || []) console.log(`    ! ${problem}`)
       } catch (error) {
         const result = {
           attempt_index: attempt.attemptIndex,
@@ -740,7 +887,8 @@ async function main() {
   if (options.dryRun) {
     console.log(`Parsed ${tasks.length} tasks from ${taskFile}. Selected ${selectedTasks.length}:`)
     for (const task of selectedTasks) {
-      console.log(`${task.id} T${task.tier} - ${task.title}: ${task.question}`)
+      const shape = task.conversation ? ` (${task.turns.length} turns)` : ''
+      console.log(`${task.id} T${task.tier} - ${task.title}${shape}: ${task.question}`)
     }
     return
   }

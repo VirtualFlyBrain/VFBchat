@@ -33,6 +33,7 @@ import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, b
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
+import { minimizeHistory } from '../../../lib/conversationContext.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
@@ -11107,7 +11108,7 @@ function buildHarnessToolCatalogue() {
   return TOOL_DEFINITIONS.map(tool => ({ name: tool.name, purpose: tool.description || '', parameters: tool.parameters }))
 }
 
-async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene }) {
+async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus }) {
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
   const toolState = {
@@ -11140,6 +11141,12 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       question: userMessage,
       plannerVotes: complexity.plannerVotes,
       history: priorMessages,
+      // The conversation's resolved info, echoed back by the client from the
+      // previous turn's result event, and — when this turn came from a clicked
+      // follow-on rather than typed text — the {id, query_type} that chip was
+      // built from. Both are untrusted here and validated inside the harness.
+      context,
+      focus,
       apiBaseUrl,
       apiKey,
       defaultModel: apiModel,
@@ -11185,6 +11192,11 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         tables: [],
         followOns: [],
         sources: [],
+        // Even a clarifying turn carries the context forward. A question the
+        // harness could not answer without more information is exactly the
+        // conversation where the user's NEXT message is a short one ("the
+        // adult one") that depends entirely on what is already resolved.
+        context: live.context,
         toolUsage: live.toolUsage,
         toolRounds: live.toolRounds,
         responseId,
@@ -11301,7 +11313,12 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     const images = orderImagesByTemplate(rawImages, preferredTemplate).slice(0, 8)
     return {
       ...built, images, tables, responseId,
-      followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || []
+      followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || [],
+      // The ids this turn resolved and the catalogue queries it ran, as runnable
+      // VFBquery Python. Carried on every turn so a client can offer it as a
+      // button; the prose only carries it when the user asked for it.
+      reproduction: live.reproduction || null,
+      context: live.context
     }
   } finally {
     await closeMcpClients(mcpClients)
@@ -11366,6 +11383,12 @@ export async function POST(request) {
   const body = await request.json()
   const messages = Array.isArray(body.messages) ? body.messages : []
   const scene = body.scene || {}
+  // Conversation state the client carries for us. The server holds no session,
+  // so the only way an id resolved on turn 1 can be known on turn 2 is for the
+  // client to hand it back — which also means it is untrusted, and neither of
+  // these is used before sanitizeContext / detectFocusPlan has validated it.
+  const priorContext = body.context || null
+  const focus = body.focus || null
   let message = typeof messages[messages.length - 1]?.content === 'string'
     ? messages[messages.length - 1].content
     : ''
@@ -11475,10 +11498,23 @@ export async function POST(request) {
 
   return buildSseResponse(async (sendEvent) => {
     const resolvedUserMessage = replaceTermsWithLinks(message)
-    const rawPriorMessages = messages
-      .slice(0, -1)
-      .map(normalizeChatMessage)
-      .filter(Boolean)
+    // Minimize BEFORE anything else looks at the history. Every prior assistant
+    // turn in this product is mostly apparatus — VFB URLs with hover titles,
+    // image embeds, twenty-row result tables — none of which helps the planner
+    // resolve a back-reference, and all of which is re-sent and re-read on every
+    // subsequent turn. Stripping it here means the planner's 2000-char slice
+    // holds several real turns instead of one turn's worth of link targets, and
+    // the LLM compaction below is reached far later (and, when it is reached, is
+    // summarising prose that is already lean). The ids the stripped links used to
+    // carry are not lost: they travel structurally in `context` now, which is
+    // what makes cutting the prose safe.
+    const minimized = minimizeHistory(
+      messages.slice(0, -1).map(normalizeChatMessage).filter(Boolean)
+    )
+    const rawPriorMessages = minimized.messages
+    if (minimized.dropped) {
+      try { console.log(`[VFBchat] HISTORY | kept=${rawPriorMessages.length} dropped=${minimized.dropped} chars=${minimized.chars}`) } catch { /* best-effort */ }
+    }
 
     const apiBaseUrl = getConfiguredApiBaseUrl()
     const apiKey = getConfiguredApiKey()
@@ -11503,7 +11539,9 @@ export async function POST(request) {
         apiKey,
         apiModel,
         userMessage: message,
-        scene
+        scene,
+        context: priorContext,
+        focus
       })
 
       if (!result.ok) {
@@ -11555,6 +11593,11 @@ export async function POST(request) {
         followOns: result.followOns || [],
         sources: result.sources || [],
         terms: result.terms || [],
+        reproduction: result.reproduction || null,
+        // What this turn resolved, folded into what earlier turns resolved. The
+        // client stores it and posts it back next time; that round trip is the
+        // whole session store.
+        context: result.context || null,
         newScene: scene,
         requestId,
         responseId

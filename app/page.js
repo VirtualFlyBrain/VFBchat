@@ -787,7 +787,7 @@ const ChatMessage = memo(function ChatMessage({
               <button
                 key={`fo-${i}`}
                 type="button"
-                onClick={() => onAskFollowOn && onAskFollowOn(chip.query)}
+                onClick={() => onAskFollowOn && onAskFollowOn(chip.query, chip.id && chip.query_type ? { id: chip.id, query_type: chip.query_type } : null)}
                 title={chip.title || `Ask VFB: ${chip.query}`}
                 style={{
                   padding: '4px 10px', fontSize: '0.75em', borderRadius: '999px',
@@ -835,6 +835,14 @@ export default function Home() {
   const [thinkingSteps, setThinkingSteps] = useState([{ message: 'Thinking', done: false }])
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
+  // What the conversation has already resolved: ids, authoritative labels and
+  // each term's query catalogue, as the server last merged them. The server is
+  // stateless, so this round trip IS the session — without it, every turn
+  // re-derives the subject from prose and turn 2 can fail to find a term turn 1
+  // resolved, linked and built its own suggestion chips from. A ref rather than
+  // state on purpose: nothing renders from it, and handleSend must read the
+  // latest value synchronously rather than a value closed over at render time.
+  const contextRef = useRef(null)
   const msgIdRef = useRef(0) // stable, incrementing message ID
   const streamingMsgIdRef = useRef(null) // id of the assistant bubble being streamed
   const initialSendFired = useRef(false) // prevent double-send from StrictMode
@@ -1069,11 +1077,15 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   // Stable callback for follow-on chips → run the chip's query as a new message.
   // Uses a ref so ChatMessage's memo isn't busted every render.
   const handleSendRef = useRef(null)
-  const handleAskFollowOn = useCallback((query) => {
-    if (typeof query === 'string' && query.trim() && handleSendRef.current) handleSendRef.current(query)
+  // `focus` is the chip's own {id, query_type} — the pair it was generated from.
+  // Passing it through means a CLICKED suggestion is answered by running the
+  // query it names, instead of being re-parsed from its English sentence as if
+  // the user had typed it and the id had never been known.
+  const handleAskFollowOn = useCallback((query, focus) => {
+    if (typeof query === 'string' && query.trim() && handleSendRef.current) handleSendRef.current(query, focus)
   }, [])
 
-  const handleSend = async (messageText = null) => {
+  const handleSend = async (messageText = null, focus = null) => {
     const textToSend = (typeof messageText === 'string' ? messageText : null) || input
     if (!textToSend.trim()) return
 
@@ -1088,7 +1100,14 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: outboundMessages, scene })
+        body: JSON.stringify({
+          messages: outboundMessages,
+          scene,
+          context: contextRef.current || undefined,
+          focus: (focus && focus.id && focus.query_type)
+            ? { id: focus.id, query_type: focus.query_type }
+            : undefined
+        })
       })
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -1158,6 +1177,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                   setMessages(prev => [...prev, finalMsg])
                 }
                 streamingMsgIdRef.current = null
+                // Keep the merged context for the next turn. Only ever replaced
+                // by a fresh one — a result event that omits it (an older server,
+                // a clarification path that did not reach the harness) must not
+                // wipe what the conversation already knows.
+                if (data.context) contextRef.current = data.context
                 if (data.newScene) setScene(data.newScene)
                 setIsThinking(false)
                 fetchRateInfo()

@@ -173,3 +173,167 @@ test('unresolved terms (no id) produce nothing', () => {
   assert.deepEqual(chips, [])
   assert.deepEqual(sources, [])
 })
+
+// --- a chip carries the address it was built from --------------------------
+
+test('an ask chip carries the id and query_type it was generated from', () => {
+  // The medulla regression, at its origin. This chip is built deterministically
+  // from a specific term's id and a specific query in that term's own catalogue;
+  // emitting only the English sentence meant clicking it posted a question the
+  // next turn had to re-derive both facts from, by lexical search, from scratch.
+  const ledger = ledgerWith({
+    name: 'medulla', id: 'FBbt_00003748', label: 'medulla',
+    digest: { name: 'medulla', queries: [
+      { query_type: 'NeuronsPostsynapticHere', label: 'Neurons with postsynaptic terminals in medulla', count: 333, examples: [] }
+    ] }
+  })
+  const ask = buildFollowOns(ledger).chips.find(c => c.kind === 'ask')
+  assert.match(ask.query, /Which neurons receive output from the medulla\?/)
+  assert.equal(ask.id, 'FBbt_00003748', 'the chip must carry the id it was built from')
+  assert.equal(ask.query_type, 'NeuronsPostsynapticHere', 'and the query that answers it')
+})
+
+// --- the bare-numeral guard ------------------------------------------------
+
+test('linkifyCounts does not claim an anatomical layer number', () => {
+  // Robbie's live trace: an answer describing the medulla's ten layers wrote
+  // "layer 7", and a query whose count happened to be 7 linked it — offering the
+  // reader "Run in VFB: Lineage clones in the medulla" on an anatomy number.
+  const ledger = { terms: { medulla: { id: 'FBbt_00003748', digest: { name: 'medulla', queries: [
+    { query_type: 'LineageClonesIn', label: 'Lineage clones in medulla', count: 7, examples: [] }
+  ] } } } }
+  const counts = buildCountLinks(ledger)
+  const out = linkifyCounts('The medulla has ten layers, and layer 7 receives input from Tm neurons.', counts)
+  assert.equal(out, 'The medulla has ten layers, and layer 7 receives input from Tm neurons.')
+})
+
+test('the designator veto holds at every magnitude', () => {
+  const counts = [{ count: 4130, url: 'https://x/q', title: 'Run in VFB: Images', label: 'Images of medulla', noun: 'images' }]
+  assert.match(linkifyCounts('VFB holds 4130 images.', counts), /\[4130\]/)
+  assert.equal(linkifyCounts('See figure 4130 for details.', counts), 'See figure 4130 for details.')
+  assert.equal(linkifyCounts('Cluster 4130 is distinct.', counts), 'Cluster 4130 is distinct.')
+})
+
+test('a small figure is linked only when the prose corroborates what is counted', () => {
+  const counts = [{ count: 28, url: 'https://x/q', title: 'Run in VFB: t', label: 'Neuron types with some part in medulla', noun: 'neuron types' }]
+  // Corroborated: the figure is followed by the query's own vocabulary.
+  assert.match(linkifyCounts('There are 28 neuron types with a part here.', counts), /\[28\]/)
+  // Bare: nothing says this 28 is a quantity of neuron types.
+  assert.equal(linkifyCounts('It is subdivided into 28 and further.', counts),
+    'It is subdivided into 28 and further.')
+})
+
+test('a large figure needs no corroboration', () => {
+  const counts = [{ count: 2342, url: 'https://x/q', title: 'Run in VFB: t', label: 'Images of medulla', noun: 'images' }]
+  assert.match(linkifyCounts('VFB holds 2342 of these.', counts), /\[2342\]/)
+})
+
+// --- a follow-on is an offer of something new ---
+
+const MEDULLA_TERM = {
+  name: 'medulla', id: 'FBbt_00003748',
+  digest: { name: 'medulla', queries: [
+    { query_type: 'NeuronsPostsynapticHere', label: 'Neurons with postsynaptic terminals here', count: 333 },
+    { query_type: 'NeuronsPresynapticHere', label: 'Neurons with presynaptic terminals here', count: 262 },
+    { query_type: 'PartsOf', label: 'Parts', count: 28 }
+  ] }
+}
+
+test('buildFollowOns does not offer back the query this turn just ran', () => {
+  // The live medulla trace ended with "Which neurons receive output from the
+  // medulla?" offered as a next step, directly beneath the answer to exactly that
+  // question — the chip promised data the reader had just been given.
+  const ledger = {
+    terms: { medulla: MEDULLA_TERM },
+    plan: [{ id: 's1', tool: 'vfb_run_query', args: { id: 'FBbt_00003748', query_type: 'NeuronsPostsynapticHere' }, status: 'satisfied' }]
+  }
+  const { chips } = buildFollowOns(ledger)
+  const asked = chips.filter(c => c.kind === 'ask')
+  assert.ok(!asked.some(c => c.query_type === 'NeuronsPostsynapticHere'), 'the answered query came back as a suggestion')
+  // …and the space it freed goes to a query the reader has not seen.
+  assert.deepEqual(asked.map(c => c.query_type), ['NeuronsPresynapticHere', 'PartsOf'])
+})
+
+test('suppression is per term, not per query type', () => {
+  // Two regions in one answer routinely share a query_type. Muting by bare type
+  // would silently drop the second region's genuinely unasked chip.
+  const lobula = { ...MEDULLA_TERM, name: 'lobula', id: 'FBbt_00003852', digest: { name: 'lobula', queries: MEDULLA_TERM.digest.queries } }
+  const ledger = {
+    terms: { medulla: MEDULLA_TERM, lobula },
+    plan: [{ id: 's1', tool: 'vfb_run_query', args: { id: 'FBbt_00003748', query_type: 'NeuronsPostsynapticHere' }, status: 'satisfied' }]
+  }
+  const asked = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.ok(!asked.some(c => c.id === 'FBbt_00003748' && c.query_type === 'NeuronsPostsynapticHere'))
+  assert.ok(asked.some(c => c.id === 'FBbt_00003852' && c.query_type === 'NeuronsPostsynapticHere'),
+    'the lobula was never asked about — its chip must survive')
+})
+
+test('a planned query with no id suppresses nothing', () => {
+  // `::type` steps exist (a planner step naming a query with no target). They must
+  // not mute a chip for a term they may not even be about.
+  const ledger = {
+    terms: { medulla: MEDULLA_TERM },
+    plan: [{ id: 's1', tool: 'vfb_run_query', args: { query_type: 'NeuronsPostsynapticHere' }, status: 'satisfied' }]
+  }
+  const asked = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.ok(asked.some(c => c.query_type === 'NeuronsPostsynapticHere'))
+})
+
+// --- chip vocabulary: every query type VFB offers can become a follow-on -----
+
+test('a query type with no hand-written template is offered in VFB\'s own words, not dropped', () => {
+  // The real DA1_lPN catalogue. Before this, the 107-match NBLAST query was the
+  // only one of the three with a template and the other two produced nothing —
+  // a neuron page advertising 484 connected neurons offered the user no way to
+  // see them.
+  const ledger = ledgerWith({
+    name: 'DA1_lPN_R', id: 'VFB_00000001', label: 'DA1_lPN_R',
+    digest: { name: 'DA1_lPN_R', queries: [
+      { query_type: 'SimilarMorphologyTo', label: 'Neurons with similar morphology to DA1_lPN_R [NBLAST]', count: 107, examples: [] },
+      { query_type: 'SimilarMorphologyToNB', label: 'Expression patterns matching DA1_lPN_R [NeuronBridge]', count: 16, examples: [] }
+    ] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  const nb = chips.find(c => c.query_type === 'SimilarMorphologyToNB')
+  assert.ok(nb, 'the untemplated query type must still be offered')
+  // Quoted from VFB, not invented: this codebase and VFB\'s own catalogue
+  // disagree about whether this query returns neurons or expression patterns,
+  // so the chip says what VFB says.
+  assert.equal(nb.query, 'Show me: Expression patterns matching DA1_lPN_R (NeuronBridge)')
+  // ...and it still carries the address, which is what actually runs.
+  assert.equal(nb.id, 'VFB_00000001')
+  assert.equal(nb.label, 'Show me: Expression patterns matching DA1_lPN_R (NeuronBridge) (16)')
+})
+
+test('a templated type is phrased as a question, and beats a quoted label at the same count', () => {
+  const ledger = ledgerWith({
+    name: 'medulla', id: 'FBbt_00003748', label: 'medulla',
+    digest: { name: 'medulla', queries: [
+      { query_type: 'SimilarMorphologyToNB', label: 'Expression patterns matching medulla', count: 5, examples: [] },
+      { query_type: 'TractsNervesInnervatingHere', label: 'Tracts', count: 5, examples: [] }
+    ] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.equal(chips[0].query, 'Which tracts and nerves innervate the medulla?')
+})
+
+test('a term never fills its whole chip list with quoted labels', () => {
+  const many = ['SimilarMorphologyToNB', 'SimilarMorphologyToNBexp', 'SimilarMorphologyToPartOf', 'ref_neuron_neuron_connectivity_query']
+    .map((qt, i) => ({ query_type: qt, label: `Some VFB query ${i}`, count: 900 - i, examples: [] }))
+  const ledger = ledgerWith({
+    name: 'x', id: 'VFB_00000002', label: 'x',
+    digest: { name: 'x', queries: [...many, { query_type: 'PartsOf', label: 'Parts', count: 3, examples: [] }] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.equal(chips.filter(c => c.query.startsWith('Show me:')).length, 2)
+  // and the templated one still gets in, despite being the smallest
+  assert.ok(chips.some(c => c.query === 'What are the anatomical parts of the x?'))
+})
+
+test('a query VFB gave no label and this file cannot phrase is offered as nothing at all', () => {
+  const ledger = ledgerWith({
+    name: 'x', id: 'VFB_00000003', label: 'x',
+    digest: { name: 'x', queries: [{ query_type: 'SomethingBrandNew', label: '', count: 12, examples: [] }] }
+  })
+  assert.deepEqual(buildFollowOns(ledger).chips.filter(c => c.kind === 'ask'), [])
+})
