@@ -235,7 +235,7 @@ async function waitForServer(baseUrl, timeoutMs = 90000, serverProcess = null) {
   throw new Error(`Timed out waiting for ${healthUrl}. Last error: ${lastError?.message || 'unknown'}`)
 }
 
-function startServer({ port, command, runId }) {
+function startServer({ port, command, runId, concurrency = 1 }) {
   const args = command === 'start'
     ? ['run', 'start', '--', '-p', String(port), '-H', '127.0.0.1']
     : ['run', 'dev', '--', '-p', String(port), '-H', '127.0.0.1']
@@ -247,7 +247,24 @@ function startServer({ port, command, runId }) {
       ...process.env,
       PORT: String(port),
       RATE_LIMIT_PER_IP: process.env.RATE_LIMIT_PER_IP || '10000',
-      LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`)
+      LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`),
+      // The heap the server is allowed, scaled to the concurrency WE chose.
+      //
+      // Answering is expensive in proportion to how many questions are in flight
+      // at once and super-linearly so: one measured at ~143 MB peak, four at
+      // ~6.8 GB against an 88 MB baseline. V8's default old-space ceiling varies
+      // by Node version and is around 4 GB on the runner, so every CI battery
+      // run from v3.9.0 onward died partway with `terminated` on every remaining
+      // task — which reads in the artefact as catastrophic answer quality and is
+      // actually one dead process.
+      //
+      // The component that decides to run N questions at once is the right one
+      // to decide the heap that needs, and it is the only one that can: the
+      // Dockerfile's setting does not reach a runner that starts the server with
+      // `npm start` directly. Deliberately generous — this is a test rig, and an
+      // OOM here costs a whole run.
+      NODE_OPTIONS: process.env.NODE_OPTIONS ||
+        `--max-old-space-size=${Math.min(12288, Math.max(6144, 3072 * Math.max(1, Number(concurrency) || 1)))}`
     },
     detached,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -923,7 +940,7 @@ async function main() {
 
   try {
     if (shouldStartServer) {
-      server = startServer({ port, command: serverCommand, runId })
+      server = startServer({ port, command: serverCommand, runId, concurrency })
       await waitForServer(baseUrl, 90000, server)
     }
 
