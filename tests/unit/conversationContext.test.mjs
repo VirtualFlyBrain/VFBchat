@@ -394,3 +394,68 @@ test('contextTermsNamedIn treats a regex-special label as text, not a pattern', 
   assert.equal(contextTermsNamedIn(ctx, 'what does GAL4 (attP2) label?')[0]?.id, 'FBtp_00000001')
   assert.deepEqual(contextTermsNamedIn(ctx, 'what does GAL4 XXattP2Y label?'), [])
 })
+
+// --- which queries the conversation ran ------------------------------------
+// Counts deliberately do not travel: a count is a fact with an age. "We ran this
+// query" has no age, and it is what lets a later turn hand back the working for a
+// result an earlier turn produced.
+
+test('a query the turn ran is marked ran; one it merely could run is not', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.terms = { medulla: { id: 'FBbt_00003748', digest: { name: 'medulla', queries: [
+    { query_type: 'NeuronsPartHere', label: 'Neurons with part here', count: 471 },
+    { query_type: 'ImagesNeurons', label: 'Images', count: 12 }
+  ] } } }
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const ctx = buildTurnContext(ledger)
+  const qs = Object.fromEntries(ctx.terms[0].queries.map(q => [q.query_type, q.ran]))
+  assert.equal(qs.NeuronsPartHere, true)
+  assert.equal(qs.ImagesNeurons, false)
+})
+
+test('a query the turn ran that the digest never advertised is kept anyway', () => {
+  // We just ran it, which is the strongest evidence it works for this term.
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.terms = { medulla: { id: 'FBbt_00003748', digest: { name: 'medulla', queries: [] } } }
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'SubclassesOf' } }]
+  const ctx = buildTurnContext(ledger)
+  assert.deepEqual(ctx.terms[0].queries.map(q => [q.query_type, q.ran]), [['SubclassesOf', true]])
+})
+
+test('a later turn does not forget what an earlier turn ran', () => {
+  // The failure this prevents: turn 2 re-resolves the term through term-info, the
+  // fresh catalogue overwrites the carried one, and the reproduction for "how
+  // would I get that same result in Python?" loses every call it had.
+  const prev = { v: 1, registry: [], terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+    queries: [{ query_type: 'NeuronsPartHere', label: '', count: 471, countKind: 'exact', ran: true }] }] }
+  const turn = { v: 1, registry: [], terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+    queries: [{ query_type: 'NeuronsPartHere', label: 'Neurons with part here', count: 471, countKind: 'exact', ran: false },
+              { query_type: 'ImagesNeurons', label: 'Images', count: 12, countKind: 'exact', ran: false }] }] }
+  const merged = mergeContext(prev, turn)
+  const qs = Object.fromEntries(merged.terms[0].queries.map(q => [q.query_type, q.ran]))
+  assert.equal(qs.NeuronsPartHere, true, 'still ran, however many turns ago')
+  assert.equal(qs.ImagesNeurons, false)
+  assert.equal(merged.terms[0].queries.find(q => q.query_type === 'NeuronsPartHere').label,
+    'Neurons with part here', 'the fresher catalogue still wins on everything else')
+})
+
+test('a ran query dropped from the fresher catalogue is carried back in', () => {
+  const prev = { v: 1, registry: [], terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+    queries: [{ query_type: 'SubclassesOf', label: '', count: -1, countKind: 'unknown', ran: true }] }] }
+  const turn = { v: 1, registry: [], terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+    queries: [{ query_type: 'ImagesNeurons', label: 'Images', count: 12, countKind: 'exact', ran: false }] }] }
+  const merged = mergeContext(prev, turn)
+  assert.ok(merged.terms[0].queries.some(q => q.query_type === 'SubclassesOf' && q.ran))
+})
+
+test('ran is a boolean, never whatever the client sent', () => {
+  // It becomes a line of code we tell the user reproduces their answer.
+  const dirty = { v: 1, registry: [], terms: [{ name: 'm', label: 'm', id: 'FBbt_00003748',
+    queries: [{ query_type: 'SubclassesOf', ran: 'yes' }, { query_type: 'PartsOf', ran: 1 }] }] }
+  const clean = sanitizeContext(dirty)
+  assert.deepEqual(clean.terms[0].queries.map(q => q.ran), [false, false])
+})
