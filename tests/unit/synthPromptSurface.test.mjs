@@ -326,20 +326,28 @@ test('a question asking for code gets the code-supplied block', async () => {
   const prompt = await synthPrompt('How would I get the mushroom body data in Python with vfbquery?',
     { plan: ANATOMY_PLAN })
   assert.ok(BLOCKS.codeSupplied.test(prompt), 'the block fires when the question asks for code')
-  assert.match(prompt, /do NOT write code, in any language/)
-  assert.match(prompt, /do NOT say what a library can or cannot do/)
-  assert.match(prompt, /"in one step" or "directly"/,
-    'the exact phrasing the failure used is named, so the instruction is about something concrete')
+  assert.match(prompt, /Do not write code/)
+  assert.match(prompt, /Do not say what any library can or cannot do/)
+  // The worked example is not decoration. The same framing WITHOUT it measured
+  // 0/20 clean against the live model — worse than the prohibition-only version
+  // it replaced — because a model told what not to write, and given nothing to
+  // write instead, hedges. It must stay, and it must stay a PLACEHOLDER: a
+  // concrete example is copied near-verbatim and leaks the wrong term into a
+  // question it was not written for.
+  assert.match(prompt, /Like this:/, 'the example is the mechanism; do not remove it')
+  assert.match(prompt, /<count> <things> VFB has annotated for <term>/,
+    'and it must be a placeholder, never a concrete term')
+  const rule = prompt.slice(prompt.indexOf('CODE IS ALREADY SUPPLIED'))
+  assert.ok(!/\b471\b|\bmedulla\b/.test(rule), 'no real term or count inside the example')
   // The first version only forbade naming a function, and the model answered
   // "you would use VFB function with the query type NeuronsPartHere" — a
   // sentence that names no mechanism and then points at one.
-  assert.match(prompt, /Do not gesture at an unnamed one either/)
+  assert.match(prompt, /refer to a mechanism you have not named/)
   // And it has to outrank EVIDENCE explicitly. A reviewed-docs page about
   // `get_similar_neurons` was in evidence, so the answer kept explaining what
   // that method is for and contrasting it with the question — about a method
   // the reader never mentioned.
-  assert.match(prompt, /This overrides EVIDENCE/)
-  assert.match(prompt, /get_similar_neurons is designed for morphology/)
+  assert.match(prompt, /EVIDENCE may contain a documentation page showing some other library method/)
 })
 
 test('an ordinary question never sees it', async () => {
