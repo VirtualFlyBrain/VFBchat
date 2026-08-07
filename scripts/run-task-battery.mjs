@@ -59,6 +59,7 @@ Options:
   --server-command <dev|start> Server command for local runs. Default: dev.
   --port <number>             Local server port. Default: 3210.
   --repetitions <number>      Repetitions per question. Default: 1.
+  --shard <i/n>               Run only this shard of the task list. Default: all.
   --concurrency <number>      Number of questions to run in parallel. Default: 1.
   --limit <number>            Limit number of selected tasks.
   --ids <csv>                 Comma-separated task IDs, e.g. T1.1,T3.4.
@@ -157,6 +158,42 @@ async function loadTasksFromFile(taskFile) {
   return parseTaskBattery(raw)
 }
 
+/**
+ * Take this shard's slice of the task list, as "i/n" (1-based).
+ *
+ * Splitting the battery across matrix jobs is the only real fix for its memory
+ * profile: cost grows super-linearly with questions in flight inside ONE server
+ * process, so the way to go faster is more processes, not more concurrency —
+ * and every matrix job is a fresh runner with its own RAM. It also contains
+ * failure: a shard that dies takes its own eighth of the battery with it, not
+ * the whole run.
+ *
+ * Assignment is round-robin over a list sorted heaviest-tier-first, not a
+ * contiguous slice. Contiguous slicing puts all twelve tier-7 conversations —
+ * the slow, multi-turn, memory-hungry ones — in the same shard, and the run is
+ * then as long as that shard. Round-robin after a cost sort spreads them, so
+ * shards finish together and wall-clock is the average rather than the worst.
+ *
+ * Deterministic: the same task list and the same n always give the same split,
+ * so a failure in shard 3 is reproducible by running shard 3.
+ */
+function shardTasks(tasks, spec) {
+  const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(spec || ''))
+  if (!m) return tasks
+  const index = Number(m[1])
+  const total = Number(m[2])
+  if (!(total > 0) || !(index >= 1 && index <= total)) {
+    throw new Error(`--shard must be "i/n" with 1 <= i <= n (got "${spec}")`)
+  }
+  if (total === 1) return tasks
+  // Heaviest first: higher tier = multi-turn and slower. Ties keep task order so
+  // the result does not depend on sort stability across engines.
+  const ordered = tasks
+    .map((task, position) => ({ task, position }))
+    .sort((a, b) => (b.task.tier || 0) - (a.task.tier || 0) || a.position - b.position)
+  return ordered.filter((_, i) => (i % total) === (index - 1)).map(entry => entry.task)
+}
+
 function selectTasks(tasks, options) {
   let selected = tasks
   const ids = String(options.ids || process.env.TASK_BATTERY_IDS || '')
@@ -178,6 +215,8 @@ function selectTasks(tasks, options) {
   if (Number.isFinite(limit) && limit > 0) {
     selected = selected.slice(0, limit)
   }
+
+  selected = shardTasks(selected, options.shard || process.env.TASK_BATTERY_SHARD || '')
 
   return selected
 }
