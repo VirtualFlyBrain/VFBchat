@@ -238,3 +238,54 @@ test('a shorter name still links where it genuinely appears in prose', () => {
   assert.match(out, /FBbt_00047926/)
   assert.match(out, /is one \[Kenyon cell\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003686/)
 })
+
+// ------------------------------------------------------- fenced code blocks ---
+// The reproduction feature appends a ```python block to answers that ask for it,
+// and the model writes fences of its own. Both run through the linkifiers on the
+// way out, so the fence has to be protected explicitly rather than by luck.
+
+test('a term name inside a fenced block is not linkified, even when the fence contains a backtick', () => {
+  const termLinks = [
+    { name: 'medulla', id: 'FBbt_00003748', url: 'https://www.virtualflybrain.org/reports/FBbt_00003748' }
+  ]
+  // The lone backtick is the whole point: it is what used to flip the parity of
+  // the single-backtick rule and expose the rest of the block.
+  const answer = [
+    'Here is the code.',
+    '',
+    '```python',
+    "df = vfbquery.get_neurons_with_part_in('FBbt_00003748')  # medulla, see `docs`",
+    'print(df)',
+    '```',
+    '',
+    'The medulla is a neuropil.'
+  ].join('\n')
+  const out = linkifyKnownTerms(answer, termLinks)
+  const fence = out.slice(out.indexOf('```python'), out.lastIndexOf('```') + 3)
+  assert.ok(!/\]\(/.test(fence), `a link was written inside the code block:\n${fence}`)
+  assert.match(out, /The \[medulla\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003748/,
+    'the prose outside the fence still links')
+})
+
+test('a count inside a fenced block is left alone', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748')
+  const answer = '```python\nrows = 107  # 107 neurons\n```\nThere are 107 neurons in the medulla.'
+  const out = linkifyCounts(answer, ledger)
+  assert.ok(!/\]\(/.test(out.slice(0, out.lastIndexOf('```'))), 'no link inside the block')
+})
+
+test('an unterminated fence protects everything after it rather than half of it', () => {
+  // A truncated stream ends mid-block. Protecting the remainder is the safe
+  // failure: worst case a term goes unlinked, never a link injected into code.
+  const parts = splitProtectedSpans('text\n```python\nx = 1')
+  assert.equal(parts[0], 'text\n')
+  assert.equal(parts[1], '```python\nx = 1')
+  assert.equal(parts[2], '')
+})
+
+test('an empty fence pair is one span, not two stray code spans', () => {
+  const parts = splitProtectedSpans('a ``` ``` b')
+  assert.equal(parts[1], '``` ```')
+  assert.equal(parts[2], ' b')
+})

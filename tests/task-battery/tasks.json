@@ -354,5 +354,325 @@
     "question": "Is there a circuit diagram of the mushroom body available on Virtual Fly Brain?",
     "category": "anatomy-diagrams",
     "plane": "docs"
+  },
+  {
+    "id": "C1",
+    "tier": 7,
+    "title": "Pronoun follow-up on a region",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the medulla?",
+        "expect": {
+          "context_carries": "medulla",
+          "context_carries_id": "FBbt_00003748",
+          "min_followons": 3
+        }
+      },
+      {
+        "question": "Which neurons receive output from it?",
+        "expect": {
+          "context_carries": "medulla",
+          "context_carries_id": "FBbt_00003748",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C2",
+    "tier": 7,
+    "title": "A clicked chip keeps its address",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the mushroom body?",
+        "expect": {
+          "context_carries": "mushroom body",
+          "min_followons": 3
+        }
+      },
+      {
+        "click_followon": 0,
+        "expect": {
+          "context_carries": "mushroom body",
+          "no_unmatched_claim": true,
+          "no_repeat_of_focus": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C3",
+    "tier": 7,
+    "title": "Topic switch and back",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the fan-shaped body?",
+        "expect": {
+          "context_carries": "fan-shaped body"
+        }
+      },
+      {
+        "question": "What about the ellipsoid body?",
+        "expect": {
+          "context_carries": [
+            "ellipsoid body",
+            "fan-shaped body"
+          ],
+          "no_unmatched_claim": true
+        }
+      },
+      {
+        "question": "Which neurons have synaptic terminals in the fan-shaped body?",
+        "expect": {
+          "context_carries": [
+            "fan-shaped body",
+            "ellipsoid body"
+          ],
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C4",
+    "tier": 7,
+    "title": "Refinement onto a cell type",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is a Kenyon cell?",
+        "expect": {
+          "context_carries": "Kenyon cell"
+        }
+      },
+      {
+        "question": "What are its subtypes?",
+        "expect": {
+          "context_carries": "Kenyon cell",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C5",
+    "tier": 7,
+    "title": "A presentation directive is not part of the term name",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What are the anatomical parts of the medulla? List them.",
+        "expect": {
+          "context_carries": "medulla",
+          "context_carries_id": "FBbt_00003748",
+          "no_unmatched_claim": true
+        }
+      },
+      {
+        "question": "And which neurons have part of their arbour there?",
+        "expect": {
+          "context_carries": "medulla",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C6",
+    "tier": 7,
+    "title": "Innervation asked of a pronoun",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "Tell me about the antennal lobe.",
+        "expect": {
+          "context_carries": "antennal lobe",
+          "min_followons": 3
+        }
+      },
+      {
+        "question": "Which neurons innervate it?",
+        "expect": {
+          "context_carries": "antennal lobe",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C7",
+    "tier": 7,
+    "title": "Two chip clicks in a row",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the medulla?",
+        "expect": {
+          "context_carries_id": "FBbt_00003748",
+          "min_followons": 3
+        }
+      },
+      {
+        "click_followon": 0,
+        "expect": {
+          "no_repeat_of_focus": true,
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      },
+      {
+        "click_followon": 0,
+        "expect": {
+          "no_repeat_of_focus": true,
+          "no_unmatched_claim": true,
+          "context_carries_id": "FBbt_00003748"
+        }
+      }
+    ]
+  },
+  {
+    "id": "C8",
+    "tier": 7,
+    "title": "Driver lines asked warm",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the mushroom body?",
+        "expect": {
+          "context_carries": "mushroom body"
+        }
+      },
+      {
+        "question": "Which driver lines label it?",
+        "expect": {
+          "context_carries": "mushroom body",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C9",
+    "tier": 7,
+    "title": "A follow-up that changes the term, not the query",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "Which neurons provide input to the medulla?",
+        "expect": {
+          "context_carries": "medulla",
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      },
+      {
+        "question": "And the lobula?",
+        "expect": {
+          "context_carries": [
+            "lobula",
+            "medulla"
+          ],
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C10",
+    "tier": 7,
+    "title": "A term the session already resolved is never called unmatched",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What is the protocerebral bridge?",
+        "expect": {
+          "context_carries": "protocerebral bridge"
+        }
+      },
+      {
+        "question": "How does it relate to the ellipsoid body?",
+        "expect": {
+          "context_carries": [
+            "ellipsoid body",
+            "protocerebral bridge"
+          ],
+          "no_unmatched_claim": true
+        }
+      },
+      {
+        "question": "Which neurons connect them?",
+        "expect": {
+          "context_carries": [
+            "ellipsoid body",
+            "protocerebral bridge"
+          ],
+          "no_unmatched_claim": true,
+          "min_followons": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "C11",
+    "tier": 7,
+    "title": "The answer hands over its own working",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "Which neurons have part of them in the medulla?",
+        "expect": {
+          "context_carries": "medulla",
+          "context_carries_id": "FBbt_00003748",
+          "no_unmatched_claim": true,
+          "no_python_block": true,
+          "reproduces_id": "FBbt_00003748"
+        }
+      },
+      {
+        "question": "How would I get that same result in Python with vfbquery?",
+        "expect": {
+          "context_carries": "medulla",
+          "python_block": true,
+          "reproduces_id": "FBbt_00003748"
+        }
+      }
+    ]
+  },
+  {
+    "id": "C12",
+    "tier": 7,
+    "title": "Asking for the ids afterwards gets the ids, not a promise of them",
+    "category": "conversation",
+    "turns": [
+      {
+        "question": "What are the subclasses of Kenyon cell?",
+        "expect": {
+          "context_carries": "Kenyon cell",
+          "no_unmatched_claim": true,
+          "no_python_block": true,
+          "reproduces_id": "FBbt_00003686",
+          "reproduces_call": "get_subclasses_of"
+        }
+      },
+      {
+        "question": "Can you list the VFB IDs so I can reproduce this myself?",
+        "expect": {
+          "context_carries": "Kenyon cell",
+          "python_block": true,
+          "reproduces_id": "FBbt_00003686"
+        }
+      }
+    ]
   }
 ]

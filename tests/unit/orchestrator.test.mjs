@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createLedger, setPlan, addTerm, getTermId, resolveArgs, ledgerHasRefs,
-  addEvidence, markStepNotFound, recordToolRound, outOfBudget,
+  addEvidence, markStepNotFound, withdrawStep, recordToolRound, outOfBudget,
   vfbAnswered, vfbHasData, isComplete, pendingSteps, recordTermId
 } from '../../lib/ledger.mjs'
 import { PLAN_SCHEMA, INTENTS, buildPlannerMessages, normalizePlan, detectFastPath, detectFocusPlan } from '../../lib/planner.mjs'
@@ -58,6 +58,49 @@ test('markStepNotFound: counts as resolved for completion', () => {
   markStepNotFound(l, 's1', 'no data')
   assert.equal(isComplete(l), true)        // exhausted, not pending
   assert.equal(vfbAnswered(l), false)      // but not actually answered
+})
+
+test('withdrawStep: a step that was never asked leaves no claim behind', () => {
+  // The distinction the whole fix turns on. `not_found` says VFB was consulted
+  // and had nothing — a claim about the database that reaches the user's answer
+  // more or less verbatim. A step we declined to dispatch made no such consultation
+  // and must not be able to speak for one.
+  const l = setPlan(createLedger('q'), PLAN)
+  const before = l.plan.length
+  withdrawStep(l, 's1', 'no id could be determined')
+
+  assert.equal(l.plan.length, before - 1)
+  assert.ok(!l.plan.some(s => s.id === 's1'), 'the withdrawn step is struck from the plan')
+  // Struck, therefore silent: nothing downstream can read a status off it, because
+  // there is nothing downstream to read.
+  assert.ok(!l.plan.some(s => s.status === 'withdrawn'))
+})
+
+test('withdrawStep: completion is computed over the steps that actually ran', () => {
+  // A plan of one unaddressable step plus one that ran must NOT read as
+  // "everything VFB could offer came back empty".
+  const l = setPlan(createLedger('q'), PLAN)
+  addEvidence(l, { claim: 'x', source: 'vfb', stepId: 's1' })
+  withdrawStep(l, 's2', 'no id could be determined')
+  assert.equal(isComplete(l), true)
+  assert.equal(vfbAnswered(l), true, 'the surviving step answered; the withdrawn one abstained')
+})
+
+test('withdrawStep: the open questions go with it', () => {
+  // openQuestions drives the sufficiency gate. A withdrawn step leaving its
+  // sub-questions behind would report the turn as incomplete forever.
+  const l = setPlan(createLedger('q'), PLAN)
+  assert.ok(l.openQuestions.length > 0)
+  for (const step of [...l.plan]) withdrawStep(l, step.id, 'unaddressable')
+  assert.deepEqual(l.openQuestions, [])
+  assert.deepEqual(l.plan, [])
+})
+
+test('withdrawStep: an unknown step id is a no-op, not a throw', () => {
+  const l = setPlan(createLedger('q'), PLAN)
+  const before = l.plan.length
+  assert.doesNotThrow(() => withdrawStep(l, 'nope', 'x'))
+  assert.equal(l.plan.length, before)
 })
 
 test('addEvidence: requires a source', () => {

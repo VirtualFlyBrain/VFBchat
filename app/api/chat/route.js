@@ -11314,6 +11314,10 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     return {
       ...built, images, tables, responseId,
       followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || [],
+      // The ids this turn resolved and the catalogue queries it ran, as runnable
+      // VFBquery Python. Carried on every turn so a client can offer it as a
+      // button; the prose only carries it when the user asked for it.
+      reproduction: live.reproduction || null,
       context: live.context
     }
   } finally {
@@ -11589,6 +11593,7 @@ export async function POST(request) {
         followOns: result.followOns || [],
         sources: result.sources || [],
         terms: result.terms || [],
+        reproduction: result.reproduction || null,
         // What this turn resolved, folded into what earlier turns resolved. The
         // client stores it and posts it back next time; that round trip is the
         // whole session store.

@@ -278,3 +278,62 @@ test('a planned query with no id suppresses nothing', () => {
   const asked = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
   assert.ok(asked.some(c => c.query_type === 'NeuronsPostsynapticHere'))
 })
+
+// --- chip vocabulary: every query type VFB offers can become a follow-on -----
+
+test('a query type with no hand-written template is offered in VFB\'s own words, not dropped', () => {
+  // The real DA1_lPN catalogue. Before this, the 107-match NBLAST query was the
+  // only one of the three with a template and the other two produced nothing —
+  // a neuron page advertising 484 connected neurons offered the user no way to
+  // see them.
+  const ledger = ledgerWith({
+    name: 'DA1_lPN_R', id: 'VFB_00000001', label: 'DA1_lPN_R',
+    digest: { name: 'DA1_lPN_R', queries: [
+      { query_type: 'SimilarMorphologyTo', label: 'Neurons with similar morphology to DA1_lPN_R [NBLAST]', count: 107, examples: [] },
+      { query_type: 'SimilarMorphologyToNB', label: 'Expression patterns matching DA1_lPN_R [NeuronBridge]', count: 16, examples: [] }
+    ] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  const nb = chips.find(c => c.query_type === 'SimilarMorphologyToNB')
+  assert.ok(nb, 'the untemplated query type must still be offered')
+  // Quoted from VFB, not invented: this codebase and VFB\'s own catalogue
+  // disagree about whether this query returns neurons or expression patterns,
+  // so the chip says what VFB says.
+  assert.equal(nb.query, 'Show me: Expression patterns matching DA1_lPN_R (NeuronBridge)')
+  // ...and it still carries the address, which is what actually runs.
+  assert.equal(nb.id, 'VFB_00000001')
+  assert.equal(nb.label, 'Show me: Expression patterns matching DA1_lPN_R (NeuronBridge) (16)')
+})
+
+test('a templated type is phrased as a question, and beats a quoted label at the same count', () => {
+  const ledger = ledgerWith({
+    name: 'medulla', id: 'FBbt_00003748', label: 'medulla',
+    digest: { name: 'medulla', queries: [
+      { query_type: 'SimilarMorphologyToNB', label: 'Expression patterns matching medulla', count: 5, examples: [] },
+      { query_type: 'TractsNervesInnervatingHere', label: 'Tracts', count: 5, examples: [] }
+    ] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.equal(chips[0].query, 'Which tracts and nerves innervate the medulla?')
+})
+
+test('a term never fills its whole chip list with quoted labels', () => {
+  const many = ['SimilarMorphologyToNB', 'SimilarMorphologyToNBexp', 'SimilarMorphologyToPartOf', 'ref_neuron_neuron_connectivity_query']
+    .map((qt, i) => ({ query_type: qt, label: `Some VFB query ${i}`, count: 900 - i, examples: [] }))
+  const ledger = ledgerWith({
+    name: 'x', id: 'VFB_00000002', label: 'x',
+    digest: { name: 'x', queries: [...many, { query_type: 'PartsOf', label: 'Parts', count: 3, examples: [] }] }
+  })
+  const chips = buildFollowOns(ledger).chips.filter(c => c.kind === 'ask')
+  assert.equal(chips.filter(c => c.query.startsWith('Show me:')).length, 2)
+  // and the templated one still gets in, despite being the smallest
+  assert.ok(chips.some(c => c.query === 'What are the anatomical parts of the x?'))
+})
+
+test('a query VFB gave no label and this file cannot phrase is offered as nothing at all', () => {
+  const ledger = ledgerWith({
+    name: 'x', id: 'VFB_00000003', label: 'x',
+    digest: { name: 'x', queries: [{ query_type: 'SomethingBrandNew', label: '', count: 12, examples: [] }] }
+  })
+  assert.deepEqual(buildFollowOns(ledger).chips.filter(c => c.kind === 'ask'), [])
+})
