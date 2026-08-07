@@ -592,3 +592,40 @@ test('a query both dispatched and previewed keeps its dispatched status', () => 
   assert.equal(ran.length, 1)
   assert.equal(ran[0].status, 'not_found', 'the dispatched record wins')
 })
+
+test('a template-routed query is reproduced, placeholder id and all', () => {
+  // The real cause of C12, found from a CI trace after three wrong guesses.
+  // "What are the subclasses of Kenyon cell?" takes the template route, which
+  // plans { id: '$term:Kenyon cell' } and lets resolveArgs substitute the real
+  // id at dispatch. The query ran and answered; reading args.id raw saw a
+  // placeholder, failed the VFB-id test, and dropped it from the working.
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.terms = { 'Kenyon cell': { id: 'FBbt_00003686', digest: { name: 'Kenyon cell' } } }
+  ledger.plan = [{
+    id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: '$term:Kenyon cell', query_type: 'SubclassesOf' }
+  }]
+  assert.deepEqual(ranQueries(ledger).map(q => `${q.id}::${q.query_type}`),
+    ['FBbt_00003686::SubclassesOf'])
+  const repro = buildReproduction(ledger, { question: 'list the VFB ids so I can reproduce this' })
+  assert.deepEqual(repro.calls.map(c => c.fn), ['get_subclasses_of'])
+})
+
+test('an unresolvable placeholder contributes nothing rather than a bad id', () => {
+  const ledger = createLedger()
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: '$term:something never resolved', query_type: 'SubclassesOf' } }]
+  assert.deepEqual(ranQueries(ledger), [])
+})
+
+test('a placeholder naming a term only the REGISTRY knows still resolves', () => {
+  // ledger.terms holds what this turn resolved; the registry holds what the
+  // conversation established. A template-routed step can name a term the
+  // current turn never had to look up again.
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: '$term:Kenyon cell', query_type: 'SubclassesOf' } }]
+  assert.deepEqual(ranQueries(ledger).map(q => q.id), ['FBbt_00003686'])
+})
