@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   VFBQUERY_FUNCTIONS,
@@ -9,7 +10,7 @@ import {
   ranQueries,
   buildReproduction,
   wantsReproduction,
-  reproductionBlock, withReproduction
+  reproductionBlock, withReproduction, wantsVfbConnect, vfbConnectSnippet, VFB_CONNECT_PROPERTIES
 } from '../../lib/reproduce.mjs'
 import { createLedger, recordTermId } from '../../lib/ledger.mjs'
 import { QUERY_SEMANTICS } from '../../lib/queryTypes.mjs'
@@ -132,7 +133,7 @@ test('the snippet carries the resolved id, not the term name', () => {
   const rep = buildReproduction(ledger)
   assert.ok(rep)
   assert.match(rep.python, /^MEDULLA = 'FBbt_00003748'\s+# medulla$/m)
-  assert.match(rep.python, /^df = vfbquery\.get_neurons_with_part_in\(MEDULLA\)$/m)
+  assert.match(rep.python, /^neurons_part_here = vfbquery\.get_neurons_with_part_in\(MEDULLA\)$/m)
   assert.match(rep.python, /^import vfbquery$/m)
   assert.equal(rep.calls.length, 1)
   assert.equal(rep.calls[0].fn, 'get_neurons_with_part_in')
@@ -152,7 +153,7 @@ test('an unmapped query degrades to the URL that runs it, and says so', () => {
 test('the no-argument query is emitted without an argument', () => {
   const ledger = medullaLedger({ plan: [runQuery('VFB_00101567', 'AllDatasets')] })
   const rep = buildReproduction(ledger)
-  assert.match(rep.python, /^df = vfbquery\.get_all_datasets\(\)$/m)
+  assert.match(rep.python, /^all_datasets = vfbquery\.get_all_datasets\(\)$/m)
 })
 
 test('two terms get two distinct constants, and a label collision does not shadow', () => {
@@ -431,4 +432,103 @@ test('a colon sentence with a surviving block after it is left alone', () => {
   const out = withReproduction(answer, repro, q)
   assert.ok(out.includes('The id looks like:'), 'an intro to a block we kept survives')
   assert.ok(out.includes('```\nFBbt_00003748\n```'))
+})
+
+// ---------------------------------------------------------------------------
+// VFB_connect: the modern idiom, not the model's memory of an old one
+//
+// Production emitted `vc.oc.get_instances`, `gen_short_form` and a
+// `vfb_type_2_skids` helper. Of those, only `vfb_id_2_xrefs` exists in current
+// VFB_connect at all — and the tutorials call it on `vfb` directly, never
+// through `neo_query_wrapper`. `vfb_type_2_skids` appears nowhere in the
+// repository. So the snippet was recalled, not retrieved.
+// ---------------------------------------------------------------------------
+
+test('asking for VFB-connect by name gets vfb.term(), not vfbquery', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const repro = buildReproduction(ledger, { question: 'x' })
+
+  for (const q of ['How do I do that in vfb_connect?', 'show me the python with VFB-connect',
+                   'how would I get this in vfb connect?']) {
+    assert.equal(wantsVfbConnect(q), true, q)
+    const block = reproductionBlock(repro, q)
+    assert.match(block, /from vfb_connect import vfb/)
+    assert.match(block, /medulla = vfb\.term\('FBbt_00003748'\)/)
+    assert.match(block, /medulla\.neuron_types_that_overlap/)
+    assert.ok(!block.includes('import vfbquery'), 'not both idioms at once')
+  }
+})
+
+test('none of the legacy reach-through idioms can be emitted', () => {
+  // The exact strings production produced. They must be unreachable by
+  // construction, not merely unlikely.
+  const src = readFileSync(new URL('../../lib/reproduce.mjs', import.meta.url), 'utf8')
+  for (const legacy of ['neo_query_wrapper', '.oc.', 'gen_short_form', 'vfb_type_2_skids']) {
+    assert.ok(!src.includes(legacy), `reproduce.mjs must never emit ${legacy}`)
+  }
+})
+
+test('VFBquery stays the default when VFB-connect is not asked for', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003686', query_type: 'SubclassesOf' } }]
+  const repro = buildReproduction(ledger, { question: 'x' })
+  const block = reproductionBlock(repro, 'how would I get that in python?')
+  assert.match(block, /import vfbquery/)
+  assert.ok(!block.includes('vfb.term('))
+})
+
+test('a run whose queries have no vouched-for property falls back rather than emitting an import and no work', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  // ListAllAvailableImages is mapped for VFBquery and deliberately absent from
+  // VFB_CONNECT_PROPERTIES — close-but-not-equal is left out on purpose.
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'ListAllAvailableImages' } }]
+  const repro = buildReproduction(ledger, { question: 'x' })
+  assert.equal(vfbConnectSnippet(repro), null)
+  const block = reproductionBlock(repro, 'in vfb_connect please')
+  assert.match(block, /import vfbquery/, 'falls back to the idiom that maps it')
+})
+
+test('every result gets its own variable, in both idioms', () => {
+  // Two queries used to produce two lines both assigning `df`, so copy-pasting
+  // the block silently discarded the first result.
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [
+    { id: 's1', tool: 'vfb_run_query', status: 'satisfied', args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } },
+    { id: 's2', tool: 'vfb_run_query', status: 'satisfied', args: { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' } }
+  ]
+  const repro = buildReproduction(ledger, { question: 'x' })
+  for (const q of ['in python', 'in vfb_connect']) {
+    const assigns = reproductionBlock(repro, q).split('\n')
+      .filter(l => /^[a-z][a-z0-9_]* = /.test(l)).map(l => l.split(' = ')[0])
+    assert.equal(new Set(assigns).size, assigns.length, `duplicate variable in "${q}": ${assigns}`)
+    assert.ok(assigns.length >= 2, `both results are kept in "${q}"`)
+  }
+})
+
+test('the VFB_connect property mapping exists in the installed VFB_connect', async t => {
+  // Same drift guard as the VFBquery one: re-derived from a real checkout, so
+  // the day a property is renamed this suite says so rather than shipping an
+  // AttributeError to a workshop attendee.
+  const src = process.env.VFB_CONNECT_SRC
+  const fs = await import('node:fs')
+  if (!src || !fs.existsSync(src)) {
+    t.skip('set VFB_CONNECT_SRC to a vfb_term.py to run this check')
+    return
+  }
+  const text = fs.readFileSync(src, 'utf8')
+  const defined = new Set()
+  for (const m of text.matchAll(/@property\s*\n\s*def\s+(\w+)\s*\(self/g)) defined.add(m[1])
+  assert.ok(defined.size > 20, 'failed to parse any properties — check VFB_CONNECT_SRC')
+  const missing = Object.entries(VFB_CONNECT_PROPERTIES)
+    .filter(([, prop]) => !defined.has(prop))
+    .map(([qt, prop]) => `${qt} -> .${prop} is not a property of VFBTerm`)
+  assert.deepEqual(missing, [])
 })

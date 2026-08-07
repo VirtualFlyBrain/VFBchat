@@ -324,12 +324,27 @@ test('production rejects an unapproved model hidden in a per-role override', () 
   })
 })
 
-test('an unset APPROVED_ELM_MODEL still self-approves, as in v3.x', () => {
+test('production refuses to start when APPROVED_ELM_MODEL is unset', () => {
+  // This test used to assert the opposite, and that is the point. An unset
+  // APPROVED_ELM_MODEL made the approved list fall back to the configured one,
+  // so the deployment approved itself and every check downstream passed by
+  // construction. Recommended addition 7.3 of 10-evaluation-plan.md.
   withEnv({
     ...PROD_BASE,
     ELM_MODEL: `${QWEN_MODEL},${LLAMA_MODEL}`,
     APPROVED_ELM_MODEL: undefined
   }, () => {
-    assert.doesNotThrow(() => validateProductionCompliance())
+    assert.throws(() => validateProductionCompliance(), /APPROVED_ELM_MODEL must be set/)
+  })
+})
+
+test('production refuses to start when APPROVED_ELM_BASE_URL is unset', () => {
+  withEnv({
+    ...PROD_BASE,
+    ELM_MODEL: QWEN_MODEL,
+    APPROVED_ELM_MODEL: QWEN_MODEL,
+    APPROVED_ELM_BASE_URL: undefined
+  }, () => {
+    assert.throws(() => validateProductionCompliance(), /APPROVED_ELM_BASE_URL must be set/)
   })
 })
