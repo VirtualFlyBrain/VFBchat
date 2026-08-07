@@ -9,8 +9,9 @@ import {
   ranQueries,
   buildReproduction,
   wantsReproduction,
-  reproductionBlock
+  reproductionBlock, withReproduction
 } from '../../lib/reproduce.mjs'
+import { createLedger, recordTermId } from '../../lib/ledger.mjs'
 import { QUERY_SEMANTICS } from '../../lib/queryTypes.mjs'
 
 // A ledger shaped the way the harness leaves one: resolved terms keyed by the
@@ -279,4 +280,155 @@ test('every mapped function exists in VFBquery and accepts the argument we pass'
     }
   }
   assert.deepEqual(problems, [])
+})
+
+// ---------------------------------------------------------------------------
+// The measured live failure, C11 turn 2 (task battery, 4.1.0, 2026-08-07).
+//
+// Question: "How would I get that same result in Python with vfbquery?"
+// The model answered with a snippet cribbed from a docs page — wrong library,
+// undefined `vc`, a worked example about DA1 projection neurons — and the
+// grounded block sat underneath it carrying the right id and no call at all.
+// ---------------------------------------------------------------------------
+
+const MODEL_ANSWER = `To retrieve the list of neuron types with parts in the medulla using Python and \`\`, you can query the VFB ontology.
+
+The following code demonstrates how to query for a specific neuron type:
+
+\`\`\`python
+from.cross_server_tools import gen_short_form
+
+def vfb_type_2_skids(vfb_type):
+ ids_from_vfb = map(gen_short_form, vc.oc.get_instances(vfb_type, query_by_label=True))
+ return list(ids_from_vfb)
+\`\`\`
+
+To apply this to your specific question about the medulla, replace the query string.`
+
+test('a turn that runs no query still reproduces what the conversation ran', () => {
+  // Turn 2 asks about code, not about flies, so its own plan is empty. The
+  // queries travel on the context, which is what the context is for.
+  const ledger = createLedger()
+  const context = {
+    v: 1,
+    terms: [{
+      name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+      queries: [
+        { query_type: 'NeuronsPartHere', label: '', count: 471, countKind: 'exact', ran: true },
+        { query_type: 'ImagesNeurons', label: '', count: 12, countKind: 'exact', ran: false }
+      ]
+    }],
+    registry: []
+  }
+  const repro = buildReproduction(ledger, { question: 'How would I get that same result in Python with vfbquery?', context })
+  assert.ok(repro, 'a carried conversation is enough to build a reproduction')
+  assert.deepEqual(repro.calls.map(c => c.fn), ['get_neurons_with_part_in'],
+    'the query the conversation ran is reproduced; the one it merely could run is not')
+  assert.match(repro.python, /MEDULLA = 'FBbt_00003748'/, 'the carried label names the constant')
+  assert.match(repro.python, /vfbquery\.get_neurons_with_part_in\(MEDULLA\)/)
+})
+
+test('a carried query is never reproduced twice when this turn ran it again', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const context = { v: 1, registry: [], terms: [{ name: 'medulla', label: 'medulla', id: 'FBbt_00003748',
+    queries: [{ query_type: 'NeuronsPartHere', label: '', count: -1, countKind: 'unknown', ran: true }] }] }
+  const repro = buildReproduction(ledger, { question: 'give me the python', context })
+  assert.equal(repro.calls.length, 1)
+})
+
+test('the grounded snippet replaces the model\'s snippet rather than trailing after it', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'How would I get that same result in Python with vfbquery?'
+  const repro = buildReproduction(ledger, { question: q })
+  const out = withReproduction(MODEL_ANSWER, repro, q)
+
+  assert.ok(!out.includes('gen_short_form'), 'the invented snippet is gone')
+  assert.ok(!out.includes('vc.oc.get_instances'), 'and so is the undefined variable')
+  assert.match(out, /vfbquery\.get_neurons_with_part_in\(MEDULLA\)/, 'ours is there instead')
+  assert.equal((out.match(/```python/g) || []).length, 1, 'exactly one code block survives')
+  // The sentence that introduces code must still introduce code.
+  const intro = out.indexOf('The following code demonstrates')
+  assert.ok(intro >= 0 && intro < out.indexOf('```python'), 'ours took the place, not the end')
+})
+
+test('an answer with no code of its own simply gains the block', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003686', query_type: 'SubclassesOf' } }]
+  const q = 'list the VFB IDs so I can reproduce this'
+  const repro = buildReproduction(ledger, { question: q })
+  const out = withReproduction('There are seven subclasses of Kenyon cell.', repro, q)
+  assert.match(out, /^There are seven subclasses of Kenyon cell\.\n\n```python/)
+})
+
+test('a code block that is not about VFB is left alone', () => {
+  // Displacing code is only ever justified where the user might run it against
+  // VFB and be misled about which snippet is authoritative.
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'show me the python'
+  const repro = buildReproduction(ledger, { question: q })
+  const answer = 'The id format looks like this:\n\n```\nFBbt_00003748\n```'
+  const out = withReproduction(answer, repro, q)
+  assert.ok(out.includes('```\nFBbt_00003748\n```'), 'the illustrative block survives')
+  assert.match(out, /```python/)
+})
+
+test('nothing is removed when there is nothing to put in its place', () => {
+  // An answer with a flawed example still beats an answer with a dangling colon.
+  const out = withReproduction(MODEL_ANSWER, null, 'how would I do this in python?')
+  assert.equal(out, MODEL_ANSWER)
+  const noAsk = withReproduction(MODEL_ANSWER, { python: 'x = 1' }, 'what is the medulla?')
+  assert.equal(noAsk, MODEL_ANSWER, 'an unrequested block never displaces anything')
+})
+
+test('a dropped code block takes its orphaned introduction with it', () => {
+  // Live, C11 turn 2 on the patched build: the second block went and left behind
+  // "...the documented approach uses a helper function to convert VFB types to
+  // skeleton IDs:" with nothing after the colon.
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'how would I do that in python?'
+  const repro = buildReproduction(ledger, { question: q })
+  const answer = [
+    'Here is one way:', '',
+    '```python', 'import vfbquery', 'x = 1', '```', '',
+    'For visualisation, the documented approach converts types to skeleton IDs:', '',
+    '```python', 'import navis', 'y = 2', '```', '',
+    'That is the whole workflow.'
+  ].join('\n')
+  const out = withReproduction(answer, repro, q)
+
+  assert.equal((out.match(/```python/g) || []).length, 1, 'one block survives')
+  assert.ok(!out.includes('import navis'), 'the second block is gone')
+  assert.ok(!out.includes('skeleton IDs:'), 'and so is the sentence that promised it')
+  assert.ok(out.includes('That is the whole workflow.'), 'ordinary prose after it survives')
+  assert.ok(!/ /.test(out), 'no marker leaks into the answer')
+  assert.ok(!/\n{3,}/.test(out), 'no gap left where it was')
+  // The first block's own introduction is untouched — it still introduces code.
+  assert.match(out, /Here is one way:\n\n```python/)
+})
+
+test('a colon sentence with a surviving block after it is left alone', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'show me the python'
+  const repro = buildReproduction(ledger, { question: q })
+  const answer = 'Run this:\n\n```python\nimport vfbquery\n```\n\nThe id looks like:\n\n```\nFBbt_00003748\n```'
+  const out = withReproduction(answer, repro, q)
+  assert.ok(out.includes('The id looks like:'), 'an intro to a block we kept survives')
+  assert.ok(out.includes('```\nFBbt_00003748\n```'))
 })
