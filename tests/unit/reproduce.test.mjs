@@ -390,3 +390,45 @@ test('nothing is removed when there is nothing to put in its place', () => {
   const noAsk = withReproduction(MODEL_ANSWER, { python: 'x = 1' }, 'what is the medulla?')
   assert.equal(noAsk, MODEL_ANSWER, 'an unrequested block never displaces anything')
 })
+
+test('a dropped code block takes its orphaned introduction with it', () => {
+  // Live, C11 turn 2 on the patched build: the second block went and left behind
+  // "...the documented approach uses a helper function to convert VFB types to
+  // skeleton IDs:" with nothing after the colon.
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'how would I do that in python?'
+  const repro = buildReproduction(ledger, { question: q })
+  const answer = [
+    'Here is one way:', '',
+    '```python', 'import vfbquery', 'x = 1', '```', '',
+    'For visualisation, the documented approach converts types to skeleton IDs:', '',
+    '```python', 'import navis', 'y = 2', '```', '',
+    'That is the whole workflow.'
+  ].join('\n')
+  const out = withReproduction(answer, repro, q)
+
+  assert.equal((out.match(/```python/g) || []).length, 1, 'one block survives')
+  assert.ok(!out.includes('import navis'), 'the second block is gone')
+  assert.ok(!out.includes('skeleton IDs:'), 'and so is the sentence that promised it')
+  assert.ok(out.includes('That is the whole workflow.'), 'ordinary prose after it survives')
+  assert.ok(!/ /.test(out), 'no marker leaks into the answer')
+  assert.ok(!/\n{3,}/.test(out), 'no gap left where it was')
+  // The first block's own introduction is untouched — it still introduces code.
+  assert.match(out, /Here is one way:\n\n```python/)
+})
+
+test('a colon sentence with a surviving block after it is left alone', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'medulla', 'FBbt_00003748', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'satisfied',
+    args: { id: 'FBbt_00003748', query_type: 'NeuronsPartHere' } }]
+  const q = 'show me the python'
+  const repro = buildReproduction(ledger, { question: q })
+  const answer = 'Run this:\n\n```python\nimport vfbquery\n```\n\nThe id looks like:\n\n```\nFBbt_00003748\n```'
+  const out = withReproduction(answer, repro, q)
+  assert.ok(out.includes('The id looks like:'), 'an intro to a block we kept survives')
+  assert.ok(out.includes('```\nFBbt_00003748\n```'))
+})
