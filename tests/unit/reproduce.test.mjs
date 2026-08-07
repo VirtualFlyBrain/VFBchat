@@ -532,3 +532,63 @@ test('the VFB_connect property mapping exists in the installed VFB_connect', asy
     .map(([qt, prop]) => `${qt} -> .${prop} is not a property of VFBTerm`)
   assert.deepEqual(missing, [])
 })
+
+// ---------------------------------------------------------------------------
+// The digest fallback — CI's battery caught this as C12 turn 1 on v4.1.4.
+//
+// A step whose arguments cannot be determined is answered from the term-info
+// preview instead of by dispatching. The answer is real and drawn from real VFB
+// data under a named query type, but the run recorded neither, so the
+// reproduction offered the id and no call: "the subclasses of Kenyon cell are …"
+// followed by a snippet with nothing to run.
+// ---------------------------------------------------------------------------
+
+test('a query answered from the term-info preview is still working the user can reproduce', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.plan = []                       // nothing dispatched
+  ledger.evidence = [{
+    source: 'vfb', claim: 'VFB holds 37 subclasses of Kenyon cell', verbatim: '37',
+    stepId: 's1', tool: 'vfb_get_term_info', via: 'digest',
+    query_type: 'SubclassesOf', id: 'FBbt_00003686'
+  }]
+  assert.deepEqual(ranQueries(ledger).map(q => `${q.id}::${q.query_type}`),
+    ['FBbt_00003686::SubclassesOf'])
+  const repro = buildReproduction(ledger, { question: 'list the VFB ids so I can reproduce this' })
+  assert.deepEqual(repro.calls.map(c => c.fn), ['get_subclasses_of'])
+  assert.match(repro.python, /vfbquery\.get_subclasses_of\(KENYON_CELL\)/)
+})
+
+test('a digest answer that named no query type contributes no call', () => {
+  // We would not know which of the term's catalogue queries the extractor read,
+  // and a guessed line is a line nothing in the run stands behind.
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.evidence = [{
+    source: 'vfb', claim: 'a claim', verbatim: 'x',
+    stepId: 's1', tool: 'vfb_get_term_info', via: 'digest', id: 'FBbt_00003686'
+  }]
+  assert.deepEqual(ranQueries(ledger), [])
+})
+
+test('non-digest evidence is never mined for calls', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.evidence = [
+    { source: 'doc', claim: 'a page said something', verbatim: 'x', query_type: 'SubclassesOf', id: 'FBbt_00003686' },
+    { source: 'vfb', claim: 'dispatched', verbatim: 'y', query_type: 'PartsOf', id: 'FBbt_00003686' }
+  ]
+  assert.deepEqual(ranQueries(ledger), [], 'only the digest-fallback path counts')
+})
+
+test('a query both dispatched and previewed keeps its dispatched status', () => {
+  const ledger = createLedger()
+  recordTermId(ledger, 'Kenyon cell', 'FBbt_00003686', { canonical: true })
+  ledger.plan = [{ id: 's1', tool: 'vfb_run_query', status: 'not_found',
+    args: { id: 'FBbt_00003686', query_type: 'SubclassesOf' } }]
+  ledger.evidence = [{ source: 'vfb', claim: 'c', verbatim: 'v', stepId: 's2',
+    via: 'digest', query_type: 'SubclassesOf', id: 'FBbt_00003686' }]
+  const ran = ranQueries(ledger)
+  assert.equal(ran.length, 1)
+  assert.equal(ran[0].status, 'not_found', 'the dispatched record wins')
+})
