@@ -23,18 +23,28 @@
 //   node scripts/answer-lab.mjs                      # the default question set
 //   ANSWER_LAB_N=3 node scripts/answer-lab.mjs       # 3 samples per question
 //   ANSWER_LAB_BASE=http://127.0.0.1:3210 node scripts/answer-lab.mjs
+//   ANSWER_LAB_JSONL=/tmp/run.jsonl node scripts/answer-lab.mjs   # rows appended as they land
 
 import fs from 'node:fs'
 
-const env = process.env.ELM_API_KEY ? process.env : Object.fromEntries(
-  fs.readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')
-    .filter(l => l.includes('=') && !l.trim().startsWith('#'))
-    .map(l => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
-)
+// .env.local is a convenience, not a requirement. It used to be read
+// unconditionally at import, so the whole script threw on any machine without
+// it — including the deterministic half, which needs no credentials at all.
+function readEnvFile() {
+  try {
+    return Object.fromEntries(
+      fs.readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')
+        .filter(l => l.includes('=') && !l.trim().startsWith('#'))
+        .map(l => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
+    )
+  } catch { return {} }
+}
+const env = process.env.ELM_API_KEY ? process.env : { ...readEnvFile(), ...process.env }
 const BASE = process.env.ANSWER_LAB_BASE || 'http://127.0.0.1:3210'
 // The model production runs, not the one .env.local names — see prompt-lab.mjs.
 const MODEL = process.env.LAB_MODEL || 'Qwen/Qwen3.5-397B-A17B-FP8'
 const N = Number(process.env.ANSWER_LAB_N || 1)
+const JSONL = process.env.ANSWER_LAB_JSONL || '/tmp/answer-lab.jsonl'
 
 // A spread of shapes, each of which has failed differently at some point.
 const QUESTIONS = (process.env.ANSWER_LAB_QUESTIONS || '').trim()
@@ -78,6 +88,9 @@ async function ask(question) {
 }
 
 async function judge(question, answer, sources) {
+  // No credentials: the deterministic half still runs and the rows still land.
+  // Judged fields come back null rather than the run failing.
+  if (!env.ELM_API_KEY || !env.ELM_BASE_URL) return null
   const messages = [
     { role: 'system', content: 'You assess answers from a Drosophila neuroanatomy assistant. Be exacting and concrete. Reply ONLY with JSON.' },
     { role: 'user', content: `QUESTION:\n${question}\n\nANSWER:\n${answer}\n\nSOURCES THE ANSWER WAS ALLOWED TO USE (documentation pages, and the VFB catalogue queries this run actually ran - a figure or list of names attributable to one of those queries IS supported):\n${JSON.stringify(sources)}\n\nReturn JSON with exactly these keys:
@@ -100,10 +113,30 @@ Rules. "unsupported" means a factual claim about flies, VFB's holdings, or a lib
 }
 
 // Failure modes with a production example behind each one.
+// Each check takes (answer, ctx). ctx.vfbQueries is how many VFB queries the run
+// actually ran, which is the difference between an honest absence statement and
+// the failure mode this check was written for.
 const CHECKS = {
   empty: a => !a.trim(),
-  // "VFB does not currently hold data on X" about a query nothing ran.
-  absence_claim: a => /\b(does not (currently )?hold|no data (is )?available|are no )\b/i.test(a),
+  // "VFB does not currently hold data on X" about a query NOTHING RAN.
+  //
+  // The phrasing alone is not the defect — it is the phrasing the integrity
+  // rules REQUIRE, and saying it after running the query is exactly right. This
+  // check used to match on the words only, so on the production baseline it
+  // fired on four of the five runs of "what does the ellipsoid body do?", every
+  // one of which had behaved correctly: given the anatomy, declined to assert
+  // function, said so in the mandated words. Penalising correct behaviour is
+  // worse than not checking, and it made the headline number wrong in the
+  // reassuring direction.
+  // What the run had to go on is `vfbEvidence`: queries it ran PLUS terms it
+  // resolved. A resolved term's catalogue is itself evidence of absence — "VFB
+  // has no split-GAL4 query for this region" is established by reading what the
+  // region offers, without running anything. So the flag is reserved for the
+  // case that is always wrong: asserting what VFB does not hold having looked
+  // at nothing.
+  absence_claim: (a, ctx) =>
+    /\b(does not (currently )?hold|no data (is )?available|are no )\b/i.test(a) &&
+    !(ctx && ctx.vfbEvidence > 0),
   // Narrating the plumbing instead of the data.
   mechanism_talk: a => /\b(run|running|use|using|call|calling)\b[^.]{0,60}\b(quer(y|ies)|command|function|method|api|wrapper)\b/i.test(a),
   // A code block nobody asked for.
@@ -130,16 +163,40 @@ for (const item of QUESTIONS) {
     // is the exact failure this whole approach exists to prevent.
     const sources = [
       ...(r.sources || []).map(s => s.title || s.url || s),
-      ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`))
+      ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`)),
+      // The COUNTS, not only the query names. Shown the name alone, the judge
+      // marked "VFB has annotated 471 neuron types that have some part in the
+      // medulla" as unsupported — a figure that came straight from the
+      // NeuronsPartHere query it was being told about, because nothing told it
+      // what that query returned. An instrument that scores grounded facts as
+      // hallucinations makes any "quality improved" claim worthless, which is
+      // the exact failure this whole approach exists to prevent.
+      ...((r.tables || []).map(t =>
+        `VFB query ${t.queryType} on ${t.termLabel || t.termId} returned count ${t.count}` +
+        (t.countKind ? ` (${t.countKind})` : '') +
+        (Array.isArray(t.rows) && t.rows.length
+          // The ROW NAMES too. With counts but no rows, the judge accepted "471
+          // neuron types" and then flagged the list of them — Dm8b, MC, PS128,
+          // TmY27 — as unsupported, which is the same error one level down: the
+          // names came out of the same query's preview rows.
+          ? `; rows include ${t.rows.map(x => x.name).filter(Boolean).slice(0, 12).join(', ')}`
+          : '')))
     ]
-    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer)).map(([k]) => k)
+    const vfbQueries = (r.reproduction?.calls || []).length
+    const vfbEvidence = vfbQueries + (r.terms || []).length
+    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer, { vfbQueries, vfbEvidence })).map(([k]) => k)
     const verdict = (err || !answer) ? null : await judge(item.q, answer, sources)
-    rows.push({
+    const row = {
       id: item.id, rep, shape: item.shape, question: item.q, err,
       seconds: Math.round((Date.now() - t0) / 1000),
-      chars: answer.length, sources: sources.length,
+      chars: answer.length, sources: sources.length, vfbQueries, vfbEvidence,
       terms: (r.terms || []).length, flags: failed, verdict, answer
-    })
+    }
+    rows.push(row)
+    // Append as it lands. A production run of this script was killed after ten
+    // completed answers and left nothing behind, because the JSON was only
+    // written at the end — an hour of live inference with no evidence.
+    try { fs.appendFileSync(JSONL, JSON.stringify(row) + '\n') } catch { /* best effort */ }
     const v = verdict || {}
     console.log(`${item.id}.${rep} ${String(rows.at(-1).seconds).padStart(3)}s ` +
       `${String(answer.length).padStart(5)}ch src:${sources.length} ` +

@@ -29,12 +29,14 @@ import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
 import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
 import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
+import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
+import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
-import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
+import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -1183,7 +1185,7 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
       // `spent` and `next` are the two facts that were missing when this was
       // diagnosed from logs alone: a stall looks exactly like a server refusing
       // three times unless the line says which budget ran out.
-      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${JSON.stringify(args).slice(0, 300)} | error=${error?.message || error}`)
+      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${safeToolArgs(args)} | error=${error?.message || error}`)
       if (!next.retry) throw error
       attemptTimeoutMs = next.timeoutMs
       if (next.waitMs > 0) await new Promise(resolve => setTimeout(resolve, next.waitMs))
@@ -1237,7 +1239,7 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
   const allowance = budget || createForceRefreshBudget(1)
   if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
 
-  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${JSON.stringify(args).slice(0, 300)}`)
+  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${safeToolArgs(args)}`)
   try {
     const retryText = mcpResultToText(
       await callMcpToolWithRetry(client, name, { ...args, force_refresh: true })
@@ -6399,7 +6401,17 @@ function summarizeTermForEvidence(termRecord = {}, fallbackId = '') {
       .map(entry => ({
         query_type: entry?.query,
         label: entry?.label,
-        count: Number.isFinite(Number(entry?.count)) ? Number(entry.count) : undefined
+        // -1 is not a count. It means the preview has not been computed or blew
+        // the counting cap, and Number.isFinite(-1) is true — so it used to be
+        // handed to the model as a real total. The sibling helper
+        // getQueryCountFromTermRecord carries this exact fix and a comment
+        // describing this exact bug; it was never applied here, and this
+        // function feeds query_counts into thirteen tool payloads.
+        count: Number.isFinite(Number(entry?.count)) && Number(entry.count) >= 0 ? Number(entry.count) : undefined,
+        // Keep WHY it is absent rather than dropping the query silently: an
+        // uncounted query is data VFB has and has not totalled, which is the
+        // opposite of an empty one.
+        count_status: Number(entry?.count) < 0 ? 'unknown' : undefined
       }))
       .filter(entry => entry.query_type)
     : []
@@ -9201,68 +9213,10 @@ async function executeFunctionTool(name, args, context = {}) {
   throw new Error(`Unknown function tool: ${name}`)
 }
 
-function detectJailbreakAttempt(message) {
-  const lowerMessage = message.toLowerCase()
-
-  const jailbreakPatterns = [
-    /\bdeveloper mode\b/i,
-    /\bunrestricted mode\b/i,
-    /\bdebug mode\b/i,
-    /\bmaintenance mode\b/i,
-    /\bgod mode\b/i,
-    /\bdan\b.*mode/i,
-    /\bdo anything now\b/i,
-    /\buncensored\b/i,
-    /\bunfiltered\b/i,
-    /\bjailbreak\b/i,
-    /\bignore.*previous.*instructions?\b/i,
-    /\boverride.*instructions?\b/i,
-    /\bforget.*instructions?\b/i,
-    /\bdiscard.*instructions?\b/i,
-    /\bdisregard.*rules\b/i,
-    /\byou are now\b.*ai/i,
-    /\bact as\b.*ai/i,
-    /\bpretend.*to be\b.*ai/i,
-    /\bbecome.*ai\b/i,
-    /\bchange.*system.*prompt\b/i,
-    /\balter.*system.*prompt\b/i,
-    /\bmodify.*system.*prompt\b/i,
-    /\brewrite.*system.*prompt\b/i,
-    /\bbase64\b/i,
-    /\bencoded\b.*prompt/i,
-    /\bencrypted\b.*prompt/i,
-    /\baim.*jailbreak/i,
-    /\bmaximum.*jailbreak/i,
-    /\bcharacter.*jailbreak/i,
-    /\banti.*woke\b/i,
-    /\byou must\b.*break.*rules/i,
-    /\bi command you\b.*to/i,
-    /\bas root\b/i,
-    /\bsudo\b/i,
-    /\badmin\b.*mode/i,
-    /\bcreate.*uncensored.*persona/i,
-    /\brole.*play.*as.*uncensored/i,
-    /\bact.*like.*uncensored/i,
-    /\bfrom now on\b.*you are/i,
-    /\blet'?s role.*play/i,
-    /\bscenario.*role.*play/i,
-    /\bpretend.*that/i,
-    /\bhiding.*query/i,
-    /\bsecret.*message/i,
-    /\bencoded.*message/i
-  ]
-
-  for (const pattern of jailbreakPatterns) {
-    if (pattern.test(lowerMessage)) return true
-  }
-
-  const overrideCount = (lowerMessage.match(/\b(ignore|override|forget|discard|disregard)\b.*\b(instructions?|rules?|prompt)\b/gi) || []).length
-  if (overrideCount > 1) return true
-
-  const suspiciousWords = ['ignore', 'override', 'forget', 'unrestricted', 'uncensored', 'jailbreak']
-  const suspiciousCount = suspiciousWords.reduce((count, word) => count + (lowerMessage.match(new RegExp(`\\b${word}\\b`, 'gi')) || []).length, 0)
-  return suspiciousCount > 2
-}
+// detectJailbreakAttempt now lives in lib/jailbreak.mjs. It was 45 regexes with
+// unbounded wildcards here, and it refused ordinary Drosophila questions on
+// production — see that file for the four verified cases and the two rules that
+// caused them. It is a module now so it can be tested; it had no test at all.
 
 // --- Lookup cache (read-only, loaded from static file) ---
 
@@ -11249,16 +11203,33 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // audit, so the audit reports what actually ships, and before linkifyCounts,
     // so a stale figure can never be turned into a link that opens a query
     // returning a different total.
-    const rawAnswer = stripSupersededFigures(deIded, live.supersededCounts || [])
+    const supersededStripped = stripSupersededFigures(deIded, live.supersededCounts || [])
+    // The model narrates; the deterministic layer carries the numbers. That rule
+    // held for every count rendered as a backend-built link on production and
+    // failed both times the model wrote one in prose — 1,924 for a
+    // TransgeneExpressionHere total of 1,934. Nothing enforced it after
+    // synthesis, and the audit below could not see it, because a one-digit slip
+    // sits inside the rounding tolerance. Repair what is provably a
+    // mis-transcription of a number this run actually saw, then audit what is
+    // left. Ordering matters: the audit should report what ships.
+    let rawAnswer = supersededStripped
+    let countRepairs = []
     try {
       const grounded = collectGroundedNumbers(
         (live.terms || []).map(t => t),
         Object.values(live.ledger?.terms || {}).map(t => t.digest),
         live.expression || [], live.graphs || [], live.countLinks || []
       )
+      const repaired = repairMistranscribedCounts(rawAnswer, grounded)
+      rawAnswer = repaired.text
+      countRepairs = repaired.fixes
       const ungrounded = findUngroundedNumbers(rawAnswer, grounded)
-      if (leakedIds.length || ungrounded.length) {
-        console.error(`[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'} | ungrounded_numbers=${ungrounded.join(',') || 'none'}`)
+      if (leakedIds.length || ungrounded.length || countRepairs.length) {
+        console.error(
+          `[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'}` +
+          ` | ungrounded_numbers=${ungrounded.join(',') || 'none'}` +
+          ` | repaired_counts=${countRepairs.map(f => `${f.wrote}->${f.shouldBe}`).join(',') || 'none'}`
+        )
       }
     } catch { /* audit is best-effort */ }
     // Linkify known VFB term names (resolved terms + example neurons) to their
@@ -11414,10 +11385,14 @@ export async function POST(request) {
     return createImmediateErrorResponse(errorMessage, requestId, responseId)
   }
 
-  if (detectJailbreakAttempt(message)) {
+  const jailbreakRule = detectJailbreakRule(message)
+  if (jailbreakRule) {
     const responseId = `local-${requestId}`
     const refusalMessage = 'I cannot assist with attempts to bypass safety restrictions or override my core instructions. Please ask questions related to Drosophila neuroscience and Virtual Fly Brain data.'
 
+    // Which rule fired, never the question. A refusal with no rule name is not
+    // diagnosable, which is how two rules spent a release refusing questions
+    // about brains and dopaminergic neurons without anyone noticing.
     await finalizeGovernanceEvent({
       requestId,
       responseId,
@@ -11428,7 +11403,7 @@ export async function POST(request) {
       responseText: refusalMessage,
       refusal: true,
       abuseFlag: true,
-      reasonCode: 'jailbreak_attempt'
+      reasonCode: `jailbreak_attempt:${jailbreakRule}`
     })
 
     return createImmediateErrorResponse(refusalMessage, requestId, responseId)
