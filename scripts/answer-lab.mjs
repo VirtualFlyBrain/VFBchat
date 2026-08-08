@@ -113,10 +113,24 @@ Rules. "unsupported" means a factual claim about flies, VFB's holdings, or a lib
 }
 
 // Failure modes with a production example behind each one.
+// Each check takes (answer, ctx). ctx.vfbQueries is how many VFB queries the run
+// actually ran, which is the difference between an honest absence statement and
+// the failure mode this check was written for.
 const CHECKS = {
   empty: a => !a.trim(),
-  // "VFB does not currently hold data on X" about a query nothing ran.
-  absence_claim: a => /\b(does not (currently )?hold|no data (is )?available|are no )\b/i.test(a),
+  // "VFB does not currently hold data on X" about a query NOTHING RAN.
+  //
+  // The phrasing alone is not the defect — it is the phrasing the integrity
+  // rules REQUIRE, and saying it after running the query is exactly right. This
+  // check used to match on the words only, so on the production baseline it
+  // fired on four of the five runs of "what does the ellipsoid body do?", every
+  // one of which had behaved correctly: given the anatomy, declined to assert
+  // function, said so in the mandated words. Penalising correct behaviour is
+  // worse than not checking, and it made the headline number wrong in the
+  // reassuring direction.
+  absence_claim: (a, ctx) =>
+    /\b(does not (currently )?hold|no data (is )?available|are no )\b/i.test(a) &&
+    !(ctx && ctx.vfbQueries > 0),
   // Narrating the plumbing instead of the data.
   mechanism_talk: a => /\b(run|running|use|using|call|calling)\b[^.]{0,60}\b(quer(y|ies)|command|function|method|api|wrapper)\b/i.test(a),
   // A code block nobody asked for.
@@ -145,12 +159,13 @@ for (const item of QUESTIONS) {
       ...(r.sources || []).map(s => s.title || s.url || s),
       ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`))
     ]
-    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer)).map(([k]) => k)
+    const vfbQueries = (r.reproduction?.calls || []).length
+    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer, { vfbQueries })).map(([k]) => k)
     const verdict = (err || !answer) ? null : await judge(item.q, answer, sources)
     const row = {
       id: item.id, rep, shape: item.shape, question: item.q, err,
       seconds: Math.round((Date.now() - t0) / 1000),
-      chars: answer.length, sources: sources.length,
+      chars: answer.length, sources: sources.length, vfbQueries,
       terms: (r.terms || []).length, flags: failed, verdict, answer
     }
     rows.push(row)
