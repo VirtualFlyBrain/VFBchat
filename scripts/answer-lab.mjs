@@ -23,18 +23,28 @@
 //   node scripts/answer-lab.mjs                      # the default question set
 //   ANSWER_LAB_N=3 node scripts/answer-lab.mjs       # 3 samples per question
 //   ANSWER_LAB_BASE=http://127.0.0.1:3210 node scripts/answer-lab.mjs
+//   ANSWER_LAB_JSONL=/tmp/run.jsonl node scripts/answer-lab.mjs   # rows appended as they land
 
 import fs from 'node:fs'
 
-const env = process.env.ELM_API_KEY ? process.env : Object.fromEntries(
-  fs.readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')
-    .filter(l => l.includes('=') && !l.trim().startsWith('#'))
-    .map(l => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
-)
+// .env.local is a convenience, not a requirement. It used to be read
+// unconditionally at import, so the whole script threw on any machine without
+// it — including the deterministic half, which needs no credentials at all.
+function readEnvFile() {
+  try {
+    return Object.fromEntries(
+      fs.readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')
+        .filter(l => l.includes('=') && !l.trim().startsWith('#'))
+        .map(l => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
+    )
+  } catch { return {} }
+}
+const env = process.env.ELM_API_KEY ? process.env : { ...readEnvFile(), ...process.env }
 const BASE = process.env.ANSWER_LAB_BASE || 'http://127.0.0.1:3210'
 // The model production runs, not the one .env.local names — see prompt-lab.mjs.
 const MODEL = process.env.LAB_MODEL || 'Qwen/Qwen3.5-397B-A17B-FP8'
 const N = Number(process.env.ANSWER_LAB_N || 1)
+const JSONL = process.env.ANSWER_LAB_JSONL || '/tmp/answer-lab.jsonl'
 
 // A spread of shapes, each of which has failed differently at some point.
 const QUESTIONS = (process.env.ANSWER_LAB_QUESTIONS || '').trim()
@@ -78,6 +88,9 @@ async function ask(question) {
 }
 
 async function judge(question, answer, sources) {
+  // No credentials: the deterministic half still runs and the rows still land.
+  // Judged fields come back null rather than the run failing.
+  if (!env.ELM_API_KEY || !env.ELM_BASE_URL) return null
   const messages = [
     { role: 'system', content: 'You assess answers from a Drosophila neuroanatomy assistant. Be exacting and concrete. Reply ONLY with JSON.' },
     { role: 'user', content: `QUESTION:\n${question}\n\nANSWER:\n${answer}\n\nSOURCES THE ANSWER WAS ALLOWED TO USE (documentation pages, and the VFB catalogue queries this run actually ran - a figure or list of names attributable to one of those queries IS supported):\n${JSON.stringify(sources)}\n\nReturn JSON with exactly these keys:
@@ -134,12 +147,17 @@ for (const item of QUESTIONS) {
     ]
     const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer)).map(([k]) => k)
     const verdict = (err || !answer) ? null : await judge(item.q, answer, sources)
-    rows.push({
+    const row = {
       id: item.id, rep, shape: item.shape, question: item.q, err,
       seconds: Math.round((Date.now() - t0) / 1000),
       chars: answer.length, sources: sources.length,
       terms: (r.terms || []).length, flags: failed, verdict, answer
-    })
+    }
+    rows.push(row)
+    // Append as it lands. A production run of this script was killed after ten
+    // completed answers and left nothing behind, because the JSON was only
+    // written at the end — an hour of live inference with no evidence.
+    try { fs.appendFileSync(JSONL, JSON.stringify(row) + '\n') } catch { /* best effort */ }
     const v = verdict || {}
     console.log(`${item.id}.${rep} ${String(rows.at(-1).seconds).padStart(3)}s ` +
       `${String(answer.length).padStart(5)}ch src:${sources.length} ` +

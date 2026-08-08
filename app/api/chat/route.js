@@ -30,6 +30,7 @@ import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
 import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
+import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
@@ -1184,7 +1185,7 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
       // `spent` and `next` are the two facts that were missing when this was
       // diagnosed from logs alone: a stall looks exactly like a server refusing
       // three times unless the line says which budget ran out.
-      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${JSON.stringify(args).slice(0, 300)} | error=${error?.message || error}`)
+      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${safeToolArgs(args)} | error=${error?.message || error}`)
       if (!next.retry) throw error
       attemptTimeoutMs = next.timeoutMs
       if (next.waitMs > 0) await new Promise(resolve => setTimeout(resolve, next.waitMs))
@@ -1238,7 +1239,7 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
   const allowance = budget || createForceRefreshBudget(1)
   if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
 
-  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${JSON.stringify(args).slice(0, 300)}`)
+  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${safeToolArgs(args)}`)
   try {
     const retryText = mcpResultToText(
       await callMcpToolWithRetry(client, name, { ...args, force_refresh: true })
