@@ -11057,16 +11057,22 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       servedModels: primeServedModels({ baseUrl: apiBaseUrl, apiKey }),
       toolDefs: buildHarnessToolCatalogue(),
       executeTool: (name, args) => executeFunctionTool(name, args, ctx),
-      collectGraphs: (out) => {
+      // `parsed` is the caller's single parse of this result. Parsing it again
+      // here was one of five materialisations of the same payload, all alive at
+      // once — see lib/liveHarness.mjs.
+      collectGraphs: (out, parsed) => {
         // First: an explicit create_basic_graph tool output (legacy shape).
         const fromTool = extractGraphSpecsFromToolOutputs([out])
         if (fromTool.length) return fromTool
         // Otherwise build a graph deterministically from a connectivity tool's
         // output — the harness synthesiser is a text stream and cannot call
         // create_basic_graph itself, so this is how connectivity graphs appear.
-        let parsed = out
-        if (typeof out === 'string') { try { parsed = JSON.parse(out) } catch { parsed = null } }
-        return buildConnectivityGraphs(parsed).map(normalizeGraphSpec).filter(Boolean)
+        let obj = parsed
+        if (obj === undefined) {
+          obj = out
+          if (typeof out === 'string') { try { obj = JSON.parse(out) } catch { obj = null } }
+        }
+        return buildConnectivityGraphs(obj).map(normalizeGraphSpec).filter(Boolean)
       },
       streamText: ({ messages, model, sourceQuotes, sampling }) => streamSynthCompletion({
         messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes, sampling,
