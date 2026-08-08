@@ -52,6 +52,11 @@ test('the split-GAL4 card fires on a split question and states the region caveat
   assert.match(card.planner, /SplitsTargeting/)
   assert.match(card.planner, /NEURON CLASSES/)
   assert.match(card.planner, /NOT split-GAL4/i)
+  // The planner card never reaches the synthesiser, and the synthesiser writes
+  // the sentence. Without a synth line the relabelling returned in about one
+  // run in three even with the plan correct.
+  assert.ok(card.synth, 'the split card needs a synth-side line, not only a planner one')
+  assert.match(card.synth, /not a split-GAL4 line/i)
 })
 
 test('the split card comes before the general genetic-tools card', () => {
