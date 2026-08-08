@@ -11091,9 +11091,21 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     } catch { /* logging best-effort */ }
 
     if (live.clarify) {
+      // Through the same gates as every other exit. This branch used to return
+      // `live.answer` raw and hard-code blockedResponseDomains: [] — so an
+      // off-allow-list URL or an internal tool name written into a clarifying
+      // question reached the reader, and the outbound-link gate reported zero
+      // blocks whether or not there had been any. A planner asking "did you mean
+      // the antennal lobe, or the term at <url> you linked? I can run
+      // vfb_run_query with NeuronsPartHere once you tell me" is exactly the shape
+      // that leaks both.
+      const clarifyText = String(live.answer || '')
+      const { cleanedText } = stripLeakedToolCallJson(clarifyText)
+      const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, getOutboundAllowList())
+      const safeClarify = stripHarnessFraming(sanitizeInternalToolMentions(sanitizedText))
       return {
         ok: true,
-        responseText: live.answer,
+        responseText: stripLeakedIds(safeClarify, collectGroundedIds(userMessage, live.ledger)),
         images: [],
         graphs: [],
         tables: [],
@@ -11107,7 +11119,7 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
         toolUsage: live.toolUsage,
         toolRounds: live.toolRounds,
         responseId,
-        blockedResponseDomains: []
+        blockedResponseDomains: blockedDomains
       }
     }
 
