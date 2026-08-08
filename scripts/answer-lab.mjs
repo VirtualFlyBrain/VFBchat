@@ -128,9 +128,15 @@ const CHECKS = {
   // function, said so in the mandated words. Penalising correct behaviour is
   // worse than not checking, and it made the headline number wrong in the
   // reassuring direction.
+  // What the run had to go on is `vfbEvidence`: queries it ran PLUS terms it
+  // resolved. A resolved term's catalogue is itself evidence of absence — "VFB
+  // has no split-GAL4 query for this region" is established by reading what the
+  // region offers, without running anything. So the flag is reserved for the
+  // case that is always wrong: asserting what VFB does not hold having looked
+  // at nothing.
   absence_claim: (a, ctx) =>
     /\b(does not (currently )?hold|no data (is )?available|are no )\b/i.test(a) &&
-    !(ctx && ctx.vfbQueries > 0),
+    !(ctx && ctx.vfbEvidence > 0),
   // Narrating the plumbing instead of the data.
   mechanism_talk: a => /\b(run|running|use|using|call|calling)\b[^.]{0,60}\b(quer(y|ies)|command|function|method|api|wrapper)\b/i.test(a),
   // A code block nobody asked for.
@@ -160,12 +166,13 @@ for (const item of QUESTIONS) {
       ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`))
     ]
     const vfbQueries = (r.reproduction?.calls || []).length
-    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer, { vfbQueries })).map(([k]) => k)
+    const vfbEvidence = vfbQueries + (r.terms || []).length
+    const failed = Object.entries(CHECKS).filter(([, fn]) => fn(answer, { vfbQueries, vfbEvidence })).map(([k]) => k)
     const verdict = (err || !answer) ? null : await judge(item.q, answer, sources)
     const row = {
       id: item.id, rep, shape: item.shape, question: item.q, err,
       seconds: Math.round((Date.now() - t0) / 1000),
-      chars: answer.length, sources: sources.length, vfbQueries,
+      chars: answer.length, sources: sources.length, vfbQueries, vfbEvidence,
       terms: (r.terms || []).length, flags: failed, verdict, answer
     }
     rows.push(row)
