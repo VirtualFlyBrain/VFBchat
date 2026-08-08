@@ -35,7 +35,7 @@ import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '.
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
-import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers } from '../../../lib/grounding.mjs'
+import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -11192,16 +11192,33 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // audit, so the audit reports what actually ships, and before linkifyCounts,
     // so a stale figure can never be turned into a link that opens a query
     // returning a different total.
-    const rawAnswer = stripSupersededFigures(deIded, live.supersededCounts || [])
+    const supersededStripped = stripSupersededFigures(deIded, live.supersededCounts || [])
+    // The model narrates; the deterministic layer carries the numbers. That rule
+    // held for every count rendered as a backend-built link on production and
+    // failed both times the model wrote one in prose — 1,924 for a
+    // TransgeneExpressionHere total of 1,934. Nothing enforced it after
+    // synthesis, and the audit below could not see it, because a one-digit slip
+    // sits inside the rounding tolerance. Repair what is provably a
+    // mis-transcription of a number this run actually saw, then audit what is
+    // left. Ordering matters: the audit should report what ships.
+    let rawAnswer = supersededStripped
+    let countRepairs = []
     try {
       const grounded = collectGroundedNumbers(
         (live.terms || []).map(t => t),
         Object.values(live.ledger?.terms || {}).map(t => t.digest),
         live.expression || [], live.graphs || [], live.countLinks || []
       )
+      const repaired = repairMistranscribedCounts(rawAnswer, grounded)
+      rawAnswer = repaired.text
+      countRepairs = repaired.fixes
       const ungrounded = findUngroundedNumbers(rawAnswer, grounded)
-      if (leakedIds.length || ungrounded.length) {
-        console.error(`[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'} | ungrounded_numbers=${ungrounded.join(',') || 'none'}`)
+      if (leakedIds.length || ungrounded.length || countRepairs.length) {
+        console.error(
+          `[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'}` +
+          ` | ungrounded_numbers=${ungrounded.join(',') || 'none'}` +
+          ` | repaired_counts=${countRepairs.map(f => `${f.wrote}->${f.shouldBe}`).join(',') || 'none'}`
+        )
       }
     } catch { /* audit is best-effort */ }
     // Linkify known VFB term names (resolved terms + example neurons) to their
