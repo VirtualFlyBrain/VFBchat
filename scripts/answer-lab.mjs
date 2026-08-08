@@ -174,7 +174,13 @@ for (const item of QUESTIONS) {
       ...((r.tables || []).map(t =>
         `VFB query ${t.queryType} on ${t.termLabel || t.termId} returned count ${t.count}` +
         (t.countKind ? ` (${t.countKind})` : '') +
-        (Array.isArray(t.rows) ? `, ${t.rows.length} preview rows` : '')))
+        (Array.isArray(t.rows) && t.rows.length
+          // The ROW NAMES too. With counts but no rows, the judge accepted "471
+          // neuron types" and then flagged the list of them — Dm8b, MC, PS128,
+          // TmY27 — as unsupported, which is the same error one level down: the
+          // names came out of the same query's preview rows.
+          ? `; rows include ${t.rows.map(x => x.name).filter(Boolean).slice(0, 12).join(', ')}`
+          : '')))
     ]
     const vfbQueries = (r.reproduction?.calls || []).length
     const vfbEvidence = vfbQueries + (r.terms || []).length
