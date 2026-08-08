@@ -6401,7 +6401,17 @@ function summarizeTermForEvidence(termRecord = {}, fallbackId = '') {
       .map(entry => ({
         query_type: entry?.query,
         label: entry?.label,
-        count: Number.isFinite(Number(entry?.count)) ? Number(entry.count) : undefined
+        // -1 is not a count. It means the preview has not been computed or blew
+        // the counting cap, and Number.isFinite(-1) is true — so it used to be
+        // handed to the model as a real total. The sibling helper
+        // getQueryCountFromTermRecord carries this exact fix and a comment
+        // describing this exact bug; it was never applied here, and this
+        // function feeds query_counts into thirteen tool payloads.
+        count: Number.isFinite(Number(entry?.count)) && Number(entry.count) >= 0 ? Number(entry.count) : undefined,
+        // Keep WHY it is absent rather than dropping the query silently: an
+        // uncounted query is data VFB has and has not totalled, which is the
+        // opposite of an empty one.
+        count_status: Number(entry?.count) < 0 ? 'unknown' : undefined
       }))
       .filter(entry => entry.query_type)
     : []
