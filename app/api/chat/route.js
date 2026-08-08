@@ -31,6 +31,7 @@ import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
+import { createRunSignal, throwIfAborted, isRunAborted } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
@@ -102,23 +103,40 @@ function logModelResolutionOnce() {
 // with a concise, user-friendly message.
 
 
-function buildSseResponse(startHandler) {
+// `startHandler` is called with (sendEvent, signal). The signal is aborted when
+// the client disconnects, when the stream is cancelled, or when the run deadline
+// passes — see lib/runSignal.mjs for why a request nobody is waiting for must
+// stop rather than run to completion.
+function buildSseResponse(startHandler, { clientSignal = null } = {}) {
   const encoder = new TextEncoder()
+  const run = createRunSignal({ clientSignal })
   const stream = new ReadableStream({
     async start(controller) {
       const sendEvent = (event, data) => {
         try {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
         } catch {
-          // The client disconnected; there is nothing else to do here.
+          // Enqueue failed, so the client is gone. There IS something else to do
+          // here: stop working. Previously this comment said there was not, and
+          // the run carried on to completion with nobody reading it.
+          run.abort('stream-closed')
         }
       }
 
       try {
-        await startHandler(sendEvent)
+        await startHandler(sendEvent, run.signal)
+      } catch (error) {
+        if (!isRunAborted(error)) throw error
+        console.log(`[VFBchat] RUN ABANDONED | reason=${run.reason() || 'aborted'}`)
       } finally {
-        controller.close()
+        run.dispose()
+        try { controller.close() } catch { /* already closed by cancel() */ }
       }
+    },
+    // The client closed the connection. Without this the ReadableStream simply
+    // stopped being read and every downstream call kept going.
+    cancel (reason) {
+      run.abort(typeof reason === 'string' && reason ? reason : 'client-disconnected')
     }
   })
 
@@ -9218,90 +9236,14 @@ async function executeFunctionTool(name, args, context = {}) {
 // production — see that file for the four verified cases and the two rules that
 // caused them. It is a module now so it can be tested; it had no test at all.
 
-// --- Lookup cache (read-only, loaded from static file) ---
-
-let lookupCache = null
-let reverseLookupCache = null
-const CACHE_FILE = path.join(process.cwd(), 'vfb_lookup_cache.json')
-
-function loadLookupCache() {
-  if (lookupCache) return
-
-  try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))
-      lookupCache = cacheData.lookup || {}
-      reverseLookupCache = cacheData.reverseLookup || {}
-      return
-    }
-  } catch {
-    // Fall back to a small seeded cache below.
-  }
-
-  lookupCache = {}
-  reverseLookupCache = {}
-  seedEssentialTerms()
-}
-
-function seedEssentialTerms() {
-  const essentialTerms = {
-    'medulla': 'FBbt_00003748',
-    'adult brain': 'FBbt_00003624',
-    'central complex': 'FBbt_00003632',
-    'mushroom body': 'FBbt_00005801',
-    'protocerebrum': 'FBbt_00003627',
-    'deutocerebrum': 'FBbt_00003923',
-    'tritocerebrum': 'FBbt_00003633'
-  }
-
-  for (const [term, id] of Object.entries(essentialTerms)) {
-    lookupCache[term] = id
-    reverseLookupCache[id] = term
-  }
-}
-
-function replaceTermsWithLinks(text) {
-  if (!text || !lookupCache) return text
-
-  const sortedTerms = Object.keys(lookupCache)
-    .filter(term => term.length > 2)
-    .sort((a, b) => b.length - a.length)
-
-  const protectedLinks = []
-  const protectedUrls = []
-  const URL_PLACEHOLDER = '\u0000URL'
-  let result = text.replace(/https?:\/\/[^\s)]+/g, (url) => {
-    protectedUrls.push(url)
-    return `${URL_PLACEHOLDER}${protectedUrls.length - 1}\u0000`
-  })
-
-  result = result.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, (match) => {
-    protectedLinks.push(match)
-    return `\u0000LINK${protectedLinks.length - 1}\u0000`
-  })
-
-  const reportBase = 'https://virtualflybrain.org/reports/'
-  for (const term of sortedTerms) {
-    const id = lookupCache[term]
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`\\b${escaped}\\b`, 'gi')
-    result = result.replace(regex, (match) => {
-      protectedLinks.push(`[${match}](${reportBase + encodeURIComponent(id)})`)
-      return `\u0000LINK${protectedLinks.length - 1}\u0000`
-    })
-  }
-
-  result = result.replace(/\b(FBbt_\d{8}|VFB_\d{8})\b/g, (match) => {
-    const label = reverseLookupCache?.[match]
-    const display = label || match
-    protectedLinks.push(`[${display}](${reportBase + encodeURIComponent(match)})`)
-    return `\u0000LINK${protectedLinks.length - 1}\u0000`
-  })
-
-  result = result.replace(/\u0000LINK(\d+)\u0000/g, (_, index) => protectedLinks[Number(index)])
-  result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\u0000`, 'g'), (_, index) => protectedUrls[Number(index)])
-  return result
-}
+// The static lookup cache and replaceTermsWithLinks lived here. Both were dead:
+// the only caller computed `resolvedUserMessage` and passed it to
+// runRoleHarnessForRequest, whose own comment says it uses the plain user text,
+// and whose body never read the argument. Every request therefore loaded a
+// 157 KB file, compiled ~1,500 RegExps, ran ~1,500 full-string replaces over the
+// question and threw the result away. Inline term linking is done deterministically
+// from the ledger registry by linkifyKnownTerms, which can only ever point a label
+// at the id VFB gave it.
 
 const VFB_QUERY_LINK_BASE = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
 
@@ -11064,7 +11006,7 @@ function buildHarnessToolCatalogue() {
   return TOOL_DEFINITIONS.map(tool => ({ name: tool.name, purpose: tool.description || '', parameters: tool.parameters }))
 }
 
-async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus }) {
+async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus, signal }) {
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
   const toolState = {
@@ -11097,6 +11039,9 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       question: userMessage,
       plannerVotes: complexity.plannerVotes,
       history: priorMessages,
+      // Aborted when the client disconnects, the stream is cancelled, or the run
+      // deadline passes. Every loop and every outbound call downstream checks it.
+      signal,
       // The conversation's resolved info, echoed back by the client from the
       // previous turn's result event, and — when this turn came from a clicked
       // follow-on rather than typed text — the {id, query_type} that chip was
@@ -11471,10 +11416,7 @@ export async function POST(request) {
     }
   }
 
-  loadLookupCache()
-
-  return buildSseResponse(async (sendEvent) => {
-    const resolvedUserMessage = replaceTermsWithLinks(message)
+  return buildSseResponse(async (sendEvent, signal) => {
     // Minimize BEFORE anything else looks at the history. Every prior assistant
     // turn in this product is mostly apparatus — VFB URLs with hover titles,
     // image embeds, twenty-row result tables — none of which helps the planner
@@ -11509,8 +11451,8 @@ export async function POST(request) {
 
     try {
       const result = await runRoleHarnessForRequest({
-        resolvedUserMessage,
         priorMessages,
+        signal,
         sendEvent,
         apiBaseUrl,
         apiKey,
@@ -11609,5 +11551,5 @@ export async function POST(request) {
 
       sendEvent('error', { message: userMessage, requestId, responseId })
     }
-  })
+  }, { clientSignal: request.signal })
 }
