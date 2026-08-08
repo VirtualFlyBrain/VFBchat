@@ -19,6 +19,7 @@ import {
   sanitizeAssistantOutput
 } from '../../../lib/policy.js'
 import { checkAndIncrement } from '../../../lib/rateLimit.js'
+import { getClientIp } from '../../../lib/clientIp.mjs'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
@@ -31,6 +32,7 @@ import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
+import { createRunSignal, throwIfAborted, isRunAborted } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
@@ -102,23 +104,40 @@ function logModelResolutionOnce() {
 // with a concise, user-friendly message.
 
 
-function buildSseResponse(startHandler) {
+// `startHandler` is called with (sendEvent, signal). The signal is aborted when
+// the client disconnects, when the stream is cancelled, or when the run deadline
+// passes — see lib/runSignal.mjs for why a request nobody is waiting for must
+// stop rather than run to completion.
+function buildSseResponse(startHandler, { clientSignal = null } = {}) {
   const encoder = new TextEncoder()
+  const run = createRunSignal({ clientSignal })
   const stream = new ReadableStream({
     async start(controller) {
       const sendEvent = (event, data) => {
         try {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
         } catch {
-          // The client disconnected; there is nothing else to do here.
+          // Enqueue failed, so the client is gone. There IS something else to do
+          // here: stop working. Previously this comment said there was not, and
+          // the run carried on to completion with nobody reading it.
+          run.abort('stream-closed')
         }
       }
 
       try {
-        await startHandler(sendEvent)
+        await startHandler(sendEvent, run.signal)
+      } catch (error) {
+        if (!isRunAborted(error)) throw error
+        console.log(`[VFBchat] RUN ABANDONED | reason=${run.reason() || 'aborted'}`)
       } finally {
-        controller.close()
+        run.dispose()
+        try { controller.close() } catch { /* already closed by cancel() */ }
       }
+    },
+    // The client closed the connection. Without this the ReadableStream simply
+    // stopped being read and every downstream call kept going.
+    cancel (reason) {
+      run.abort(typeof reason === 'string' && reason ? reason : 'client-disconnected')
     }
   })
 
@@ -148,11 +167,6 @@ function createImmediateResultResponse(message, requestId, responseId) {
       responseId
     })
   })
-}
-
-function getClientIp(request) {
-  const xForwardedFor = request.headers.get('x-forwarded-for') || ''
-  return (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
 }
 
 function buildRateLimitDetails(rateCheck) {
@@ -1204,6 +1218,10 @@ function mcpResultToText(result) {
   return JSON.stringify(result)
 }
 
+// Where a request's shared force-refresh allowance rides. A Symbol so it cannot
+// collide with anything the MCP SDK puts on its client.
+const FORCE_REFRESH_BUDGET = Symbol('vfbForceRefreshBudget')
+
 // Only run_query carries the count -1 failure signal; nothing else has a payload
 // shape where a forced recompute is the right response.
 const FORCE_REFRESH_RETRY_TOOLS = new Set(['run_query'])
@@ -1236,7 +1254,15 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
   const text = mcpResultToText(await callMcpToolWithRetry(client, name, args))
   if (!FORCE_REFRESH_RETRY_TOOLS.has(name) || !isFailedRunQueryPayload(text)) return text
 
-  const allowance = budget || createForceRefreshBudget(1)
+  // `budget` was passed by exactly one of the 27 call sites — the generic MCP
+  // routing path. Every macro tool left it empty and fell back to a fresh
+  // single-shot allowance created per call, so the documented "a request that
+  // fails in many different ways still cannot stampede the upstream with
+  // recomputes" was not enforced: vfb_find_reciprocal_connectivity alone issues
+  // one endpoint query plus up to six partner queries, and with VFBquery degraded
+  // that is seven X-Force-Refresh recomputes against the shared upstream instead
+  // of two. The request's allowance now rides on the client.
+  const allowance = budget || client?.[FORCE_REFRESH_BUDGET] || createForceRefreshBudget(1)
   if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
 
   console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${safeToolArgs(args)}`)
@@ -1287,16 +1313,33 @@ async function createMcpClient(server) {
   return client
 }
 
+// The map holds the PROMISE, not the resolved client. Check-then-await-then-set
+// is a race, and resolveTerms fans out over names with Promise.all: on the first
+// resolve round the map is empty for all of them, so two or three
+// StreamableHTTPClientTransport sessions were opened, each `set` overwrote the
+// last, and closeMcpClients closed only the survivor. The rest held an open
+// session upstream until it timed out server-side — one leaked session per extra
+// concurrent name, per request.
 async function getMcpClientForContext(server, context = {}) {
-  if (context.mcpClients instanceof Map) {
-    if (context.mcpClients.has(server)) return context.mcpClients.get(server)
+  if (!(context.mcpClients instanceof Map)) return createMcpClient(server)
 
-    const client = await createMcpClient(server)
-    context.mcpClients.set(server, client)
+  const existing = context.mcpClients.get(server)
+  if (existing) return existing
+
+  const pending = createMcpClient(server).then((client) => {
+    // The per-request force-refresh allowance travels with the client, so every
+    // call site gets the shared budget without having to thread it through.
+    const budget = getForceRefreshBudget(context)
+    if (budget && client && typeof client === 'object') client[FORCE_REFRESH_BUDGET] = budget
     return client
-  }
-
-  return createMcpClient(server)
+  }).catch((error) => {
+    // A failed connect must not be cached, or every later call in this request
+    // re-throws the same error without retrying.
+    context.mcpClients.delete(server)
+    throw error
+  })
+  context.mcpClients.set(server, pending)
+  return pending
 }
 
 async function closeMcpClient(client) {
@@ -1310,9 +1353,14 @@ async function closeMcpClient(client) {
 
 async function closeMcpClients(mcpClients) {
   if (!(mcpClients instanceof Map)) return
-  const clients = Array.from(mcpClients.values())
+  // The map holds promises now, and a connect that failed rejects — settle each
+  // one before closing, so a failed connect cannot leave the loop unclosed.
+  const pending = Array.from(mcpClients.values())
   mcpClients.clear()
-  await Promise.allSettled(clients.map(closeMcpClient))
+  const settled = await Promise.allSettled(pending)
+  await Promise.allSettled(
+    settled.filter(r => r.status === 'fulfilled').map(r => closeMcpClient(r.value))
+  )
 }
 
 function getToolConfig() {
@@ -9218,90 +9266,14 @@ async function executeFunctionTool(name, args, context = {}) {
 // production — see that file for the four verified cases and the two rules that
 // caused them. It is a module now so it can be tested; it had no test at all.
 
-// --- Lookup cache (read-only, loaded from static file) ---
-
-let lookupCache = null
-let reverseLookupCache = null
-const CACHE_FILE = path.join(process.cwd(), 'vfb_lookup_cache.json')
-
-function loadLookupCache() {
-  if (lookupCache) return
-
-  try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))
-      lookupCache = cacheData.lookup || {}
-      reverseLookupCache = cacheData.reverseLookup || {}
-      return
-    }
-  } catch {
-    // Fall back to a small seeded cache below.
-  }
-
-  lookupCache = {}
-  reverseLookupCache = {}
-  seedEssentialTerms()
-}
-
-function seedEssentialTerms() {
-  const essentialTerms = {
-    'medulla': 'FBbt_00003748',
-    'adult brain': 'FBbt_00003624',
-    'central complex': 'FBbt_00003632',
-    'mushroom body': 'FBbt_00005801',
-    'protocerebrum': 'FBbt_00003627',
-    'deutocerebrum': 'FBbt_00003923',
-    'tritocerebrum': 'FBbt_00003633'
-  }
-
-  for (const [term, id] of Object.entries(essentialTerms)) {
-    lookupCache[term] = id
-    reverseLookupCache[id] = term
-  }
-}
-
-function replaceTermsWithLinks(text) {
-  if (!text || !lookupCache) return text
-
-  const sortedTerms = Object.keys(lookupCache)
-    .filter(term => term.length > 2)
-    .sort((a, b) => b.length - a.length)
-
-  const protectedLinks = []
-  const protectedUrls = []
-  const URL_PLACEHOLDER = '\u0000URL'
-  let result = text.replace(/https?:\/\/[^\s)]+/g, (url) => {
-    protectedUrls.push(url)
-    return `${URL_PLACEHOLDER}${protectedUrls.length - 1}\u0000`
-  })
-
-  result = result.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, (match) => {
-    protectedLinks.push(match)
-    return `\u0000LINK${protectedLinks.length - 1}\u0000`
-  })
-
-  const reportBase = 'https://virtualflybrain.org/reports/'
-  for (const term of sortedTerms) {
-    const id = lookupCache[term]
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`\\b${escaped}\\b`, 'gi')
-    result = result.replace(regex, (match) => {
-      protectedLinks.push(`[${match}](${reportBase + encodeURIComponent(id)})`)
-      return `\u0000LINK${protectedLinks.length - 1}\u0000`
-    })
-  }
-
-  result = result.replace(/\b(FBbt_\d{8}|VFB_\d{8})\b/g, (match) => {
-    const label = reverseLookupCache?.[match]
-    const display = label || match
-    protectedLinks.push(`[${display}](${reportBase + encodeURIComponent(match)})`)
-    return `\u0000LINK${protectedLinks.length - 1}\u0000`
-  })
-
-  result = result.replace(/\u0000LINK(\d+)\u0000/g, (_, index) => protectedLinks[Number(index)])
-  result = result.replace(new RegExp(`${URL_PLACEHOLDER}(\\d+)\\u0000`, 'g'), (_, index) => protectedUrls[Number(index)])
-  return result
-}
+// The static lookup cache and replaceTermsWithLinks lived here. Both were dead:
+// the only caller computed `resolvedUserMessage` and passed it to
+// runRoleHarnessForRequest, whose own comment says it uses the plain user text,
+// and whose body never read the argument. Every request therefore loaded a
+// 157 KB file, compiled ~1,500 RegExps, ran ~1,500 full-string replaces over the
+// question and threw the result away. Inline term linking is done deterministically
+// from the ledger registry by linkifyKnownTerms, which can only ever point a label
+// at the id VFB gave it.
 
 const VFB_QUERY_LINK_BASE = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
 
@@ -11064,7 +11036,7 @@ function buildHarnessToolCatalogue() {
   return TOOL_DEFINITIONS.map(tool => ({ name: tool.name, purpose: tool.description || '', parameters: tool.parameters }))
 }
 
-async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus }) {
+async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus, signal }) {
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
   const toolState = {
@@ -11097,6 +11069,9 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       question: userMessage,
       plannerVotes: complexity.plannerVotes,
       history: priorMessages,
+      // Aborted when the client disconnects, the stream is cancelled, or the run
+      // deadline passes. Every loop and every outbound call downstream checks it.
+      signal,
       // The conversation's resolved info, echoed back by the client from the
       // previous turn's result event, and — when this turn came from a clicked
       // follow-on rather than typed text — the {id, query_type} that chip was
@@ -11112,16 +11087,22 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       servedModels: primeServedModels({ baseUrl: apiBaseUrl, apiKey }),
       toolDefs: buildHarnessToolCatalogue(),
       executeTool: (name, args) => executeFunctionTool(name, args, ctx),
-      collectGraphs: (out) => {
+      // `parsed` is the caller's single parse of this result. Parsing it again
+      // here was one of five materialisations of the same payload, all alive at
+      // once — see lib/liveHarness.mjs.
+      collectGraphs: (out, parsed) => {
         // First: an explicit create_basic_graph tool output (legacy shape).
         const fromTool = extractGraphSpecsFromToolOutputs([out])
         if (fromTool.length) return fromTool
         // Otherwise build a graph deterministically from a connectivity tool's
         // output — the harness synthesiser is a text stream and cannot call
         // create_basic_graph itself, so this is how connectivity graphs appear.
-        let parsed = out
-        if (typeof out === 'string') { try { parsed = JSON.parse(out) } catch { parsed = null } }
-        return buildConnectivityGraphs(parsed).map(normalizeGraphSpec).filter(Boolean)
+        let obj = parsed
+        if (obj === undefined) {
+          obj = out
+          if (typeof out === 'string') { try { obj = JSON.parse(out) } catch { obj = null } }
+        }
+        return buildConnectivityGraphs(obj).map(normalizeGraphSpec).filter(Boolean)
       },
       streamText: ({ messages, model, sourceQuotes, sampling }) => streamSynthCompletion({
         messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes, sampling,
@@ -11140,9 +11121,21 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     } catch { /* logging best-effort */ }
 
     if (live.clarify) {
+      // Through the same gates as every other exit. This branch used to return
+      // `live.answer` raw and hard-code blockedResponseDomains: [] — so an
+      // off-allow-list URL or an internal tool name written into a clarifying
+      // question reached the reader, and the outbound-link gate reported zero
+      // blocks whether or not there had been any. A planner asking "did you mean
+      // the antennal lobe, or the term at <url> you linked? I can run
+      // vfb_run_query with NeuronsPartHere once you tell me" is exactly the shape
+      // that leaks both.
+      const clarifyText = String(live.answer || '')
+      const { cleanedText } = stripLeakedToolCallJson(clarifyText)
+      const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, getOutboundAllowList())
+      const safeClarify = stripHarnessFraming(sanitizeInternalToolMentions(sanitizedText))
       return {
         ok: true,
-        responseText: live.answer,
+        responseText: stripLeakedIds(safeClarify, collectGroundedIds(userMessage, live.ledger)),
         images: [],
         graphs: [],
         tables: [],
@@ -11156,7 +11149,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
         toolUsage: live.toolUsage,
         toolRounds: live.toolRounds,
         responseId,
-        blockedResponseDomains: []
+        blockedResponseDomains: blockedDomains
       }
     }
 
@@ -11471,10 +11464,7 @@ export async function POST(request) {
     }
   }
 
-  loadLookupCache()
-
-  return buildSseResponse(async (sendEvent) => {
-    const resolvedUserMessage = replaceTermsWithLinks(message)
+  return buildSseResponse(async (sendEvent, signal) => {
     // Minimize BEFORE anything else looks at the history. Every prior assistant
     // turn in this product is mostly apparatus — VFB URLs with hover titles,
     // image embeds, twenty-row result tables — none of which helps the planner
@@ -11509,8 +11499,8 @@ export async function POST(request) {
 
     try {
       const result = await runRoleHarnessForRequest({
-        resolvedUserMessage,
         priorMessages,
+        signal,
         sendEvent,
         apiBaseUrl,
         apiKey,
@@ -11580,6 +11570,14 @@ export async function POST(request) {
         responseId
       })
     } catch (error) {
+      // An abandoned run is not a failure of the service. Reporting it as one
+      // wrote a spurious errored=true governance record and emitted an error
+      // event to a client that had already gone — the analytics would have shown
+      // a rising error rate that was nothing but people changing their minds.
+      if (isRunAborted(error)) {
+        console.log(`[VFBchat] RUN ABANDONED | request=${requestId}`)
+        return
+      }
       const responseId = `local-${requestId}`
       let userMessage = 'Sorry, something went wrong processing your request. Please try again.'
       let errorCategory = 'unexpected_error'
@@ -11609,5 +11607,5 @@ export async function POST(request) {
 
       sendEvent('error', { message: userMessage, requestId, responseId })
     }
-  })
+  }, { clientSignal: request.signal })
 }

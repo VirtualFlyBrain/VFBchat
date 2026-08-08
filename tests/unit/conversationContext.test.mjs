@@ -83,7 +83,10 @@ test('priorTermId does not answer from the registry', () => {
   assert.equal(priorTermId(carried, 'Dm7'), null)
 })
 
-test('priorTermQueries gates a follow-on chip to queries the term advertised', () => {
+test('priorTermQueries reports the catalogue a previous turn established', () => {
+  // NOT a gate — see the function's own comment. The gate is
+  // dropUnofferedTemplateSteps, which checks against VFB rather than against a
+  // truncated carried list.
   const carried = buildTurnContext(medullaLedger())
   const qs = priorTermQueries(carried, 'FBbt_00003748').map(q => q.query_type)
   assert.ok(qs.includes('NeuronsPostsynapticHere'))

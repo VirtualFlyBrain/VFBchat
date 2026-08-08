@@ -10,6 +10,8 @@ import {
   recordFeedbackEvent,
   recordFeedbackTranscript
 } from '../../../lib/governance.js'
+import { checkAndIncrement } from '../../../lib/rateLimit.js'
+import { getClientIp } from '../../../lib/clientIp.mjs'
 
 function normalizeRating(value) {
   return value === 'up' || value === 'down' ? value : null
@@ -17,6 +19,21 @@ function normalizeRating(value) {
 
 export async function POST(request) {
   ensureGovernanceStorage()
+
+  // /api/chat rate-limits every request; this route did not, and it is the one
+  // that appends up to 100 KB of conversation transcript to a store the
+  // University treats as genuine user data and keeps for 30 days. Unlimited and
+  // unauthenticated, a loop here fills the log volume — at which point every
+  // writeJson in governance.js starts throwing and the chat route's
+  // finalizeGovernanceEvent fails with it.
+  const clientIp = getClientIp(request)
+  const rateCheck = checkAndIncrement(clientIp)
+  if (!rateCheck.allowed) {
+    return NextResponse.json(
+      { error: 'Daily feedback limit reached.' },
+      { status: 429 }
+    )
+  }
 
   try {
     const body = await request.json()
