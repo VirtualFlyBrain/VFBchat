@@ -1587,8 +1587,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       </header>
 
       {/* Chat messages area - fills available space */}
+      {/* role="log" USED to be on this element and was overriding the main
+          landmark: an explicit role replaces the implicit one, so the page had
+          no <main> for a screen-reader user to skip to, and axe reported both
+          aria-allowed-role and landmark-one-main. aria-live and aria-label are
+          allowed on main and do the announcing job on their own, so the role
+          simply goes. */}
       <main
-        role="log"
         aria-label="Chat conversation"
         aria-live="polite"
         style={{
@@ -1658,8 +1663,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         <div ref={chatEndRef} />
       </main>
 
-      {/* Input area */}
-      <div style={{
+      {/* A labelled section is a region landmark, so the question box is
+          reachable by landmark navigation instead of sitting outside every
+          landmark on the page — which is what axe's `region` findings were.
+          Same styles, same layout; only the element and the label are new. */}
+      <section aria-label="Ask a question" style={{
         display: 'flex',
         gap: '8px',
         marginTop: '8px',
@@ -1725,7 +1733,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         >
           Send
         </button>
-      </div>
+      </section>
 
       {/* VFB Browser link */}
       {scene.id && (
