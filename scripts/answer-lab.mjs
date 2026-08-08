@@ -163,7 +163,18 @@ for (const item of QUESTIONS) {
     // is the exact failure this whole approach exists to prevent.
     const sources = [
       ...(r.sources || []).map(s => s.title || s.url || s),
-      ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`))
+      ...((r.reproduction?.calls || []).map(c => `VFB query ${c.query_type} on ${c.id} (${c.label})`)),
+      // The COUNTS, not only the query names. Shown the name alone, the judge
+      // marked "VFB has annotated 471 neuron types that have some part in the
+      // medulla" as unsupported — a figure that came straight from the
+      // NeuronsPartHere query it was being told about, because nothing told it
+      // what that query returned. An instrument that scores grounded facts as
+      // hallucinations makes any "quality improved" claim worthless, which is
+      // the exact failure this whole approach exists to prevent.
+      ...((r.tables || []).map(t =>
+        `VFB query ${t.queryType} on ${t.termLabel || t.termId} returned count ${t.count}` +
+        (t.countKind ? ` (${t.countKind})` : '') +
+        (Array.isArray(t.rows) ? `, ${t.rows.length} preview rows` : '')))
     ]
     const vfbQueries = (r.reproduction?.calls || []).length
     const vfbEvidence = vfbQueries + (r.terms || []).length
