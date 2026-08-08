@@ -59,6 +59,7 @@ Options:
   --server-command <dev|start> Server command for local runs. Default: dev.
   --port <number>             Local server port. Default: 3210.
   --repetitions <number>      Repetitions per question. Default: 1.
+  --shard <i/n>               Run only this shard of the task list. Default: all.
   --concurrency <number>      Number of questions to run in parallel. Default: 1.
   --limit <number>            Limit number of selected tasks.
   --ids <csv>                 Comma-separated task IDs, e.g. T1.1,T3.4.
@@ -157,6 +158,42 @@ async function loadTasksFromFile(taskFile) {
   return parseTaskBattery(raw)
 }
 
+/**
+ * Take this shard's slice of the task list, as "i/n" (1-based).
+ *
+ * Splitting the battery across matrix jobs is the only real fix for its memory
+ * profile: cost grows super-linearly with questions in flight inside ONE server
+ * process, so the way to go faster is more processes, not more concurrency —
+ * and every matrix job is a fresh runner with its own RAM. It also contains
+ * failure: a shard that dies takes its own eighth of the battery with it, not
+ * the whole run.
+ *
+ * Assignment is round-robin over a list sorted heaviest-tier-first, not a
+ * contiguous slice. Contiguous slicing puts all twelve tier-7 conversations —
+ * the slow, multi-turn, memory-hungry ones — in the same shard, and the run is
+ * then as long as that shard. Round-robin after a cost sort spreads them, so
+ * shards finish together and wall-clock is the average rather than the worst.
+ *
+ * Deterministic: the same task list and the same n always give the same split,
+ * so a failure in shard 3 is reproducible by running shard 3.
+ */
+function shardTasks(tasks, spec) {
+  const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(spec || ''))
+  if (!m) return tasks
+  const index = Number(m[1])
+  const total = Number(m[2])
+  if (!(total > 0) || !(index >= 1 && index <= total)) {
+    throw new Error(`--shard must be "i/n" with 1 <= i <= n (got "${spec}")`)
+  }
+  if (total === 1) return tasks
+  // Heaviest first: higher tier = multi-turn and slower. Ties keep task order so
+  // the result does not depend on sort stability across engines.
+  const ordered = tasks
+    .map((task, position) => ({ task, position }))
+    .sort((a, b) => (b.task.tier || 0) - (a.task.tier || 0) || a.position - b.position)
+  return ordered.filter((_, i) => (i % total) === (index - 1)).map(entry => entry.task)
+}
+
 function selectTasks(tasks, options) {
   let selected = tasks
   const ids = String(options.ids || process.env.TASK_BATTERY_IDS || '')
@@ -178,6 +215,8 @@ function selectTasks(tasks, options) {
   if (Number.isFinite(limit) && limit > 0) {
     selected = selected.slice(0, limit)
   }
+
+  selected = shardTasks(selected, options.shard || process.env.TASK_BATTERY_SHARD || '')
 
   return selected
 }
@@ -235,7 +274,7 @@ async function waitForServer(baseUrl, timeoutMs = 90000, serverProcess = null) {
   throw new Error(`Timed out waiting for ${healthUrl}. Last error: ${lastError?.message || 'unknown'}`)
 }
 
-function startServer({ port, command, runId }) {
+function startServer({ port, command, runId, concurrency = 1 }) {
   const args = command === 'start'
     ? ['run', 'start', '--', '-p', String(port), '-H', '127.0.0.1']
     : ['run', 'dev', '--', '-p', String(port), '-H', '127.0.0.1']
@@ -247,7 +286,39 @@ function startServer({ port, command, runId }) {
       ...process.env,
       PORT: String(port),
       RATE_LIMIT_PER_IP: process.env.RATE_LIMIT_PER_IP || '10000',
-      LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`)
+      LOG_ROOT_DIR: process.env.LOG_ROOT_DIR || path.join('/tmp', `vfbchat-task-battery-logs-${runId}`),
+      // Opt-in harness trace on the spawned server. The workflow cannot pass
+      // this through (changing it needs a scope this token does not have), and
+      // without it a CI failure gives the answer text and no way to see which
+      // tool produced it — which is how the same wrong hypothesis about C12
+      // survived three attempts. TASK_BATTERY_TRACE is read here so it can be
+      // set from the runner's own environment or its command line.
+      // ...and ON BY DEFAULT for a run limited to named ids, because that is
+      // what a diagnostic run looks like: you pass `ids` when you already know
+      // which case you are chasing. A full run stays quiet, so this costs
+      // nothing on the runs that matter for timing.
+      ...(process.env.TASK_BATTERY_TRACE === 'true' ||
+          process.env.VFB_HARNESS_TRACE === 'true' ||
+          String(process.env.TASK_BATTERY_IDS || '').trim()
+        ? { VFB_HARNESS_TRACE: 'true' }
+        : {}),
+      // The heap the server is allowed, scaled to the concurrency WE chose.
+      //
+      // Answering is expensive in proportion to how many questions are in flight
+      // at once and super-linearly so: one measured at ~143 MB peak, four at
+      // ~6.8 GB against an 88 MB baseline. V8's default old-space ceiling varies
+      // by Node version and is around 4 GB on the runner, so every CI battery
+      // run from v3.9.0 onward died partway with `terminated` on every remaining
+      // task — which reads in the artefact as catastrophic answer quality and is
+      // actually one dead process.
+      //
+      // The component that decides to run N questions at once is the right one
+      // to decide the heap that needs, and it is the only one that can: the
+      // Dockerfile's setting does not reach a runner that starts the server with
+      // `npm start` directly. Deliberately generous — this is a test rig, and an
+      // OOM here costs a whole run.
+      NODE_OPTIONS: process.env.NODE_OPTIONS ||
+        `--max-old-space-size=${Math.min(12288, Math.max(6144, 3072 * Math.max(1, Number(concurrency) || 1)))}`
     },
     detached,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -923,7 +994,7 @@ async function main() {
 
   try {
     if (shouldStartServer) {
-      server = startServer({ port, command: serverCommand, runId })
+      server = startServer({ port, command: serverCommand, runId, concurrency })
       await waitForServer(baseUrl, 90000, server)
     }
 

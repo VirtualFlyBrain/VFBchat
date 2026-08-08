@@ -1587,8 +1587,13 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       </header>
 
       {/* Chat messages area - fills available space */}
+      {/* role="log" USED to be on this element and was overriding the main
+          landmark: an explicit role replaces the implicit one, so the page had
+          no <main> for a screen-reader user to skip to, and axe reported both
+          aria-allowed-role and landmark-one-main. aria-live and aria-label are
+          allowed on main and do the announcing job on their own, so the role
+          simply goes. */}
       <main
-        role="log"
         aria-label="Chat conversation"
         aria-live="polite"
         style={{
@@ -1658,8 +1663,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         <div ref={chatEndRef} />
       </main>
 
-      {/* Input area */}
-      <div style={{
+      {/* A labelled section is a region landmark, so the question box is
+          reachable by landmark navigation instead of sitting outside every
+          landmark on the page — which is what axe's `region` findings were.
+          Same styles, same layout; only the element and the label are new. */}
+      <section aria-label="Ask a question" style={{
         display: 'flex',
         gap: '8px',
         marginTop: '8px',
@@ -1683,17 +1691,26 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
             fontSize: '14px'
           }}
         />
+        {/* WCAG 2.2 AA, SC 1.4.3. White at 0.4 opacity composites to #666 on
+            black — 3.66:1 against the 4.5:1 this 10px text needs. Dimming with
+            opacity is what hides that: the declared colour still reads as #fff.
+            A solid #999 is 7.37:1 and looks the same.
+
+            The aria-label also moved. On a plain <div> with no role, aria-label
+            is prohibited (ARIA 1.2) and support is inconsistent, so the fuller
+            sentence now lives in the visually-hidden span this page already has
+            a class for, and the terse "0/10000" is hidden from assistive tech
+            rather than read twice. */}
         <div
-          aria-label={`${rateInfo.used} of ${rateInfo.limit} daily queries used`}
           style={{
             fontSize: '10px',
-            color: 'rgb(255, 255, 255)',
-            opacity: 0.4,
+            color: '#999',
             fontFamily: 'monospace',
             whiteSpace: 'nowrap'
           }}
         >
-          {`${rateInfo.used}/${rateInfo.limit}`}
+          <span aria-hidden="true">{`${rateInfo.used}/${rateInfo.limit}`}</span>
+          <span className="sr-only">{`${rateInfo.used} of ${rateInfo.limit} daily queries used`}</span>
         </div>
         <button
           onClick={handleSend}
@@ -1701,7 +1718,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
           aria-label={isThinking ? 'Sending message, please wait' : 'Send message'}
           style={{
             padding: '10px 20px',
-            backgroundColor: isThinking ? '#333' : '#4a9eff',
+            // WCAG 2.2 AA, SC 1.4.3. White on #4a9eff is 2.75:1, and 14px at
+            // weight 600 is not large text, so it needs 4.5:1. #1565c0 is the
+            // same blue a couple of steps darker and gives 5.75:1. The disabled
+            // #333 was already fine at 12.6:1.
+            backgroundColor: isThinking ? '#333' : '#1565c0',
             color: '#fff',
             border: 'none',
             borderRadius: '6px',
@@ -1712,7 +1733,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         >
           Send
         </button>
-      </div>
+      </section>
 
       {/* VFB Browser link */}
       {scene.id && (
@@ -1749,6 +1770,9 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         </a>{' | '}
         <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
           Accessibility Statement
+        </a>{' | '}
+        <a href="/terms" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
+          Terms of Use
         </a>.
       </footer>
 

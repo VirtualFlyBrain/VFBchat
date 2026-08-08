@@ -39,7 +39,8 @@ const BLOCKS = {
   copyable: /Reproduce it in a fenced code block/,
   guidance: /WRITING GUIDANCE/,
   askWhichMeant: /ask which was meant/,
-  docGapWording: /documentation does not appear to cover/
+  docGapWording: /documentation does not appear to cover/,
+  codeSupplied: /CODE IS ALREADY SUPPLIED FOR THIS ANSWER/
 }
 
 /** The last synthesis call's full message pair, for tests that need the system half. */
@@ -306,4 +307,63 @@ test('card guidance reaches only the questions its matcher claims', async () => 
 
   const anatomy = await synthPrompt('What is the mushroom body?', { plan: ANATOMY_PLAN })
   assert.ok(!/nearest neighbours/.test(anatomy), 'the similarity card must not reach an anatomy question')
+})
+
+// --- the code handoff --------------------------------------------------------
+// Production, twice. Asked "how would I get that same result in Python with
+// vfbquery?", the answer carried `vc.oc.get_instances`, `gen_short_form` and a
+// `vfb_type_2_skids` helper that exists nowhere in VFB_connect. Displacing the
+// snippet fixed the code and not the sentences: asked again with the grounded
+// block present, the prose spent four paragraphs arguing that vfb_connect
+// "does not show a direct command that accepts a region name like medulla to
+// return all constituent neurons in one step" — directly above a one-line
+// command that does exactly that.
+//
+// Recalled API knowledge reads exactly like retrieved fact, so the fix is to
+// take the subject away rather than ask for more care.
+
+test('a question asking for code gets the code-supplied block', async () => {
+  const prompt = await synthPrompt('How would I get the mushroom body data in Python with vfbquery?',
+    { plan: ANATOMY_PLAN })
+  assert.ok(BLOCKS.codeSupplied.test(prompt), 'the block fires when the question asks for code')
+  assert.match(prompt, /Do not write code/)
+  assert.match(prompt, /Do not say what any library can or cannot do/)
+  // The worked example is not decoration. The same framing WITHOUT it measured
+  // 0/20 clean against the live model — worse than the prohibition-only version
+  // it replaced — because a model told what not to write, and given nothing to
+  // write instead, hedges. It must stay, and it must stay a PLACEHOLDER: a
+  // concrete example is copied near-verbatim and leaks the wrong term into a
+  // question it was not written for.
+  assert.match(prompt, /Like this:/, 'the example is the mechanism; do not remove it')
+  assert.match(prompt, /<count> <things> VFB has annotated for <term>/,
+    'and it must be a placeholder, never a concrete term')
+  const rule = prompt.slice(prompt.indexOf('CODE IS ALREADY SUPPLIED'))
+  assert.ok(!/\b471\b|\bmedulla\b/.test(rule), 'no real term or count inside the example')
+  // The first version only forbade naming a function, and the model answered
+  // "you would use VFB function with the query type NeuronsPartHere" — a
+  // sentence that names no mechanism and then points at one.
+  assert.match(prompt, /refer to a mechanism you have not named/)
+  // And it has to outrank EVIDENCE explicitly. A reviewed-docs page about
+  // `get_similar_neurons` was in evidence, so the answer kept explaining what
+  // that method is for and contrasting it with the question — about a method
+  // the reader never mentioned.
+  assert.match(prompt, /EVIDENCE may contain a documentation page showing some other library method/)
+})
+
+test('an ordinary question never sees it', async () => {
+  // The block that fires on every question is the block that costs every answer.
+  for (const q of ['What is the mushroom body?', 'Which neurons receive output from the medulla?',
+                   'What neurotransmitter do Kenyon cells use?']) {
+    const prompt = await synthPrompt(q, { plan: ANATOMY_PLAN })
+    assert.ok(!BLOCKS.codeSupplied.test(prompt), `must be absent for "${q}"`)
+  }
+})
+
+test('it is read after the documentation blocks and before the closing rule', async () => {
+  // Order is load-bearing here: the last thing read wins, and the doc block has
+  // already taken a rule down with it once by growing past it.
+  const prompt = await synthPrompt('How do I get the mushroom body in vfb_connect?', { plan: ANATOMY_PLAN })
+  const code = prompt.indexOf('CODE IS ALREADY SUPPLIED')
+  const closing = prompt.indexOf('Write the answer, never where the answer came from')
+  assert.ok(code > 0 && closing > code, 'the closing rule still reads last')
 })

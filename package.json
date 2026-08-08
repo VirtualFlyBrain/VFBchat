@@ -1,6 +1,6 @@
 {
   "name": "vfb-chat-client",
-  "version": "4.1.1",
+  "version": "4.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test": "node --test tests/unit/*.test.mjs",
     "benchmark:task-battery": "node scripts/run-task-battery.mjs",
-    "benchmark:task-battery:dry": "node scripts/run-task-battery.mjs --dry-run"
+    "benchmark:task-battery:dry": "node scripts/run-task-battery.mjs --dry-run",
+    "audit:a11y": "node scripts/a11y-audit.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
@@ -25,6 +26,8 @@
   },
   "devDependencies": {
     "eslint": "^8",
-    "eslint-config-next": "14.0.0"
+    "eslint-config-next": "14.0.0",
+    "@axe-core/playwright": "^4.10.0",
+    "playwright": "^1.49.0"
   }
 }

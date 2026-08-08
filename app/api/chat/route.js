@@ -8990,7 +8990,9 @@ async function executeFunctionTool(name, args, context = {}) {
 
       cleanArgs.upstream_type = normalizeConnectivityEndpointValue(cleanArgs.upstream_type)
       cleanArgs.downstream_type = normalizeConnectivityEndpointValue(cleanArgs.downstream_type)
-      console.log(`[VFBchat] Connectivity query — upstream: "${cleanArgs.upstream_type}", downstream: "${cleanArgs.downstream_type}"${useDirectionalEndpoints ? ' (extracted from user message)' : ' (from LLM args)'}`)
+      if (process.env.VFB_HARNESS_TRACE === 'true') {
+        console.log(`[VFBchat] Connectivity query — upstream: "${cleanArgs.upstream_type}", downstream: "${cleanArgs.downstream_type}"${useDirectionalEndpoints ? ' (extracted from user message)' : ' (from LLM args)'}`)
+      }
 
       const missingConnectivityArgs = []
       if (!cleanArgs.upstream_type) missingConnectivityArgs.push('upstream_type')
@@ -11180,7 +11182,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
     // question's plan was, and the only way to tell a run that escalated
     // correctly from one that should have and did not.
     try {
-      console.log(`[VFBchat] PLAN | tier=${complexity.tier} agreement=${live.plannerAgreement ?? 'n/a'} votes=${live.plannerVotesUsed ?? 0} escalated=${Boolean(live.plannerEscalated)} | q=${String(userMessage).slice(0, 120)}`)
+      console.log(`[VFBchat] PLAN | tier=${complexity.tier} agreement=${live.plannerAgreement ?? 'n/a'} votes=${live.plannerVotesUsed ?? 0} escalated=${Boolean(live.plannerEscalated)}`)
     } catch { /* logging best-effort */ }
 
     if (live.clarify) {
@@ -11256,7 +11258,7 @@ async function runRoleHarnessForRequest({ resolvedUserMessage, priorMessages, se
       )
       const ungrounded = findUngroundedNumbers(rawAnswer, grounded)
       if (leakedIds.length || ungrounded.length) {
-        console.error(`[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'} | ungrounded_numbers=${ungrounded.join(',') || 'none'} | q=${String(userMessage).slice(0, 120)}`)
+        console.error(`[VFBchat] GROUNDING | leaked_ids=${leakedIds.join(',') || 'none'} | ungrounded_numbers=${ungrounded.join(',') || 'none'}`)
       }
     } catch { /* audit is best-effort */ }
     // Linkify known VFB term names (resolved terms + example neurons) to their
