@@ -53,11 +53,18 @@ test('the retention prune deletes a security log outside the 30-day window', asy
   delete process.env.LOG_ROOT_DIR
 })
 
-test('retention runs on every request, not once per process', async () => {
+test('retention keeps running on a long-lived process, not once at startup', async () => {
   // The defect exactly: a file that ages past the window while the container is
   // up was never revisited, because the prune sat behind the initialized flag.
+  //
+  // The sweep is now throttled — five readdirSync calls per request stall every
+  // other request sharing the event loop — so the property under test is that it
+  // runs AGAIN, not that it runs on literally every call. VFB_PRUNE_INTERVAL_MS=0
+  // makes "again" immediate here; production leaves it at an hour, which is
+  // ample for a 30-day cutoff.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vfb-retention2-'))
   process.env.LOG_ROOT_DIR = root
+  process.env.VFB_PRUNE_INTERVAL_MS = '0'
   const { ensureGovernanceStorage, getGovernancePaths } =
     await import(`../../lib/governance.js?retention2=${Date.now()}`)
 
@@ -68,10 +75,34 @@ test('retention runs on every request, not once per process', async () => {
 
   ensureGovernanceStorage()                       // a later request, same process
   assert.equal(fs.existsSync(stale), false,
-    'a second request must prune; otherwise a long-lived container keeps IPs forever')
+    'a later request must prune; otherwise a long-lived container keeps IPs forever')
 
   fs.rmSync(root, { recursive: true, force: true })
   delete process.env.LOG_ROOT_DIR
+  delete process.env.VFB_PRUNE_INTERVAL_MS
+})
+
+test('the retention sweep is throttled off the per-request path', async () => {
+  // Five readdirSync calls per request is a synchronous disk touch on the shared
+  // event loop, and under concurrency that is every request stalling every other.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vfb-retention3-'))
+  process.env.LOG_ROOT_DIR = root
+  process.env.VFB_PRUNE_INTERVAL_MS = '3600000'
+  const { ensureGovernanceStorage, getGovernancePaths } =
+    await import(`../../lib/governance.js?retention3=${Date.now()}`)
+
+  ensureGovernanceStorage()
+  const { securityEventsDir } = getGovernancePaths()
+  const stale = path.join(securityEventsDir, `${isoDaysAgo(60)}.jsonl`)
+  fs.writeFileSync(stale, '{"ip":"203.0.113.9"}\n')
+
+  ensureGovernanceStorage()
+  assert.equal(fs.existsSync(stale), true,
+    'within the interval the sweep should not re-run')
+
+  fs.rmSync(root, { recursive: true, force: true })
+  delete process.env.LOG_ROOT_DIR
+  delete process.env.VFB_PRUNE_INTERVAL_MS
 })
 
 test('governance files are created owner-only', async () => {
