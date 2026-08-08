@@ -19,6 +19,7 @@ import {
   sanitizeAssistantOutput
 } from '../../../lib/policy.js'
 import { checkAndIncrement } from '../../../lib/rateLimit.js'
+import { getClientIp } from '../../../lib/clientIp.mjs'
 import { getReviewedPage, searchReviewedDocs } from '../../../lib/reviewedDocsSearch.js'
 import { callStructured } from '../../../lib/elmClient.mjs'
 import { runLiveHarness } from '../../../lib/liveHarness.mjs'
@@ -166,11 +167,6 @@ function createImmediateResultResponse(message, requestId, responseId) {
       responseId
     })
   })
-}
-
-function getClientIp(request) {
-  const xForwardedFor = request.headers.get('x-forwarded-for') || ''
-  return (xForwardedFor.split(',')[0] || '').trim() || request.headers.get('x-real-ip') || 'unknown'
 }
 
 function buildRateLimitDetails(rateCheck) {
@@ -1222,6 +1218,10 @@ function mcpResultToText(result) {
   return JSON.stringify(result)
 }
 
+// Where a request's shared force-refresh allowance rides. A Symbol so it cannot
+// collide with anything the MCP SDK puts on its client.
+const FORCE_REFRESH_BUDGET = Symbol('vfbForceRefreshBudget')
+
 // Only run_query carries the count -1 failure signal; nothing else has a payload
 // shape where a forced recompute is the right response.
 const FORCE_REFRESH_RETRY_TOOLS = new Set(['run_query'])
@@ -1254,7 +1254,15 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
   const text = mcpResultToText(await callMcpToolWithRetry(client, name, args))
   if (!FORCE_REFRESH_RETRY_TOOLS.has(name) || !isFailedRunQueryPayload(text)) return text
 
-  const allowance = budget || createForceRefreshBudget(1)
+  // `budget` was passed by exactly one of the 27 call sites — the generic MCP
+  // routing path. Every macro tool left it empty and fell back to a fresh
+  // single-shot allowance created per call, so the documented "a request that
+  // fails in many different ways still cannot stampede the upstream with
+  // recomputes" was not enforced: vfb_find_reciprocal_connectivity alone issues
+  // one endpoint query plus up to six partner queries, and with VFBquery degraded
+  // that is seven X-Force-Refresh recomputes against the shared upstream instead
+  // of two. The request's allowance now rides on the client.
+  const allowance = budget || client?.[FORCE_REFRESH_BUDGET] || createForceRefreshBudget(1)
   if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
 
   console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${safeToolArgs(args)}`)
@@ -1305,16 +1313,33 @@ async function createMcpClient(server) {
   return client
 }
 
+// The map holds the PROMISE, not the resolved client. Check-then-await-then-set
+// is a race, and resolveTerms fans out over names with Promise.all: on the first
+// resolve round the map is empty for all of them, so two or three
+// StreamableHTTPClientTransport sessions were opened, each `set` overwrote the
+// last, and closeMcpClients closed only the survivor. The rest held an open
+// session upstream until it timed out server-side — one leaked session per extra
+// concurrent name, per request.
 async function getMcpClientForContext(server, context = {}) {
-  if (context.mcpClients instanceof Map) {
-    if (context.mcpClients.has(server)) return context.mcpClients.get(server)
+  if (!(context.mcpClients instanceof Map)) return createMcpClient(server)
 
-    const client = await createMcpClient(server)
-    context.mcpClients.set(server, client)
+  const existing = context.mcpClients.get(server)
+  if (existing) return existing
+
+  const pending = createMcpClient(server).then((client) => {
+    // The per-request force-refresh allowance travels with the client, so every
+    // call site gets the shared budget without having to thread it through.
+    const budget = getForceRefreshBudget(context)
+    if (budget && client && typeof client === 'object') client[FORCE_REFRESH_BUDGET] = budget
     return client
-  }
-
-  return createMcpClient(server)
+  }).catch((error) => {
+    // A failed connect must not be cached, or every later call in this request
+    // re-throws the same error without retrying.
+    context.mcpClients.delete(server)
+    throw error
+  })
+  context.mcpClients.set(server, pending)
+  return pending
 }
 
 async function closeMcpClient(client) {
@@ -1328,9 +1353,14 @@ async function closeMcpClient(client) {
 
 async function closeMcpClients(mcpClients) {
   if (!(mcpClients instanceof Map)) return
-  const clients = Array.from(mcpClients.values())
+  // The map holds promises now, and a connect that failed rejects — settle each
+  // one before closing, so a failed connect cannot leave the loop unclosed.
+  const pending = Array.from(mcpClients.values())
   mcpClients.clear()
-  await Promise.allSettled(clients.map(closeMcpClient))
+  const settled = await Promise.allSettled(pending)
+  await Promise.allSettled(
+    settled.filter(r => r.status === 'fulfilled').map(r => closeMcpClient(r.value))
+  )
 }
 
 function getToolConfig() {
