@@ -9,6 +9,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { createRunSignal, throwIfAborted, isRunAborted, RunAbortedError, DEFAULT_RUN_DEADLINE_MS } from '../../lib/runSignal.mjs'
 import { callStructured } from '../../lib/elmClient.mjs'
 
@@ -99,4 +100,28 @@ test('an aborted signal stops an ELM call rather than only the next one', async 
   const res = await pending
   assert.equal(res.ok, false, 'an aborted call must not report success')
   run.dispose()
+})
+
+test('an abandoned run is not recorded as a service error', () => {
+  // It used to fall into the generic catch, which wrote an errored=true
+  // governance record and emitted an error event to a client that had already
+  // gone — so the analytics would have shown a rising error rate that was
+  // nothing but people changing their minds.
+  const src = fs.readFileSync(new URL('../../app/api/chat/route.js', import.meta.url), 'utf8')
+  const catchStart = src.indexOf("let errorCategory = 'unexpected_error'")
+  assert.ok(catchStart > 0, 'generic request catch not found')
+  const branch = src.slice(catchStart - 900, catchStart + 1200)
+  assert.match(branch, /isRunAborted\(error\)/, 'the generic catch must recognise an abandoned run')
+  assert.ok(branch.indexOf('isRunAborted') < branch.indexOf('finalizeGovernanceEvent'),
+    'and must return before writing an errored governance record')
+})
+
+test('the cancellation hooks the deployment actually provides are both wired', () => {
+  // Measured, not assumed: with a probe in place, `next start` fired BOTH
+  // request.signal abort and the stream cancel() when a client went away. Four
+  // abandoned questions then produced four RUN ABANDONED lines and zero
+  // completed answers in four and a half minutes, against a 90-210 s answer.
+  const src = fs.readFileSync(new URL('../../app/api/chat/route.js', import.meta.url), 'utf8')
+  assert.match(src, /cancel \(reason\) \{/, 'the ReadableStream needs a cancel handler')
+  assert.match(src, /clientSignal: request\.signal/, 'and the request signal must be passed in')
 })

@@ -11570,6 +11570,14 @@ export async function POST(request) {
         responseId
       })
     } catch (error) {
+      // An abandoned run is not a failure of the service. Reporting it as one
+      // wrote a spurious errored=true governance record and emitted an error
+      // event to a client that had already gone — the analytics would have shown
+      // a rising error rate that was nothing but people changing their minds.
+      if (isRunAborted(error)) {
+        console.log(`[VFBchat] RUN ABANDONED | request=${requestId}`)
+        return
+      }
       const responseId = `local-${requestId}`
       let userMessage = 'Sorry, something went wrong processing your request. Please try again.'
       let errorCategory = 'unexpected_error'
