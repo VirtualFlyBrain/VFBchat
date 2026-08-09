@@ -112,6 +112,22 @@ test('a query that ran and came back empty is the one thing that licenses absenc
   assert.equal(licence.empty.length, 1)
 })
 
+test('a query this guard chose cannot license the claim it was chosen to check', () => {
+  // The failure that survived the first pass. S23 asks whether DA1 lPN
+  // connectivity is symmetric between hemispheres. The draft denied it, the
+  // escalation fired, nothing scored above zero, so the ranking ran
+  // ListAllAvailableImages / SplitsTargeting / TransgeneExpressionHere — and one
+  // empty licensed every absence in the answer, including the one about
+  // hemisphere symmetry, which no image query speaks to. The guard had
+  // manufactured its own permission.
+  const ledger = ledgerWith(Q, { stepStatus: { status: 'not_found', empty: true } })
+  ledger.plan[0].absence_query = true
+  assert.equal(absenceLicence(ledger).licensed, false)
+  // The same empty from a query the planner ran licenses it, exactly as before.
+  ledger.plan[0].absence_query = false
+  assert.equal(absenceLicence(ledger).licensed, true)
+})
+
 test('a query that FAILED licenses nothing — that is the state it exists to distinguish', () => {
   const licence = absenceLicence(ledgerWith(Q, { stepStatus: { status: 'not_found', empty: false } }))
   assert.equal(licence.licensed, false)
