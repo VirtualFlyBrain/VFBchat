@@ -18,7 +18,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { asciiSpelling, transliterateGreek, normaliseTypography, hasGreek } from '../../lib/nameNormalise.mjs'
-import { nameVariants } from '../../lib/orchestrator.mjs'
+import { nameVariants, maybeEscalateBeforeAbsence, gateAbsence } from '../../lib/orchestrator.mjs'
+import { nextAction } from '../../lib/controller.mjs'
 import {
   absenceLicence, findAbsenceClaims, repairUnlicensedAbsences,
   planAbsenceEscalation, MAX_ESCALATION_STEPS
@@ -268,6 +269,63 @@ test('escalation is bounded — the run deadline still has to mean something', (
 test('the same query queued twice does not eat two of the three slots', () => {
   const e = { id: 'A', query_type: 'SubClasses', state: 'unrun' }
   assert.equal(planAbsenceEscalation({ failed: [], unrun: [e, { ...e }, { ...e }], unmatched: [] }).length, 1)
+})
+
+// --- the harness path --------------------------------------------------------
+
+test('a draft that denies data sends the loop round again, with rounds to do it', async () => {
+  const ledger = ledgerWith(Q)
+  ledger.budget.toolRoundsLeft = 0   // the common way to arrive at an empty answer
+  const went = await maybeEscalateBeforeAbsence(
+    ledger,
+    'VFB does not currently hold data identifying any cholinergic mushroom body output neurons.',
+    {}, () => {}
+  )
+  assert.equal(went, true)
+  const injected = ledger.plan.filter(s => s.absence_query)
+  assert.equal(injected.length, MAX_ESCALATION_STEPS - 1)
+  // nextAction tests the budget BEFORE it looks for pending steps, so without
+  // the grant these steps would never run and the loop would buy a second
+  // identical synthesis for nothing.
+  assert.ok(ledger.budget.toolRoundsLeft >= injected.length)
+  assert.equal(nextAction(ledger).action, 'run_step')
+})
+
+test('a draft that claims nothing is left alone, however thin the ledger', async () => {
+  const ledger = ledgerWith(Q)
+  const went = await maybeEscalateBeforeAbsence(ledger, 'The medulla has 10 layers, M1 to M10.', {}, () => {})
+  assert.equal(went, false)
+  assert.equal(ledger.plan.filter(s => s.absence_query).length, 0)
+})
+
+test('escalation happens once — a second pass must be allowed to write its answer', async () => {
+  const ledger = ledgerWith(Q)
+  const denial = 'VFB does not currently hold data on that.'
+  assert.equal(await maybeEscalateBeforeAbsence(ledger, denial, {}, () => {}), true)
+  assert.equal(await maybeEscalateBeforeAbsence(ledger, denial, {}, () => {}), false,
+    'or a question VFB genuinely cannot answer would loop until the budget stopped it')
+})
+
+test('the gate is the floor under the escalation, not a replacement for it', () => {
+  const ledger = ledgerWith(Q)
+  const out = gateAbsence(ledger, 'VFB does not currently hold data on that. The class has 34 subtypes.', () => {})
+  assert.ok(!/does not currently hold/.test(out))
+  assert.match(out, /34 subtypes/)
+})
+
+test('a gate that throws costs a log line, never the answer', () => {
+  const answer = 'VFB does not currently hold data on that.'
+  assert.equal(gateAbsence({ get terms () { throw new Error('boom') } }, answer, () => {}), answer)
+})
+
+test('no ledger at all licenses no absence either', () => {
+  // Not the same as the case above, and worth pinning separately. A missing
+  // ledger does not throw, it simply knows nothing — and renderNoCoverageFloor
+  // already settles what nothing is worth: "an absent catalogue is absent
+  // EVIDENCE, never evidence of absence." Letting a null ledger through would
+  // make the guard weakest exactly where the run is least informed.
+  const out = gateAbsence(null, 'VFB does not currently hold data on that.', () => {})
+  assert.ok(!/does not currently hold/.test(out))
 })
 
 // --- the half-resolved question ----------------------------------------------
