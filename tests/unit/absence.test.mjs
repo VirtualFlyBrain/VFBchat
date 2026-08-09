@@ -172,6 +172,19 @@ test('the sentences production actually wrote are all detected', () => {
   for (const s of real) assert.equal(findAbsenceClaims(s).length, 1, `missed: ${s.slice(0, 60)}`)
 })
 
+test('the verb a model reaches for is not fixed, so the family is covered', () => {
+  // A live run walked straight through a list that had "present", "available"
+  // and "found" but not "provided": "specific counts for neurons with synaptic,
+  // presynaptic, or postsynaptic terminals in the medulla, as well as the total
+  // number of lineage clones, are not provided in the current data." VFB holds
+  // every one of those and advertises a query for each.
+  const s = 'Specific counts for neurons with presynaptic terminals in the medulla are not provided in the current data.'
+  assert.equal(findAbsenceClaims(s).length, 1)
+  for (const v of ['listed', 'given', 'shown', 'reported', 'detailed']) {
+    assert.equal(findAbsenceClaims(`The layer subdivisions are not ${v} in the current data.`).length, 1, v)
+  }
+})
+
 test('a linkified term name does not hide the absence behind two hundred characters of URL', () => {
   // Three of the production sentences had a report URL sitting between the
   // denial and its object, which is past every window in the patterns.
@@ -186,20 +199,40 @@ test('a fact about a neuron is not a claim about the database', () => {
     'VFB holds 92 transgene expression reports for Kenyon cell.',
     'Of the 34 subclasses returned, none is annotated as cholinergic.',
     'The medulla has 10 layers, M1 to M10.',
-    'I could not match "gamma Kenyon cells" to a VFB term.'
+    'I could not match "gamma Kenyon cells" to a VFB term.',
+    // The widened verb list must not start eating claims about the WORLD. None
+    // of these says anything about what the database holds.
+    'Serotonin is not present in these neurons.',
+    'The lineage is not given a name in the original publication.',
+    'Layer M10 is not shown in the figure.'
   ]
   for (const s of keep) assert.equal(findAbsenceClaims(s).length, 0, `false positive: ${s.slice(0, 60)}`)
 })
 
 // --- the repair --------------------------------------------------------------
 
-test('an unlicensed absence is replaced by something true, and the rest of the answer survives', () => {
+test('an unlicensed absence is removed, and the rest of the answer survives', () => {
   const answer = 'VFB does not currently hold data identifying any cholinergic mushroom body output neurons.'
     + ' The available neurotransmitter profiles in VFB annotate instances of this class as either glutamatergic or GABAergic.'
   const { text, repairs } = repairUnlicensedAbsences(answer, absenceLicence(ledgerWith(Q)))
   assert.equal(repairs.length, 1)
   assert.ok(!/does not currently hold/.test(text), 'the false claim must be gone')
   assert.ok(/glutamatergic or GABAergic/.test(text), 'and the true half must survive intact')
+})
+
+test('nothing is spliced into a good answer that has nothing useful to say instead', () => {
+  // The first live run of this guard, verbatim. A good answer — 7,283 images, 8
+  // split-GAL4 patterns, 10 named subclasses — with one unlicensed sentence in
+  // the middle about a count VFB had not pre-computed. The generic replacement
+  // landed as "I could not establish that", whose "that" no longer had a
+  // referent, in a paragraph it had nothing to do with.
+  const answer = 'VFB holds 7,283 registered images annotated to gamma Kenyon cell.'
+    + ' Regarding the total number of individual gamma Kenyon cells, VFB does not currently hold a pre-computed count for this term.'
+    + ' The database also records 8 split-GAL4 expression patterns targeting this cell type.'
+  const { text } = repairUnlicensedAbsences(answer, absenceLicence(ledgerWith(Q)))
+  assert.ok(!/could not establish/.test(text), 'a non-sequitur is not an improvement on a deletion')
+  assert.match(text, /7,283 registered images/)
+  assert.match(text, /8 split-GAL4/)
 })
 
 test('the replacement names the unmatched term, because that is what the reader can act on', () => {
