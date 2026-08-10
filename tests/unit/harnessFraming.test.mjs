@@ -62,7 +62,21 @@ test('a sentence reporting what the input contained is dropped, not rewritten', 
 test('input nouns that survive in a longer sentence are renamed, not left', () => {
   const out = stripHarnessFraming('The provided evidence lists three connectome datasets.')
   assert.ok(!/provided evidence/i.test(out), out)
-  assert.ok(/VFB evidence/i.test(out), out)
+  // This used to assert "VFB evidence", which was the weaker outcome the module
+  // settled for rather than the one it is aiming at. EVIDENCE_SUBJECT needs "the
+  // evidence"; INPUT_NOUN matches "the provided evidence" as a unit. So the
+  // subject rules ran first, found the word "provided" in the way, and did
+  // nothing — and the noun rule then produced exactly the subject they would
+  // have handled, one pass too late. Production shipped the consequence: "VFB
+  // evidence lists queries for subclasses, scRNAseq data … but it does not
+  // include a completed query", which is this program's working set wearing
+  // VFB's name.
+  //
+  // With the subject rules re-run after the noun rules, the sentence lands where
+  // the module was always pointed: about VFB, not about a document. "VFB
+  // evidence" remains the floor for constructions the subject rules do not
+  // cover, so what is asserted here is that the sentence got past the floor.
+  assert.match(out, /^VFB records three connectome datasets\.$/, out)
 })
 
 // --- what must NOT be touched ----------------------------------------------
