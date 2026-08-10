@@ -32,7 +32,8 @@ export default function PrivacyPage() {
           <h2 style={{ color: '#fff' }}>What We Do Not Collect By Default</h2>
           <ul style={{ lineHeight: 1.7 }}>
             <li>We do not require user accounts or logins.</li>
-            <li>We do not store full free-text chat queries or full AI responses as routine analytics.</li>
+            <li>We do not store full free-text chat queries or full AI responses as routine analytics. Your question is
+                sent to ELM to be answered, and ELM keeps its own record of it &mdash; see &ldquo;Where your question goes&rdquo; below.</li>
             <li>We do not store user feedback comments as free text.</li>
             <li>We do not attach a conversation transcript to feedback unless you explicitly choose to do so.</li>
           </ul>
@@ -49,11 +50,42 @@ export default function PrivacyPage() {
         </section>
 
         <section style={{ marginTop: '28px' }}>
-          <h2 style={{ color: '#fff' }}>Data Sharing</h2>
-          <ul style={{ lineHeight: 1.7 }}>
-            <li>AI processing is performed via the University-supported ELM platform.</li>
-            <li>Google Analytics may be used for aggregated service metrics without sending user free-text chat content.</li>
-          </ul>
+          <h2 style={{ color: '#fff' }}>Where your question goes</h2>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            To answer you, we send your question and the data we retrieved from Virtual Fly Brain to ELM, the
+            University of Edinburgh&rsquo;s own AI platform. We do not store your question or the answer. ELM does log
+            prompts and interactions, for a maximum of two years, and its privacy notice explains that:{' '}
+            <a href="https://elm.edina.ac.uk/site/privacy-policy" style={{ color: '#66d9ff' }}>
+              elm.edina.ac.uk/site/privacy-policy
+            </a>.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            Because this service has no accounts and no login, ELM holds no information that identifies you &mdash; the
+            request reaches it under Virtual Fly Brain&rsquo;s own credentials. Your question is held on University of
+            Edinburgh infrastructure, is not shared with any third party, and is not used to train anyone&rsquo;s AI
+            models. Individual prompts are not routinely read; ELM examines them only in exceptional circumstances,
+            for safeguarding or legal compliance.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            Please still avoid typing personal information into your question. We ask this because it is good practice,
+            not because we can see it.
+          </p>
+        </section>
+
+        <section style={{ marginTop: '28px' }}>
+          <h2 style={{ color: '#fff' }}>Analytics</h2>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            We use Google Analytics to count how the service is used: how long answers take, which broad topic a
+            question fell into, which tools ran, and whether the answer succeeded. These measurements are sent from our
+            server, not from your browser, so we set no cookies and store nothing on your device, and Google does not
+            receive your IP address &mdash; only ours. Each measurement carries a one-off random identifier that is
+            never reused, so your requests cannot be linked to one another. No question text and no answer text is ever
+            included.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            Google Analytics is operated by Google LLC in the United States, under the UK Extension to the EU&ndash;US
+            Data Privacy Framework.
+          </p>
         </section>
 
         <section style={{ marginTop: '28px' }}>
