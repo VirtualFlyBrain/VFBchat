@@ -18,7 +18,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { asciiSpelling, transliterateGreek, normaliseTypography, hasGreek } from '../../lib/nameNormalise.mjs'
-import { nameVariants, maybeEscalateBeforeAbsence, gateAbsence } from '../../lib/orchestrator.mjs'
+import { nameVariants, maybeEscalateBeforeAbsence, gateAbsence, ABSENCE_ESCALATION_DEADLINE_MS } from '../../lib/orchestrator.mjs'
 import { nextAction } from '../../lib/controller.mjs'
 import {
   absenceLicence, findAbsenceClaims, repairUnlicensedAbsences,
@@ -338,6 +338,28 @@ test('a draft that denies data sends the loop round again, with rounds to do it'
   // identical synthesis for nothing.
   assert.ok(ledger.budget.toolRoundsLeft >= injected.length)
   assert.equal(nextAction(ledger).action, 'run_step')
+})
+
+test('a run with no time left hedges instead of turning slow into nothing', async () => {
+  // The first CI run of this branch: 63 of 64 tasks passed and the 64th was
+  // "Timed out after 240000 ms". The escalation buys a second synthesis costing
+  // 60-90 s, so one started late cannot finish — and it takes the first answer
+  // down with it. A false absence is worse than a hedge; it is not worse than no
+  // answer.
+  const ledger = ledgerWith(Q)
+  ledger.startedAt = Date.now() - (ABSENCE_ESCALATION_DEADLINE_MS + 1000)
+  const went = await maybeEscalateBeforeAbsence(ledger, 'VFB does not currently hold data on that.', {}, () => {})
+  assert.equal(went, false)
+  assert.equal(ledger.plan.filter(s => s.absence_query).length, 0)
+  // The gate costs no model call, so it still runs and the denial still cannot ship.
+  assert.ok(!/does not currently hold/.test(gateAbsence(ledger, 'VFB does not currently hold data on that.', () => {})))
+})
+
+test('the escalation window fits under the tighter of the two ceilings', () => {
+  // 600 s is the run deadline; 240 s is TASK_BATTERY_TIMEOUT_MS, the project's
+  // own recorded opinion about when an answer has taken too long. The second
+  // pass costs up to 90 s, so starting it must leave that much margin under 240.
+  assert.ok(ABSENCE_ESCALATION_DEADLINE_MS + 90000 < 240000)
 })
 
 test('a draft that claims nothing is left alone, however thin the ledger', async () => {
