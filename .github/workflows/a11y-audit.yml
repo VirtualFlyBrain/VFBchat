@@ -1,0 +1,163 @@
+name: WCAG 2.2 AA Audit
+
+# VFB Chat is operated by a UK public sector body, so the Public Sector Bodies
+# (Websites and Mobile Applications) (No. 2) Accessibility Regulations 2018 apply
+# and /accessibility makes a public conformance claim. scripts/a11y-audit.mjs
+# exists to keep that claim honest; this workflow is what makes it a control
+# rather than a script someone has to remember to run.
+#
+# A clean run means no MACHINE-DETECTABLE violation. axe-core sees roughly a
+# third to a half of WCAG issues; focus order, meaningful sequence, error
+# identification and most of the 2.2 additions still need a person. The job
+# summary says so on every run so a green tick is never mistaken for conformance.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: '**'
+    paths:
+      - app/**
+      - scripts/a11y-audit.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/a11y-audit.yml
+  pull_request:
+    branches: [ main ]
+    paths:
+      - app/**
+      - scripts/a11y-audit.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/a11y-audit.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a11y-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout VFBchat
+        uses: actions/checkout@v4
+        with:
+          path: VFBchat
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: VFBchat/package-lock.json
+
+      - name: Install dependencies
+        working-directory: VFBchat
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        working-directory: VFBchat
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        working-directory: VFBchat
+        run: npm run build
+
+      # The audit only loads pages, so no live model call is made and no working
+      # API key is needed — the dummy fallback keeps the job green on forks and
+      # on branches without secrets. The ELM variables are set regardless because
+      # the production compliance gate reads them and treats an unset APPROVED_*
+      # as a hard failure by design (lib/runtimeConfig.js). Names and the
+      # secrets-then-vars-then-default shape follow task-battery.yml.
+      #
+      # GA_MEASUREMENT_ID and GA_API_SECRET are pinned empty deliberately.
+      # Server-side analytics fire only when BOTH are set, they ARE set in
+      # production, and a CI run must not emit telemetry that looks like real
+      # usage — it would pollute the very counts the rate limit will be set from
+      # after the September trial.
+      - name: Start server
+        working-directory: VFBchat
+        env:
+          NODE_ENV: production
+          ELM_API_KEY: ${{ secrets.ELM_API_KEY || 'a11y-audit-no-model-calls' }}
+          ELM_BASE_URL: ${{ secrets.ELM_BASE_URL || vars.ELM_BASE_URL || 'https://elm.edina.ac.uk/api/v1' }}
+          APPROVED_ELM_BASE_URL: ${{ secrets.ELM_BASE_URL || vars.ELM_BASE_URL || 'https://elm.edina.ac.uk/api/v1' }}
+          ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
+          APPROVED_ELM_MODEL: ${{ secrets.ELM_MODEL || vars.ELM_MODEL || 'meta-llama/Llama-3.3-70B-Instruct' }}
+          VFB_MCP_URL: ${{ secrets.VFB_MCP_URL || vars.VFB_MCP_URL || 'https://vfb3-mcp-preview.virtualflybrain.org/' }}
+          RATE_LIMIT_PER_IP: '10000'
+          GA_MEASUREMENT_ID: ''
+          GA_API_SECRET: ''
+        run: |
+          npm run start -- --port 3210 > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/server.pid"
+          for i in $(seq 1 60); do
+            if curl -sfo /dev/null http://127.0.0.1:3210/; then
+              echo "Server up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server did not become ready within 60s" >&2
+          cat "$RUNNER_TEMP/server.log" >&2
+          exit 1
+
+      - name: Run WCAG 2.2 AA audit
+        id: audit
+        continue-on-error: true
+        working-directory: VFBchat
+        env:
+          A11Y_BASE: http://127.0.0.1:3210
+          A11Y_JSON: ${{ runner.temp }}/a11y-report.json
+        run: |
+          set -o pipefail
+          npm run audit:a11y 2>&1 | tee "$RUNNER_TEMP/a11y-output.txt"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## WCAG 2.2 AA — automated audit"
+            echo
+            if [ "${{ steps.audit.outcome }}" = "success" ]; then
+              echo "**No machine-detectable violations.**"
+            else
+              echo "**Machine-detectable violations found — see the log below.**"
+            fi
+            echo
+            echo '```'
+            tail -n 60 "$RUNNER_TEMP/a11y-output.txt" 2>/dev/null || echo "(no audit output captured)"
+            echo '```'
+            echo
+            echo "_A clean run is a floor, not a certificate. axe-core detects roughly a third to a half"
+            echo "of WCAG issues; focus order, meaningful sequence, error identification and most of the"
+            echo "2.2 additions require manual and assistive-technology testing._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/server.pid")" 2>/dev/null || true
+          fi
+
+      # Kept for the accessibility statement's evidence trail: a dated,
+      # per-commit record of what was tested and what was found.
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-report-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/a11y-report.json
+            ${{ runner.temp }}/a11y-output.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Fail when violations were found
+        if: steps.audit.outcome == 'failure'
+        run: exit 1
