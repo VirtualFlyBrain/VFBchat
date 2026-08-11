@@ -1,5 +1,15 @@
 name: Docker Image CI
 
+# The git tag is the version, and CI applies it everywhere.
+#
+# Publishing a GitHub Release with tag vX.Y.Z is the whole ritual. Nothing is
+# bumped by hand first: this workflow reads the version off the tag, applies it
+# to every file listed in RELEASE_SURFACES (lib/releaseVersion.mjs), builds the
+# image from that tree, and pushes the same change back to the default branch —
+# release notes included. A maintainer never has to know where the release
+# parameters live, and the ordering that broke v4.2.7 (release published while
+# the bump PR was still open) has no way to happen.
+
 on:
   push:
     branches: '**'
@@ -7,7 +17,7 @@ on:
   pull_request:
     branches: [ main ]
   # Release + manual triggers are NOT subject to a tagged commit's [skip ci], so
-  # the versioned image (e.g. :3.3, the tag prod pulls) always rebuilds on a
+  # the versioned image (e.g. :4.2, the tag prod pulls) always rebuilds on a
   # release. Version tags land on the task-battery "[skip ci]" commit on main, so
   # a plain tag push would skip this build — publish a GitHub Release (or run the
   # workflow manually on the tag) to force it.
@@ -15,13 +25,31 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    outputs:
+      released_version: ${{ steps.appver.outputs.value }}
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    # Cheap, runs on every push and PR, and needs no Docker. It catches the
+    # half-applied bump — package.json edited by hand and package-lock.json left
+    # behind — at the point someone can still fix it for free, rather than at
+    # release time as a failing `npm ci`.
+    - name: Release surfaces must agree
+      run: node scripts/set-version.mjs --check
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -43,36 +71,56 @@ jobs:
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable={{is_default_branch}}
+        # The OCI labels are part of "correct release details everywhere": they
+        # are what `docker inspect` reports about an image somebody found running
+        # and cannot otherwise identify. version/revision/created come from the
+        # action; the rest name the project so the image is traceable without
+        # this repo to hand.
+        labels: |
+          org.opencontainers.image.title=VFB Chat
+          org.opencontainers.image.description=Virtual Fly Brain conversational interface
+          org.opencontainers.image.vendor=Virtual Fly Brain
+          org.opencontainers.image.licenses=Apache-2.0
+          org.opencontainers.image.documentation=https://github.com/VirtualFlyBrain/VFBchat/blob/main/README.md
 
     # The version the image reports at /api/version and sends as its User-Agent.
-    # Only set for a real release: metadata-action's `version` output is the
-    # branch name on a branch push, and "main" is not a version. Empty falls
-    # through to package.json, which is the existing behaviour.
-    - name: Resolve app version
+    # Read off the tag rather than from metadata-action's `version` output, which
+    # is the branch name on a branch push and "main" is not a version. Empty on
+    # anything that is not a release, which falls through to package.json — the
+    # existing behaviour for branch and PR builds.
+    - name: Resolve the version from the release tag
       id: appver
+      env:
+        RAW_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
       run: |
-        if [ "${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}" = "true" ]; then
-          echo "value=${{ steps.meta.outputs.version }}" >> "$GITHUB_OUTPUT"
-        else
+        set -euo pipefail
+        if [ "${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}" != "true" ]; then
           echo "value=" >> "$GITHUB_OUTPUT"
+          echo "Not a release build — the image takes its version from package.json." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
         fi
-
-    # A release must not be able to describe itself as the wrong version.
-    # v4.2.3 shipped with package.json reading 4.2.2 and reported itself as
-    # 4.2.2 while being entirely correct — indistinguishable from a failed
-    # rollout. The image is forced from the tag above; this fails the build when
-    # the repo disagrees, so the next missed bump is caught here rather than
-    # from outside an hour later.
-    - name: Release tag must match package.json
-      if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
-      run: |
-        pkg=$(node -p "require('./package.json').version")
-        tag="${{ steps.meta.outputs.version }}"
-        if [ "$pkg" != "$tag" ]; then
-          echo "::error::package.json is $pkg but the release tag is $tag. Bump package.json and package-lock.json."
+        if ! version="$(node -e 'import("./lib/releaseVersion.mjs").then(({parseReleaseTag}) => { const v = parseReleaseTag(process.env.RAW_TAG); if (!v) process.exit(3); process.stdout.write(v) })')"; then
+          echo "::error::Release tag '$RAW_TAG' is not a vX.Y.Z semver tag, so there is no version to release under. Re-tag, or run this workflow manually if only the build is wanted."
           exit 1
         fi
-        echo "package.json and the release tag agree at $pkg" >> "$GITHUB_STEP_SUMMARY"
+        echo "value=$version" >> "$GITHUB_OUTPUT"
+        echo "Releasing **$version** from tag \`$RAW_TAG\`." >> "$GITHUB_STEP_SUMMARY"
+
+    # A release must not be able to describe itself as the wrong version. Until
+    # v4.2.7 this compared the tag against package.json and failed the build on a
+    # mismatch, which caught the drift but published nothing — the release existed
+    # on GitHub with no image behind it. The tag is unambiguous, so make the tree
+    # agree with it instead. The build context is this working tree, so the
+    # rewrite reaches the image; sync-release-to-main below carries the same
+    # change back to the repo.
+    - name: Apply the release to every version-carrying file
+      if: steps.appver.outputs.value != ''
+      env:
+        NOTES: ${{ github.event.release.body }}
+      run: |
+        set -euo pipefail
+        printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
+        node scripts/set-version.mjs "${{ steps.appver.outputs.value }}" --notes-file "$RUNNER_TEMP/release-notes.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
@@ -87,3 +135,108 @@ jobs:
           APP_VERSION=${{ steps.appver.outputs.value }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  # The image is right by now; this is what stops the repo drifting again. It
+  # runs only after a release image has actually been pushed, so a failed build
+  # never leaves a commit claiming a version that does not exist.
+  sync-release-to-main:
+    needs: build
+    if: needs.build.outputs.released_version != ''
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      actions: write
+
+    # Pushing a version tag fires this workflow twice — once for the tag push and
+    # once for the release — and both reach this job. Serialising them on the
+    # version means the second finds the work done and exits a no-op, instead of
+    # racing the first for the same two-file push.
+    concurrency:
+      group: release-sync-${{ needs.build.outputs.released_version }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # --only-if-newer is the guard against a hotfix or a re-published old
+      # release walking the default branch backwards: v4.2.7 landing while main
+      # is already on 4.3.0 is a no-op, not a downgrade.
+      - name: Apply the release to the default branch
+        id: apply
+        env:
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
+          node scripts/set-version.mjs "${{ needs.build.outputs.released_version }}" \
+            --only-if-newer --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      # [skip ci] keeps a release-bookkeeping commit from re-running the
+      # 80-minute task battery, which watches package.json for dependency
+      # changes. The rebuild :latest genuinely needs is dispatched below.
+      #
+      # The retry loop is the ordinary race of a merge landing on the default
+      # branch between checkout and push. Rebasing this commit onto it is safe —
+      # it touches only release bookkeeping — and three attempts then a real
+      # failure beats a silent one.
+      - name: Commit and push
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION: ${{ needs.build.outputs.released_version }}
+          FILES: ${{ steps.apply.outputs.files }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- $FILES
+          git commit -m "Record release v$VERSION [skip ci]" -m "Applied by Docker Image CI from tag v$VERSION."
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:$BRANCH"; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "$BRANCH moved under us; rebasing and retrying."
+            git pull --rebase origin "$BRANCH"
+          done
+          echo "::error::Could not push the release record to $BRANCH after three attempts."
+          exit 1
+
+      # :latest is built from the default branch and takes its version from
+      # package.json, so until this change is built in it reports the previous
+      # release. The dispatch rebuilds it; [skip ci] above means nothing else
+      # fires.
+      - name: Rebuild :latest so it stops reporting the previous version
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run docker.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+      - name: Summarise
+        if: always()
+        env:
+          VERSION: ${{ needs.build.outputs.released_version }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          {
+            echo "## Release record"
+            echo
+            if [ "${{ steps.apply.outputs.changed }}" = "true" ]; then
+              echo "\`$BRANCH\` was on ${{ steps.apply.outputs.previous }}; updated to **$VERSION**."
+              echo
+              echo "Files changed: \`${{ steps.apply.outputs.files }}\`"
+            else
+              echo "\`$BRANCH\` is on ${{ steps.apply.outputs.previous }} and needed no change for release **$VERSION**."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
