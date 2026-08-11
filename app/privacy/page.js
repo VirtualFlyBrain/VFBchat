@@ -1,3 +1,4 @@
+import SiteFooter from '../SiteFooter'
 export const metadata = {
   title: 'VFB Chat Privacy Notice',
   description: 'Additional privacy information for VFB Chat'
@@ -140,6 +141,7 @@ export default function PrivacyPage() {
             </p>
           </div>
         </section>
+        <SiteFooter />
       </div>
     </main>
   )

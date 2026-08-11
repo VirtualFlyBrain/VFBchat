@@ -1,3 +1,4 @@
+import SiteFooter from '../SiteFooter'
 export const metadata = {
   title: 'VFB Chat Terms of Use',
   description: 'Acceptable use and terms of use for VFB Chat'
@@ -141,6 +142,7 @@ export default function TermsPage() {
           </p>
           <p style={{ ...bodyStyle, marginTop: '20px', fontStyle: 'italic' }}>Last updated: 7 August 2026</p>
         </section>
+        <SiteFooter />
       </div>
     </main>
   )
