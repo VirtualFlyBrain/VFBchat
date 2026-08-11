@@ -44,6 +44,36 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable={{is_default_branch}}
 
+    # The version the image reports at /api/version and sends as its User-Agent.
+    # Only set for a real release: metadata-action's `version` output is the
+    # branch name on a branch push, and "main" is not a version. Empty falls
+    # through to package.json, which is the existing behaviour.
+    - name: Resolve app version
+      id: appver
+      run: |
+        if [ "${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}" = "true" ]; then
+          echo "value=${{ steps.meta.outputs.version }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "value=" >> "$GITHUB_OUTPUT"
+        fi
+
+    # A release must not be able to describe itself as the wrong version.
+    # v4.2.3 shipped with package.json reading 4.2.2 and reported itself as
+    # 4.2.2 while being entirely correct — indistinguishable from a failed
+    # rollout. The image is forced from the tag above; this fails the build when
+    # the repo disagrees, so the next missed bump is caught here rather than
+    # from outside an hour later.
+    - name: Release tag must match package.json
+      if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+      run: |
+        pkg=$(node -p "require('./package.json').version")
+        tag="${{ steps.meta.outputs.version }}"
+        if [ "$pkg" != "$tag" ]; then
+          echo "::error::package.json is $pkg but the release tag is $tag. Bump package.json and package-lock.json."
+          exit 1
+        fi
+        echo "package.json and the release tag agree at $pkg" >> "$GITHUB_STEP_SUMMARY"
+
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
@@ -53,5 +83,7 @@ jobs:
         platforms: linux/amd64,linux/arm64
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          APP_VERSION=${{ steps.appver.outputs.value }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
