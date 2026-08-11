@@ -1,5 +1,6 @@
 'use client'
 
+import SiteFooter from './SiteFooter'
 import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
@@ -1749,32 +1750,8 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         </div>
       )}
 
-      {/* Footer disclaimer */}
-      <footer style={{
-        marginTop: '12px',
-        padding: '8px 12px',
-        backgroundColor: '#1a1a1a',
-        border: '1px solid #333',
-        borderRadius: '4px',
-        fontSize: '0.75em',
-        color: '#aaa',
-        lineHeight: '1.3',
-        flexShrink: 0
-      }}>
-        <strong>AI Response Notice:</strong> This tool provides AI-generated information based on Virtual Fly Brain data.
-        {' '}Always verify critical information with primary sources. We log limited technical and usage data,
-        including IP addresses for abuse prevention, and retain raw security logs for up to 30 days.
-        {' '}We do not store full chat content for routine analytics, except when you explicitly attach a conversation while reporting a problem for short-term investigation. See our{' '}
-        <a href="/privacy" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
-          Privacy Notice
-        </a>{' | '}
-        <a href="/accessibility" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
-          Accessibility Statement
-        </a>{' | '}
-        <a href="/terms" style={{ color: '#66d9ff', textDecoration: 'underline' }}>
-          Terms of Use
-        </a>.
-      </footer>
+      {/* AI notice and policy links — shared with /privacy, /accessibility, /terms */}
+      <SiteFooter variant="app" />
 
       <style jsx global>{`
         .sr-only {

@@ -1,3 +1,4 @@
+import SiteFooter from '../SiteFooter'
 export const metadata = {
   title: 'VFB Chat Accessibility Statement',
   description: 'Accessibility statement for VFB Chat'
@@ -96,6 +97,7 @@ export default function AccessibilityPage() {
         <p style={{ marginTop: '28px' }}>
           <a href="/" style={{ color: '#66d9ff', textDecoration: 'underline' }}>Back to VFB Chat</a>
         </p>
+        <SiteFooter />
       </div>
     </main>
   )
