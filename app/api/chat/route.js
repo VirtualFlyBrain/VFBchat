@@ -68,6 +68,7 @@ import {
 } from '../../../lib/runtimeConfig.js'
 import { primeServedModels, servedModelsSnapshot, catalogueStatus } from '../../../lib/modelCatalogue.mjs'
 import { describeRoleModels } from '../../../lib/roleProfiles.mjs'
+import { serviceIdentityBlock } from '../../../lib/serviceIdentity.mjs'
 
 // Say out loud which model every role resolved to, once per process.
 //
@@ -10556,7 +10557,11 @@ function buildChatCompletionMessages(conversationInput = [], extraMessages = [])
     .filter(Boolean)
 
   return [
-    { role: 'system', content: systemPrompt },
+    // Appended per request rather than baked into the module constant: the
+    // resolved models come from a catalogue snapshot that warms after start, so
+    // a value captured at import time would be the unfiltered first choice
+    // rather than what is actually serving.
+    { role: 'system', content: systemPrompt + serviceIdentityBlock() },
     ...normalizedConversation,
     ...normalizedExtras
   ]
