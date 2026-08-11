@@ -115,6 +115,20 @@ docker-compose up --build
 
 This keeps security, analytics, and feedback logs outside the application filesystem.
 
+## Releasing
+
+Publish a GitHub Release with an annotated tag `vX.Y.Z`. That is the whole procedure — nothing is bumped by hand first.
+
+The tag is the version. `.github/workflows/docker.yml` reads it, applies it to every file that carries a release version, builds `virtualflybrain/vfbchat:X.Y.Z` and `:X.Y` from that tree, and then pushes the same change back to `main` — release notes included. The image reports the released version at `/api/version`, in its `User-Agent` and in its OCI labels whatever the repository happened to say when the tag was cut.
+
+The list of version-carrying files is `RELEASE_SURFACES` in `lib/releaseVersion.mjs`. Add one there and the release automation picks it up; nothing under `.github/` or `scripts/` needs to change. Every push and pull request runs `node scripts/set-version.mjs --check`, which fails when those files disagree — the half-applied bump, `package.json` edited without `package-lock.json`, is caught on the pull request rather than as a broken `npm ci` at release time.
+
+To set a version by hand, for example when preparing a branch:
+
+```bash
+node scripts/set-version.mjs 4.3.0
+```
+
 ## API Surface
 
 - `POST /api/chat`
