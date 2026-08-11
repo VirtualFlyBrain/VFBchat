@@ -46,3 +46,22 @@ test('carries no number the grounding audit would flag', () => {
   const flagged = block.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{4,}(?:\.\d+)?\b/g) || []
   assert.deepEqual(flagged, [])
 })
+
+// The regression that produced v4.2.5: v4.2.4 appended the block to
+// route.js's systemPrompt, which is not the prompt the harness synthesises
+// with, so the shipped feature did nothing. These pin it to the two prompts
+// that actually reach a model.
+test('the planner system prompt carries the service facts', async () => {
+  const { buildPlannerMessages } = await import('../../lib/planner.mjs')
+  const [system] = buildPlannerMessages('what version are you?', [], [], null)
+  assert.equal(system.role, 'system')
+  assert.match(system.content, /ABOUT THIS SERVICE/)
+})
+
+test('the synthesis system prompt carries the service facts', async () => {
+  const src = await import('node:fs').then(fs =>
+    fs.readFileSync(new URL('../../lib/orchestrator.mjs', import.meta.url), 'utf8'))
+  // The synthesis message is built inline; assert the call is on the system
+  // content rather than merely imported somewhere in the file.
+  assert.match(src, /Report what the queries returned\.` \+ serviceIdentityBlock\(\)/)
+})
