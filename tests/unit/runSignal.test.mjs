@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { createRunSignal, throwIfAborted, isRunAborted, RunAbortedError, DEFAULT_RUN_DEADLINE_MS } from '../../lib/runSignal.mjs'
+import { createRunSignal, throwIfAborted, isRunAborted, isRunAbortedWith, RunAbortedError, DEFAULT_RUN_DEADLINE_MS } from '../../lib/runSignal.mjs'
 import { callStructured } from '../../lib/elmClient.mjs'
 
 test('the client going away aborts the run', () => {
@@ -73,7 +73,17 @@ test('throwIfAborted names where it stopped, and is recognisable', () => {
   assert.match(err.message, /client-disconnected/)
   assert.match(err.message, /harness-loop/)
   assert.ok(isRunAborted(err))
-  assert.ok(isRunAborted({ name: 'AbortError' }), 'a fetch abort counts too')
+  // This line used to assert the opposite — that a bare fetch AbortError counts
+  // as the run being abandoned. That is the defect: route.js returns silently on
+  // an abandoned run, so every upstream timeout closed the stream with no error
+  // event and no governance record, and upstream failures were invisible in the
+  // analytics. The wrong semantics survived because a test pinned them.
+  assert.equal(isRunAborted({ name: 'AbortError' }), false,
+    'a bare fetch abort is an upstream failure, not this run being abandoned')
+  // With a signal to compare against it is decidable, because a fetch cancelled
+  // BY the run signal also rejects with AbortError.
+  assert.equal(isRunAbortedWith({ name: 'AbortError' }, run.signal), true)
+  assert.equal(isRunAbortedWith({ name: 'AbortError' }, { aborted: false }), false)
   assert.equal(isRunAborted(new Error('MCP down')), false)
   run.dispose()
 })
@@ -110,10 +120,16 @@ test('an abandoned run is not recorded as a service error', () => {
   const src = fs.readFileSync(new URL('../../app/api/chat/route.js', import.meta.url), 'utf8')
   const catchStart = src.indexOf("let errorCategory = 'unexpected_error'")
   assert.ok(catchStart > 0, 'generic request catch not found')
-  const branch = src.slice(catchStart - 900, catchStart + 1200)
-  assert.match(branch, /isRunAborted\(error\)/, 'the generic catch must recognise an abandoned run')
-  assert.ok(branch.indexOf('isRunAborted') < branch.indexOf('finalizeGovernanceEvent'),
-    'and must return before writing an errored governance record')
+  const branch = src.slice(catchStart - 2200, catchStart + 1200)
+  assert.match(branch, /isRunAbortedWith\(error, signal\)/,
+    'the generic catch must decide on the SIGNAL, not on the error name')
+  assert.ok(branch.indexOf('isRunAbortedWith') < branch.indexOf('finalizeGovernanceEvent'),
+    'and must decide before writing an errored governance record')
+  // But only silence the reasons that mean nobody is listening. A deadline, or
+  // anything else that aborts while the client is still connected, must fall
+  // through to the timeout branch and leave a record.
+  assert.match(branch, /NOBODY_WAITING\.has\(reason\)/,
+    'a deadline must not be silenced like a disconnect')
 })
 
 test('the cancellation hooks the deployment actually provides are both wired', () => {

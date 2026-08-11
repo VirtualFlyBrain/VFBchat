@@ -32,7 +32,7 @@ import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
-import { createRunSignal, throwIfAborted, isRunAborted } from '../../../lib/runSignal.mjs'
+import { createRunSignal, throwIfAborted, isRunAbortedWith, NOBODY_WAITING } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
@@ -129,7 +129,7 @@ function buildSseResponse(startHandler, { clientSignal = null } = {}) {
       try {
         await startHandler(sendEvent, run.signal)
       } catch (error) {
-        if (!isRunAborted(error)) throw error
+        if (!isRunAbortedWith(error, run.signal)) throw error
         console.log(`[VFBchat] RUN ABANDONED | reason=${run.reason() || 'aborted'}`)
       } finally {
         run.dispose()
@@ -2154,6 +2154,16 @@ function getToolConfig() {
 
 const NCBI_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
 
+// Every other outbound integration here is bounded — bioRxiv has
+// BIORXIV_API_TIMEOUT_MS a few lines below — and PubMed was not. `await fetch(url)`
+// with no signal cannot be cancelled by the run signal either, so a slow or
+// throttled NCBI became an unbounded, uncancellable wait in the middle of a run.
+// 15s matches bioRxiv; a healthy efetch answers in well under a second.
+const PUBMED_TIMEOUT_MS = 15000
+function pubmedSignal() {
+  try { return AbortSignal.timeout(PUBMED_TIMEOUT_MS) } catch { return undefined }
+}
+
 // NCBI E-utilities require identification, and an API key raises the rate limit
 // from 3/s to 10/s and exempts the (shared) server IP from the blocking that
 // otherwise returns empty results. Set NCBI_API_KEY (and optionally NCBI_EMAIL)
@@ -2171,7 +2181,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
   const sortParam = sort === 'date' ? 'date' : 'relevance'
 
   const searchUrl = `${NCBI_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=${sortParam}&retmode=json&${ncbiAuth()}`
-  const searchRes = await fetch(searchUrl)
+  const searchRes = await fetch(searchUrl, { signal: pubmedSignal() })
   if (!searchRes.ok) throw new Error(`PubMed search failed: ${searchRes.status}`)
   const searchData = await searchRes.json()
   const pmids = searchData.esearchresult?.idlist || []
@@ -2185,7 +2195,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
   }
 
   const summaryUrl = `${NCBI_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json&${ncbiAuth()}`
-  const summaryRes = await fetch(summaryUrl)
+  const summaryRes = await fetch(summaryUrl, { signal: pubmedSignal() })
   if (!summaryRes.ok) throw new Error(`PubMed summary fetch failed: ${summaryRes.status}`)
   const summaryData = await summaryRes.json()
 
@@ -2212,7 +2222,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
 
 async function getPubmedArticle(pmid) {
   const fetchUrl = `${NCBI_BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}&retmode=xml&${ncbiAuth()}`
-  const fetchRes = await fetch(fetchUrl)
+  const fetchRes = await fetch(fetchUrl, { signal: pubmedSignal() })
   if (!fetchRes.ok) throw new Error(`PubMed fetch failed: ${fetchRes.status}`)
   const xmlText = await fetchRes.text()
 
@@ -11590,9 +11600,26 @@ export async function POST(request) {
       // wrote a spurious errored=true governance record and emitted an error
       // event to a client that had already gone — the analytics would have shown
       // a rising error rate that was nothing but people changing their minds.
-      if (isRunAborted(error)) {
-        console.log(`[VFBchat] RUN ABANDONED | request=${requestId}`)
-        return
+      //
+      // That reasoning holds for a client that LEFT. It was applied to every
+      // abort, including this run hitting its own deadline and — because the old
+      // predicate counted any AbortError — every upstream call that timed out.
+      // Those clients are still waiting, and those failures are ours. Reporting
+      // them as abandonment closed the stream in silence and left no governance
+      // record, so upstream timeouts were invisible in the analytics: an error
+      // rate wrong in the direction that flatters us.
+      //
+      // Branch on WHY. Only the reasons that mean nobody is listening get
+      // silence; a deadline gets told to the user like any other timeout.
+      if (isRunAbortedWith(error, signal)) {
+        // The signal's reason is the RunAbortedError the run threw, so the WHY
+        // travels with the abort rather than having to be plumbed separately.
+        const reason = signal?.reason?.reason || error?.reason || 'aborted'
+        if (NOBODY_WAITING.has(reason)) {
+          console.log(`[VFBchat] RUN ABANDONED | request=${requestId} | reason=${reason}`)
+          return
+        }
+        console.log(`[VFBchat] RUN DEADLINE | request=${requestId} | reason=${reason}`)
       }
       const responseId = `local-${requestId}`
       let userMessage = 'Sorry, something went wrong processing your request. Please try again.'
