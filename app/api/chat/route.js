@@ -32,13 +32,14 @@ import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
-import { createRunSignal, throwIfAborted, isRunAborted } from '../../../lib/runSignal.mjs'
+import { createRunSignal, throwIfAborted, isRunAbortedWith, NOBODY_WAITING } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
+import { curatedCountsForRegion, curatedNoteForRegion, curatedAnswerRules } from '../../../lib/curatedNeuronCounts.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -128,7 +129,7 @@ function buildSseResponse(startHandler, { clientSignal = null } = {}) {
       try {
         await startHandler(sendEvent, run.signal)
       } catch (error) {
-        if (!isRunAborted(error)) throw error
+        if (!isRunAbortedWith(error, run.signal)) throw error
         console.log(`[VFBchat] RUN ABANDONED | reason=${run.reason() || 'aborted'}`)
       } finally {
         run.dispose()
@@ -1606,7 +1607,7 @@ function getToolConfig() {
         },
         include_literature: {
           type: 'boolean',
-          description: 'Whether to include PubMed evidence for connectome-level cell counts when relevant (default true).'
+          description: 'Retained for compatibility; currently a no-op. Published neuron counts are not scraped from abstracts — see the curated reference on virtualflybrain.org.'
         },
         limit: {
           type: 'number',
@@ -2153,6 +2154,16 @@ function getToolConfig() {
 
 const NCBI_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
 
+// Every other outbound integration here is bounded — bioRxiv has
+// BIORXIV_API_TIMEOUT_MS a few lines below — and PubMed was not. `await fetch(url)`
+// with no signal cannot be cancelled by the run signal either, so a slow or
+// throttled NCBI became an unbounded, uncancellable wait in the middle of a run.
+// 15s matches bioRxiv; a healthy efetch answers in well under a second.
+const PUBMED_TIMEOUT_MS = 15000
+function pubmedSignal() {
+  try { return AbortSignal.timeout(PUBMED_TIMEOUT_MS) } catch { return undefined }
+}
+
 // NCBI E-utilities require identification, and an API key raises the rate limit
 // from 3/s to 10/s and exempts the (shared) server IP from the blocking that
 // otherwise returns empty results. Set NCBI_API_KEY (and optionally NCBI_EMAIL)
@@ -2170,7 +2181,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
   const sortParam = sort === 'date' ? 'date' : 'relevance'
 
   const searchUrl = `${NCBI_BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${maxResults}&sort=${sortParam}&retmode=json&${ncbiAuth()}`
-  const searchRes = await fetch(searchUrl)
+  const searchRes = await fetch(searchUrl, { signal: pubmedSignal() })
   if (!searchRes.ok) throw new Error(`PubMed search failed: ${searchRes.status}`)
   const searchData = await searchRes.json()
   const pmids = searchData.esearchresult?.idlist || []
@@ -2184,7 +2195,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
   }
 
   const summaryUrl = `${NCBI_BASE}/esummary.fcgi?db=pubmed&id=${pmids.join(',')}&retmode=json&${ncbiAuth()}`
-  const summaryRes = await fetch(summaryUrl)
+  const summaryRes = await fetch(summaryUrl, { signal: pubmedSignal() })
   if (!summaryRes.ok) throw new Error(`PubMed summary fetch failed: ${summaryRes.status}`)
   const summaryData = await summaryRes.json()
 
@@ -2211,7 +2222,7 @@ async function searchPubmed(query, maxResults = 5, sort = 'relevance') {
 
 async function getPubmedArticle(pmid) {
   const fetchUrl = `${NCBI_BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}&retmode=xml&${ncbiAuth()}`
-  const fetchRes = await fetch(fetchUrl)
+  const fetchRes = await fetch(fetchUrl, { signal: pubmedSignal() })
   if (!fetchRes.ok) throw new Error(`PubMed fetch failed: ${fetchRes.status}`)
   const xmlText = await fetchRes.text()
 
@@ -8384,36 +8395,45 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
     .map(queryName => summarizeQueryEntry(getTermQueryEntry(region.term_record, [queryName]), limit))
     .filter(Boolean)
 
-  const literature = []
-  const countCandidates = []
-  const regionNorm = normalizeEndpointSearchText(`${region.label || ''} ${args.region || ''}`)
-  if (includeLiterature && /\bcentral brain\b/.test(regionNorm)) {
-    for (const pmid of ['39358519', '39358518']) {
-      try {
-        const article = parseJsonPayload(await getPubmedArticle(pmid))
-        const claims = extractPubmedCountEvidence(article)
-        literature.push(compactDefinedToolArgs({
-          pmid,
-          title: article?.title,
-          year: article?.year,
-          journal: article?.journal,
-          pubmed_url: article?.pubmed_url,
-          doi_url: article?.doi_url,
-          count_claims: claims
-        }))
-        countCandidates.push(...claims.map(claim => ({
-          ...claim,
-          source_pmid: pmid,
-          source_title: article?.title
-        })))
-      } catch (error) {
-        literature.push({
-          pmid,
-          error: error?.message || String(error)
-        })
-      }
-    }
-  }
+  // The literature path used to be two PMIDs hard-coded behind a test for the
+  // literal string "central brain", with the headline figures written into
+  // answer_hint below. It has been removed, and it is worth recording why rather
+  // than just deleting it.
+  //
+  // One of those PMIDs (39358519) is Shiu et al., a computational MODEL paper.
+  // The sentence a regex lifted from it — "central brain connectome, containing
+  // more than 125,000 neurons" — is background in its introduction citing someone
+  // else's work, and the scope label is wrong at source: that number is FlyWire's
+  // WHOLE-BRAIN count. FlyWire reports 32,388 neurons fully contained in the
+  // central brain. The other figure in answer_hint, 139,255, appeared in no
+  // fetched source at all; it was simply remembered.
+  //
+  // Scraping a count out of an abstract cannot carry the thing that makes a
+  // neuron count meaningful: which specimen, which sex, which stage, which
+  // release, and what that paper's methods counted as a neuron. Those live in a
+  // curated reference now — /docs/concepts/neuron-counts/ and the machine-readable
+  // /data/fly-neuron-counts.json on virtualflybrain.org — where they can be
+  // reviewed, versioned and corrected. This tool no longer invents them.
+  //
+  // The shapes stay: lib/neuronCount.mjs and lib/liveHarness.mjs both test
+  // count_candidates.length. They are now filled from config/fly-neuron-counts.json
+  // — curated, reviewed, version-controlled with the code that renders it, and
+  // read in process so a figure never depends on a fetch succeeding. See
+  // lib/curatedNeuronCounts.mjs for why it ships in the image rather than being
+  // pulled from the website mirror.
+  //
+  // A region with no curated entry yields an empty array, which is the honest
+  // value: no figure at all, rather than a remembered one.
+  const countCandidates = includeLiterature ? curatedCountsForRegion(region.label || args.region || '') : []
+  const curatedNote = curatedNoteForRegion(region.label || args.region || '')
+  const literature = countCandidates.map(c => compactDefinedToolArgs({
+    title: c.source_title,
+    pmid: c.source_pmid,
+    doi_url: c.source_doi ? `https://doi.org/${c.source_doi}` : undefined,
+    pubmed_url: c.source_pmid ? `https://pubmed.ncbi.nlm.nih.gov/${c.source_pmid}/` : undefined,
+    scope: c.scope,
+    count_claims: [{ count_numeric: c.count_numeric, scope: c.scope }]
+  }))
 
   const neuronsPartHere = querySummaries.find(summary => summary.query_type === 'NeuronsPartHere')
   const hasCentralBrainLiterature = countCandidates.some(candidate => /central brain/i.test(candidate.scope || ''))
@@ -8433,12 +8453,13 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
       result_scope: hasCentralBrainLiterature
         ? 'literature_connectome_cell_count_plus_vfb_query_counts'
         : 'vfb_query_counts_not_physical_cell_census',
-      answer_hint: hasCentralBrainLiterature
-        ? 'For the adult Drosophila central brain, answer approximately "more than 125,000 neurons" from the central-brain connectome/model article. Also mention that a whole adult brain wiring diagram reports 139,255 neurons. Do not use the VFB NeuronsPartHere row count as a physical neuron census.'
-        : neuronsPartHere
-          ? `VFB reports ${neuronsPartHere.count} NeuronsPartHere rows for the resolved region, but that is a query/table count for VFB records, not necessarily a physical cell census.`
-          : 'VFB term metadata did not provide a direct physical neuron census for this region.',
-      scope_note: 'Keep dataset scope explicit: VFB query counts describe returned records/classes, while literature/connectome papers may describe reconstructed neurons in a particular dataset.'
+      answer_hint: neuronsPartHere
+        ? `VFB reports ${neuronsPartHere.count} NeuronsPartHere rows for the resolved region. That is a count of VFB records, not a census of cells in any animal, and it must not be presented as one. Do NOT supply a biological neuron count from your own memory: every published figure belongs to one specimen of one sex at one stage in one dataset release, and stating one without those qualifiers is wrong even when the number is right. If the user wants the biological figure, point them at Virtual Fly Brain's reference on neuron counts rather than guessing.`
+        : 'VFB term metadata did not provide a count for this region. Do not substitute a remembered figure: say what was and was not looked up, and point the user at Virtual Fly Brain\'s reference on neuron counts.',
+      curated_note: curatedNote || undefined,
+      answer_rules: curatedAnswerRules(),
+      reference: 'https://www.virtualflybrain.org/docs/concepts/neuron-counts/',
+      scope_note: 'Keep the two kinds of number apart. A VFB query count describes records and classes curated across many datasets, sexes and stages. A connectome figure describes reconstructed neurons in one individual at one release. They are never interchangeable and must never be added or compared.'
     },
     next_actions: [
       {
@@ -11579,9 +11600,26 @@ export async function POST(request) {
       // wrote a spurious errored=true governance record and emitted an error
       // event to a client that had already gone — the analytics would have shown
       // a rising error rate that was nothing but people changing their minds.
-      if (isRunAborted(error)) {
-        console.log(`[VFBchat] RUN ABANDONED | request=${requestId}`)
-        return
+      //
+      // That reasoning holds for a client that LEFT. It was applied to every
+      // abort, including this run hitting its own deadline and — because the old
+      // predicate counted any AbortError — every upstream call that timed out.
+      // Those clients are still waiting, and those failures are ours. Reporting
+      // them as abandonment closed the stream in silence and left no governance
+      // record, so upstream timeouts were invisible in the analytics: an error
+      // rate wrong in the direction that flatters us.
+      //
+      // Branch on WHY. Only the reasons that mean nobody is listening get
+      // silence; a deadline gets told to the user like any other timeout.
+      if (isRunAbortedWith(error, signal)) {
+        // The signal's reason is the RunAbortedError the run threw, so the WHY
+        // travels with the abort rather than having to be plumbed separately.
+        const reason = signal?.reason?.reason || error?.reason || 'aborted'
+        if (NOBODY_WAITING.has(reason)) {
+          console.log(`[VFBchat] RUN ABANDONED | request=${requestId} | reason=${reason}`)
+          return
+        }
+        console.log(`[VFBchat] RUN DEADLINE | request=${requestId} | reason=${reason}`)
       }
       const responseId = `local-${requestId}`
       let userMessage = 'Sorry, something went wrong processing your request. Please try again.'
