@@ -4,6 +4,17 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.8
+- **There is no v4.2.7 image.** The v4.2.7 release exists on GitHub with nothing behind it: the version gate added in v4.2.5 failed the build before the push, so the tag was published and no image was ever produced. Docker Hub's `4.2` still points at 4.2.6's build, so deployments have been serving 4.2.6 and reporting 4.2.6 throughout — consistent, just a release behind. This release is what v4.2.7 was meant to be, plus the mechanism that makes that failure impossible.
+
+  **Cutting a release is now publishing a tag, and nothing else.** Preparing a release used to mean applying a list from memory — `package.json`, `package-lock.json`, `RELEASE_NOTES.md`, then tag — and the memory was imperfect: v4.2.3 shipped reporting 4.2.2 while being entirely correct, and `RELEASE_NOTES.md` had been stuck at v4.2.2 across four releases. v4.2.5's answer was a gate that failed the build on disagreement, which converted a mislabelled release into no release at all. Failing was the wrong verb. CI now reads the version off the tag, applies it to every file in `RELEASE_SURFACES`, builds from that tree, and pushes the same change back to the default branch with the release body written into `RELEASE_NOTES.md`. Adding a version-carrying file means adding it to that list in `lib/releaseVersion.mjs`; nothing under `.github/` or `scripts/` changes. `--check` runs on every push and pull request, so a half-applied bump surfaces there instead of as a failing `npm ci` at release time, and `--only-if-newer` stops a hotfix or a re-published old release walking the default branch backwards. Applying a release twice is a no-op, so a failed release can be re-run rather than unpicked.
+
+  **`config/fly-neuron-counts.json` no longer cites a mirror that cannot exist.** Its `canonical_url` pointed at `www.virtualflybrain.org/data/fly-neuron-counts.json`, a URL that can never resolve — `/data/` on virtualflybrain.org is a routed namespace that reads the path segment as a dataset id, so a static file there is unreachable however the site is built. Nothing fetched it, so the effect was inert; it was still a false statement inside a file whose entire purpose is that its contents can be trusted. The header now states the arrangement plainly: one copy, shipped in the image, no published mirror, curators edit the repo file. VirtualFlyBrain/VFB2 drops the mirror file and the article's dead link in the same change.
+
+  **Verification.** 63/64 task battery at 363ba92, and 0 on every quality measure — no factual answer without a tool, no tool claim without a tool, no disambiguation-only or plan-only answers, no unreported graph failures. The one error is a 240 s timeout on the DNa02 descending-neuron question (T3). That is an upstream timeout reporting itself as a timeout, which is what v4.2.6 changed and is the intended behaviour rather than a regression; it is not evidence about how often that upstream is slow, and one run cannot tell you.
+
+  **What this release does not yet prove:** that the write-back to `main` behaves under a real merge race. The retry is written and unit-tested, but until two releases land close together it has not been exercised in anger.
+
 ## v4.2.2
 - Release v4.2.2: An answer may no longer tell a user that Virtual Fly Brain holds nothing until something has actually looked.
 
