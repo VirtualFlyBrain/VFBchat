@@ -39,6 +39,7 @@ import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
+import { curatedCountsForRegion, curatedNoteForRegion, curatedAnswerRules } from '../../../lib/curatedNeuronCounts.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -8405,13 +8406,27 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
   // reviewed, versioned and corrected. This tool no longer invents them.
   //
   // The shapes stay: lib/neuronCount.mjs and lib/liveHarness.mjs both test
-  // count_candidates.length, and an empty array is the honest value.
-  const literature = []
-  const countCandidates = []
+  // count_candidates.length. They are now filled from config/fly-neuron-counts.json
+  // — curated, reviewed, version-controlled with the code that renders it, and
+  // read in process so a figure never depends on a fetch succeeding. See
+  // lib/curatedNeuronCounts.mjs for why it ships in the image rather than being
+  // pulled from the website mirror.
+  //
+  // A region with no curated entry yields an empty array, which is the honest
+  // value: no figure at all, rather than a remembered one.
+  const countCandidates = includeLiterature ? curatedCountsForRegion(region.label || args.region || '') : []
+  const curatedNote = curatedNoteForRegion(region.label || args.region || '')
+  const literature = countCandidates.map(c => compactDefinedToolArgs({
+    title: c.source_title,
+    pmid: c.source_pmid,
+    doi_url: c.source_doi ? `https://doi.org/${c.source_doi}` : undefined,
+    pubmed_url: c.source_pmid ? `https://pubmed.ncbi.nlm.nih.gov/${c.source_pmid}/` : undefined,
+    scope: c.scope,
+    count_claims: [{ count_numeric: c.count_numeric, scope: c.scope }]
+  }))
 
   const neuronsPartHere = querySummaries.find(summary => summary.query_type === 'NeuronsPartHere')
   const hasCentralBrainLiterature = countCandidates.some(candidate => /central brain/i.test(candidate.scope || ''))
-  void includeLiterature
   return JSON.stringify({
     tool: 'vfb_get_region_neuron_count',
     query: {
@@ -8431,6 +8446,9 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
       answer_hint: neuronsPartHere
         ? `VFB reports ${neuronsPartHere.count} NeuronsPartHere rows for the resolved region. That is a count of VFB records, not a census of cells in any animal, and it must not be presented as one. Do NOT supply a biological neuron count from your own memory: every published figure belongs to one specimen of one sex at one stage in one dataset release, and stating one without those qualifiers is wrong even when the number is right. If the user wants the biological figure, point them at Virtual Fly Brain's reference on neuron counts rather than guessing.`
         : 'VFB term metadata did not provide a count for this region. Do not substitute a remembered figure: say what was and was not looked up, and point the user at Virtual Fly Brain\'s reference on neuron counts.',
+      curated_note: curatedNote || undefined,
+      answer_rules: curatedAnswerRules(),
+      reference: 'https://www.virtualflybrain.org/docs/concepts/neuron-counts/',
       scope_note: 'Keep the two kinds of number apart. A VFB query count describes records and classes curated across many datasets, sexes and stages. A connectome figure describes reconstructed neurons in one individual at one release. They are never interchangeable and must never be added or compared.'
     },
     next_actions: [
