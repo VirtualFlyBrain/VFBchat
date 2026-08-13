@@ -1156,6 +1156,19 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
                   const id = streamingMsgIdRef.current
                   setMessages(prev => prev.map(m => m.id === id ? { ...m, content: m.content + chunk } : m))
                 }
+              } else if (currentEvent === 'draft_discarded') {
+                // The server abandoned the draft it streamed and is writing a
+                // replacement. Deltas accumulate into one bubble, so the
+                // replacement would otherwise be appended to the draft and the
+                // reader would see the answer twice. Drop the bubble and clear
+                // the ref, so the next delta opens a fresh one. The status line
+                // the server sends alongside this says what is happening.
+                const discardedId = streamingMsgIdRef.current
+                if (discardedId != null) {
+                  setMessages(prev => prev.filter(m => m.id !== discardedId))
+                  streamingMsgIdRef.current = null
+                }
+                setIsThinking(true)
               } else if (currentEvent === 'result') {
                 // Finalise: replace the streamed bubble (linkified, with images/graphs)
                 // or, if nothing streamed, append a fresh assistant message.

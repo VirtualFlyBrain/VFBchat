@@ -11135,6 +11135,10 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
         onResponseId: (id) => { if (!responseId) responseId = id }
       }),
       onStatus: (status) => sendEvent('status', status),
+      // A draft was streamed and is being replaced. The client appends deltas
+      // into one live bubble, so without this the rewrite lands underneath the
+      // draft it replaces and the reader sees the answer twice.
+      onDraftDiscarded: (info) => sendEvent('draft_discarded', { reason: info?.reason || '' }),
       maxToolRounds: Math.min(complexity.maxToolRounds, roundCap)
     })
 
