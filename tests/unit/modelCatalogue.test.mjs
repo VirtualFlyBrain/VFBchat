@@ -17,6 +17,7 @@ import {
 import {
   refreshServedModels,
   primeServedModels,
+  ensureServedModels,
   servedModelsSnapshot,
   catalogueStatus,
   __resetModelCatalogue,
@@ -252,6 +253,72 @@ test('priming never throws and hands back the snapshot synchronously', () => {
   assert.equal(primeServedModels({ baseUrl: '', fetchImpl: null }), null)
   __setServedModels([QWEN_MODEL])
   assert.deepEqual([...primeServedModels({ baseUrl: 'https://elm.example/api/v1', ttlMs: 60000 })], [QWEN_MODEL])
+  __resetModelCatalogue()
+})
+
+// ------------------------------------------------------------- cold start ---
+//
+// One minute after the v4.2.6 container started the catalogue read
+// {"known":false,"count":0} and every model list resolved to its first entry
+// unfiltered, so the Llama fallback could not engage. The Jenkins job replaces
+// the container monthly, so the window recurs by design.
+
+test('the first request waits for the catalogue rather than guessing', async () => {
+  __resetModelCatalogue()
+  let calls = 0
+  const got = await ensureServedModels({
+    baseUrl: 'https://elm.example/api/v1',
+    fetchImpl: async () => { calls++; return jsonResponse({ data: [{ id: LLAMA_MODEL }] }) }
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual([...got], [LLAMA_MODEL])
+  // …and that is what makes the fallback work: Qwen heads the list, the gateway
+  // serves only Llama, and resolution now knows it.
+  assert.equal(resolveRoleModel('synth', { ELM_MODEL: `${QWEN_MODEL},${LLAMA_MODEL}` }, QWEN_MODEL, { available: got }), LLAMA_MODEL)
+  __resetModelCatalogue()
+})
+
+test('a known catalogue is never waited for — the probe stays background work', async () => {
+  __resetModelCatalogue()
+  __setServedModels([QWEN_MODEL])
+  let calls = 0
+  const got = await ensureServedModels({
+    baseUrl: 'https://elm.example/api/v1', ttlMs: 60000,
+    fetchImpl: async () => { calls++; return jsonResponse({ data: [{ id: LLAMA_MODEL }] }) }
+  })
+  assert.equal(calls, 0, 'a fresh snapshot must not cost a round trip')
+  assert.deepEqual([...got], [QWEN_MODEL])
+  __resetModelCatalogue()
+})
+
+test('a dead gateway is waited for once per TTL, then failed open', async () => {
+  // The wait must not become a per-request tax when the probe cannot succeed,
+  // and it must not become a gate: unknown still resolves unfiltered.
+  __resetModelCatalogue()
+  let calls = 0
+  const o = {
+    baseUrl: 'https://elm.example/api/v1', ttlMs: 60000,
+    fetchImpl: async () => { calls++; throw new Error('down') }
+  }
+  assert.equal(await ensureServedModels(o), null)
+  assert.equal(await ensureServedModels(o), null)
+  assert.equal(await ensureServedModels(o), null)
+  assert.equal(calls, 1, 'a down gateway costs one wait per TTL, not one per question')
+  assert.equal(catalogueStatus().known, false)
+  assert.equal(resolveRoleModel('synth', { ELM_MODEL: `${QWEN_MODEL},${LLAMA_MODEL}` }, QWEN_MODEL, { available: null }), QWEN_MODEL)
+  __resetModelCatalogue()
+})
+
+test('concurrent cold-start requests share one probe', async () => {
+  __resetModelCatalogue()
+  let calls = 0
+  const o = {
+    baseUrl: 'https://elm.example/api/v1',
+    fetchImpl: async () => { calls++; return jsonResponse({ data: [{ id: QWEN_MODEL }] }) }
+  }
+  const all = await Promise.all([ensureServedModels(o), ensureServedModels(o), ensureServedModels(o)])
+  assert.equal(calls, 1)
+  for (const got of all) assert.deepEqual([...got], [QWEN_MODEL])
   __resetModelCatalogue()
 })
 

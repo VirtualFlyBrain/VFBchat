@@ -67,7 +67,7 @@ import {
   getSearchAllowList,
   validateProductionCompliance
 } from '../../../lib/runtimeConfig.js'
-import { primeServedModels, servedModelsSnapshot, catalogueStatus } from '../../../lib/modelCatalogue.mjs'
+import { ensureServedModels, servedModelsSnapshot, catalogueStatus } from '../../../lib/modelCatalogue.mjs'
 import { describeRoleModels } from '../../../lib/roleProfiles.mjs'
 import { serviceIdentityBlock } from '../../../lib/serviceIdentity.mjs'
 
@@ -11107,10 +11107,12 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       apiBaseUrl,
       apiKey,
       defaultModel: apiModel,
-      // Which models is the gateway actually serving? Primed (never awaited) so
-      // the probe cannot add latency to a question; the first request after a
-      // cold start simply resolves unfiltered, exactly as v3.x always did.
-      servedModels: primeServedModels({ baseUrl: apiBaseUrl, apiKey }),
+      // Which models is the gateway actually serving? Refreshed in the
+      // background once known, and WAITED FOR while it is not — an unknown
+      // catalogue resolves every model list to its first entry unfiltered, which
+      // suspends the fallback exactly when a freshly-started container needs it.
+      // See ensureServedModels for the bounds on that wait.
+      servedModels: await ensureServedModels({ baseUrl: apiBaseUrl, apiKey }),
       toolDefs: buildHarnessToolCatalogue(),
       executeTool: (name, args) => executeFunctionTool(name, args, ctx),
       // `parsed` is the caller's single parse of this result. Parsing it again
