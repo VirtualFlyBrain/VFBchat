@@ -149,14 +149,16 @@ test('the absence escalation reports its queries, not the sentence it read', asy
   const output = await captureConsole(() => maybeEscalateBeforeAbsence(absenceLedger(), DENIAL, {}, () => {}))
   assertNoLeak(output, 'the absence escalation')
   assert.match(output, /ABSENCE ESCALATION \| queries=/, 'the useful half survives')
-  assert.match(output, /claimed=<text:\d+>/)
+  // The denial is named, not quoted: which SHAPE of absence fired is countable
+  // across runs and contains nothing the user wrote.
+  assert.match(output, /claimed=absence:does-not-hold \| len=\d+/)
 })
 
 test('the absence gate reports how many it removed, not what they said', async () => {
   const ledger = absenceLedger()
   const output = await captureConsole(() => { gateAbsence(ledger, DENIAL, () => {}) })
   assertNoLeak(output, 'the absence gate')
-  assert.match(output, /ABSENCE GATE \| removed=\d+/)
+  assert.match(output, /ABSENCE GATE \| removed=1 \| licensed=false \| absence:does-not-hold/)
 })
 
 // --- tool failures ---------------------------------------------------------
