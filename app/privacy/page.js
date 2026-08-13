@@ -101,6 +101,11 @@ export default function PrivacyPage() {
         <section style={{ marginTop: '28px' }}>
           <h2 style={{ color: '#fff' }}>Your Rights and Contact</h2>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            Every answer carries a response ID, shown beneath it. We hold no account and no name for you,
+            so that ID is the only way we can find the records relating to a particular exchange. Quote it
+            when you ask what we hold about one, or ask for it to be deleted.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
             For the main Virtual Fly Brain website privacy notice and broader policy information, see{' '}
             <a
               href="https://www.virtualflybrain.org/about/privacy/"
