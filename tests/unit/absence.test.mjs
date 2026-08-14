@@ -464,3 +464,42 @@ test('the unmatched block is absent when every name resolved', () => {
   assert.ok(!renderCoverageBlock(ledger).includes('NAMES THAT DID NOT MATCH'))
   assert.ok(!renderShelf(buildShelf(ledger)).includes('NAMES THAT DID NOT MATCH'), 'and the default is still no block')
 })
+
+// --- naming a denial without quoting it --------------------------------------
+//
+// The escalation and gate lines print to the container log, which is outside
+// governance.js's file mode and outside pruneRetention. They used to print the
+// matched sentence, and a model writes an absence by restating the question, so
+// the user's wording went with it. The slug is what replaced it.
+
+test('every absence pattern reports a stable slug', () => {
+  const cases = [
+    ['VFB does not currently hold data on that line.', 'does-not-hold'],
+    ['VFB has no images of that neuron.', 'has-no'],
+    ['There are no records in VFB for that driver.', 'no-data-in'],
+    ['VFB lacks connectivity for that class.', 'lacks'],
+    ['The layer subdivisions are not annotated in the current data.', 'is-not-present-in'],
+    ['There is no record of that stock.', 'there-is-no']
+  ]
+  for (const [sentence, slug] of cases) {
+    const claims = findAbsenceClaims(sentence)
+    assert.equal(claims.length, 1, `missed: ${sentence}`)
+    assert.equal(claims[0].pattern, slug, sentence)
+  }
+})
+
+test('the repairs come back named as well as quoted', () => {
+  const answer = 'VFB does not currently hold data on that. There is no record of it either.'
+  const { repairs, patterns } = repairUnlicensedAbsences(answer, absenceLicence(ledgerWith(Q)))
+  assert.equal(repairs.length, patterns.length, 'one slug per repair, in the same order')
+  assert.deepEqual(patterns, ['does-not-hold', 'there-is-no'])
+  // The strings are still there for the trace; only the log line changed.
+  assert.ok(repairs[0].includes('does not currently hold'))
+})
+
+test('a slug is a slug — no user wording can reach the log through it', () => {
+  const claims = findAbsenceClaims('VFB does not currently hold data on the SECRETLINE from Kyoto.')
+  assert.equal(claims.length, 1)
+  assert.ok(!claims[0].pattern.includes('SECRETLINE'))
+  assert.match(claims[0].pattern, /^[a-z-]+$/)
+})

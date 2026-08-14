@@ -656,6 +656,53 @@ function FeedbackPrompt({ msg, feedbackState, onSubmitHelpful, onSelectNeedsWork
   )
 }
 
+/**
+ * The identifier for one answer, shown so it can be quoted.
+ *
+ * The DPIA describes a data-subject-rights route in which someone asks about
+ * the data held on a particular exchange by quoting its response identifier.
+ * The identifier was generated and stored from the beginning and never shown,
+ * so the route could not be exercised and an assessor could disprove it in a
+ * browser in under a minute.
+ *
+ * On EVERY answer, not only the latest. The feedback prompt is deliberately
+ * rendered once at the foot of the conversation, but the response someone wants
+ * to ask about is often not the last one, and an identifier that is only
+ * available for the newest answer does not support the route the DPIA sets out.
+ *
+ * Quiet by design — 0.68em, muted, below the sources line — and selectable, with
+ * a copy button for the common case. The clipboard API is unavailable over plain
+ * HTTP and in some embedded browsers, so the text itself is always selectable
+ * and the button degrades to saying so rather than to nothing.
+ */
+function ResponseIdentifier({ responseId }) {
+  const [copied, setCopied] = useState('')
+  const copy = useCallback(() => {
+    const write = globalThis.navigator?.clipboard?.writeText
+    if (typeof write !== 'function') { setCopied('select and copy'); return }
+    globalThis.navigator.clipboard.writeText(responseId)
+      .then(() => setCopied('copied'))
+      .catch(() => setCopied('select and copy'))
+  }, [responseId])
+  return (
+    <div style={{ marginTop: '8px', fontSize: '0.68em', color: '#6f6f6f', display: 'flex', alignItems: 'baseline', gap: '6px', flexWrap: 'wrap' }}>
+      <span>Response ID:</span>
+      <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#9a9a9a', userSelect: 'all' }}>
+        {responseId}
+      </code>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={`Copy response ID ${responseId}`}
+        style={{ background: 'none', border: '1px solid #2c2c2c', borderRadius: '4px', color: '#8f8f8f', cursor: 'pointer', fontSize: '1em', padding: '1px 6px' }}
+      >
+        Copy
+      </button>
+      {copied ? <span role="status">{copied}</span> : null}
+    </div>
+  )
+}
+
 // Only re-renders when its own props change, NOT when sibling messages
 // are added or the thinking indicator ticks.
 const ChatMessage = memo(function ChatMessage({
@@ -816,6 +863,7 @@ const ChatMessage = memo(function ChatMessage({
           ))}
         </div>
       )}
+      {msg.role === 'assistant' && msg.responseId ? <ResponseIdentifier responseId={msg.responseId} /> : null}
     </div>
   )
 })
