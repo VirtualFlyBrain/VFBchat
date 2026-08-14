@@ -14,9 +14,11 @@ import {
 import {
   countCitationLinks,
   extractVfbTermIds,
+  filterStructuredImages,
   findBlockedRequestedDomains,
   requestMentionsSearchIntent,
-  sanitizeAssistantOutput
+  sanitizeAssistantOutput,
+  scrubStructuredTables
 } from '../../../lib/policy.js'
 import { checkAndIncrement } from '../../../lib/rateLimit.js'
 import { getClientIp } from '../../../lib/clientIp.mjs'
@@ -67,7 +69,7 @@ import {
   getSearchAllowList,
   validateProductionCompliance
 } from '../../../lib/runtimeConfig.js'
-import { primeServedModels, servedModelsSnapshot, catalogueStatus } from '../../../lib/modelCatalogue.mjs'
+import { ensureServedModels, servedModelsSnapshot, catalogueStatus } from '../../../lib/modelCatalogue.mjs'
 import { describeRoleModels } from '../../../lib/roleProfiles.mjs'
 import { serviceIdentityBlock } from '../../../lib/serviceIdentity.mjs'
 
@@ -11107,10 +11109,12 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       apiBaseUrl,
       apiKey,
       defaultModel: apiModel,
-      // Which models is the gateway actually serving? Primed (never awaited) so
-      // the probe cannot add latency to a question; the first request after a
-      // cold start simply resolves unfiltered, exactly as v3.x always did.
-      servedModels: primeServedModels({ baseUrl: apiBaseUrl, apiKey }),
+      // Which models is the gateway actually serving? Refreshed in the
+      // background once known, and WAITED FOR while it is not — an unknown
+      // catalogue resolves every model list to its first entry unfiltered, which
+      // suspends the fallback exactly when a freshly-started container needs it.
+      // See ensureServedModels for the bounds on that wait.
+      servedModels: await ensureServedModels({ baseUrl: apiBaseUrl, apiKey }),
       toolDefs: buildHarnessToolCatalogue(),
       executeTool: (name, args) => executeFunctionTool(name, args, ctx),
       // `parsed` is the caller's single parse of this result. Parsing it again
@@ -11297,11 +11301,26 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     })
     // Result tables (detailed query results) carry their own per-row thumbnails,
     // so only show a separate image gallery when there is no table.
-    const tables = live.tables || []
+    const outboundAllowList = getOutboundAllowList()
+    // THE SAME ALLOW-LIST THE PROSE MEETS.
+    //
+    // built.images are extracted from text that sanitizeAssistantOutput has
+    // already been through. These are not: thumbnails and row links harvested
+    // from structured tool output reach the browser as <img src> without ever
+    // being checked. Today they are all virtualflybrain.org addresses, which is
+    // a fact about the current upstream and not a control.
+    const rawTables = scrubStructuredTables(live.tables || [], outboundAllowList)
+    const tables = rawTables.tables
     const gallerySource = tables.length
       ? (live.thumbnails || [])
       : ((live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || []))
-    const rawImages = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
+    const merged = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
+    const filtered = filterStructuredImages(merged, outboundAllowList)
+    const rawImages = filtered.images
+    const structuredBlocked = [...new Set([...filtered.blockedDomains, ...rawTables.blockedDomains])].sort()
+    if (structuredBlocked.length) {
+      console.warn(`[VFBchat] OUTBOUND | blocked structured urls | hosts=${structuredBlocked.join(',')}`)
+    }
     // Prefer the request's own template, then JRC2018U, then JRC2018UVNC, and keep
     // one image per entity — so an entity's view in the template the user is
     // looking at comes before the same entity aligned to a different template.
@@ -11309,6 +11328,9 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     const images = orderImagesByTemplate(rawImages, preferredTemplate).slice(0, 8)
     return {
       ...built, images, tables, responseId,
+      // One list, whatever path the address arrived by, so the governance
+      // counter and the debug payload do not have to know the difference.
+      blockedResponseDomains: [...new Set([...(built.blockedResponseDomains || []), ...structuredBlocked])].sort(),
       followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || [],
       // The ids this turn resolved and the catalogue queries it ran, as runnable
       // VFBquery Python. Carried on every turn so a client can offer it as a
