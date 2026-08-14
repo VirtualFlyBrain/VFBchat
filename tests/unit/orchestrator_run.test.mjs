@@ -440,6 +440,83 @@ test('maybeInjectRegionNeuronCountStep injects the count tool for a region count
   assert.equal(noCount.plan.length, 0)
 })
 
+/** Run fn with console.error captured. Returns the lines it wrote. */
+function captureStderr(fn) {
+  const lines = []
+  const original = console.error
+  console.error = (...args) => { lines.push(args.join(' ')) }
+  try { fn() } finally { console.error = original }
+  return lines
+}
+
+// The flagship question. VFB's search answers "fly brain" with 224 documents
+// that are almost all painted domains on JRC_FlyEM_Hemibrain, and every one of
+// them is Anatomy-and-not-a-neuron, so every one satisfies isRegionTerm exactly
+// as `brain` does. Under the old "exactly one region" rule a single surviving
+// painted domain took the curated counts off the table.
+test('maybeInjectRegionNeuronCountStep prefers the ontology class over painted domains', () => {
+  const ledger = {
+    plan: [],
+    terms: {
+      'fly brain': {
+        id: 'FBbt_00005095', label: 'brain', digest: { name: 'brain' },
+        info: { SuperTypes: ['Entity', 'Class', 'Anatomy', 'Nervous_system'], Tags: ['Nervous_system'], IsClass: true, IsIndividual: false }
+      },
+      'AB(L)': {
+        id: 'VFB_00102288', label: 'AB(L) on JRC_FlyEM_Hemibrain', digest: { name: 'AB(L) on JRC_FlyEM_Hemibrain' },
+        info: { SuperTypes: ['Entity', 'Individual', 'Anatomy'], IsClass: false, IsIndividual: true, IsPaintedDomain: true }
+      }
+    }
+  }
+  const lines = captureStderr(() => maybeInjectRegionNeuronCountStep(ledger, 'How many neurons are in the fly brain?'))
+  const inj = ledger.plan.find(s => s.tool === 'vfb_get_region_neuron_count')
+  assert.ok(inj, 'count step injected despite the painted domain also resolving')
+  assert.equal(inj.args.region, 'brain')
+  assert.ok(lines.some(l => l.includes('REGION COUNT INJECTOR | injected | region_id=FBbt_00005095')), lines.join('\n'))
+})
+
+test('maybeInjectRegionNeuronCountStep declines on two classes, and says so on stderr', () => {
+  const two = {
+    plan: [],
+    terms: {
+      mb: { id: 'FBbt_00005801', label: 'mushroom body', digest: { name: 'mushroom body' }, info: { SuperTypes: ['Class', 'Anatomy'], IsClass: true } },
+      me: { id: 'FBbt_00003748', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Class', 'Anatomy'], IsClass: true } }
+    }
+  }
+  const lines = captureStderr(() => maybeInjectRegionNeuronCountStep(two, 'how many neurons are in the mushroom body and the medulla?'))
+  assert.equal(two.plan.length, 0, 'two regions is a real ambiguity and still declines')
+  assert.ok(lines.some(l => l.includes('ambiguous-region') && l.includes('FBbt_00005801') && l.includes('FBbt_00003748')), lines.join('\n'))
+})
+
+// The decline that mattered: a count question where nothing region-shaped
+// resolved used to leave no trace at all in the container log.
+test('maybeInjectRegionNeuronCountStep names the gate and the flags when no region resolved', () => {
+  const neuronOnly = { plan: [], terms: { kc: { id: 'FBbt_00100247', label: 'KC', digest: { name: 'gamma Kenyon cell' }, info: { SuperTypes: ['Class', 'Neuron'] } } } }
+  const lines = captureStderr(() => maybeInjectRegionNeuronCountStep(neuronOnly, 'how many neurons are in the gamma lobe?'))
+  assert.equal(neuronOnly.plan.length, 0)
+  const line = lines.find(l => l.includes('no-region-term'))
+  assert.ok(line, lines.join('\n'))
+  assert.ok(line.includes('FBbt_00100247') && line.includes('neuron'), line)
+})
+
+// Quiet on everything else: this fires on every resolve round of every question,
+// so a line per question would drown the log it is meant to be readable in.
+test('maybeInjectRegionNeuronCountStep says nothing when the question has no count intent', () => {
+  const l = { plan: [], terms: { r: { id: 'FBbt_00003748', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Class', 'Anatomy'] } } } }
+  const lines = captureStderr(() => maybeInjectRegionNeuronCountStep(l, 'What is the medulla?'))
+  assert.deepEqual(lines, [])
+})
+
+// No user text on stderr — the A1b guard. The question is the one string here
+// that is the user's, and it must not appear in any of these lines.
+test('maybeInjectRegionNeuronCountStep never writes the question to stderr', () => {
+  const secret = 'how many neurons are in the ACME-CONFIDENTIAL-REGION?'
+  const l = { plan: [], terms: {} }
+  const lines = captureStderr(() => maybeInjectRegionNeuronCountStep(l, secret))
+  assert.ok(lines.length > 0, 'the decline is still reported')
+  assert.ok(!lines.join('\n').includes('ACME-CONFIDENTIAL'), lines.join('\n'))
+})
+
 test('maybeInjectConnectivityStep: upstream wording, no double-inject, regions excluded', () => {
   // upstream
   const up = { plan: [], terms: { x: { id: 'i', label: 'x', digest: { name: 'MBON01' }, info: { Tags: ['Neuron'] } } } }

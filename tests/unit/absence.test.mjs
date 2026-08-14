@@ -340,6 +340,51 @@ test('a draft that denies data sends the loop round again, with rounds to do it'
   assert.equal(nextAction(ledger).action, 'run_step')
 })
 
+// THE ANSWER MUST NOT BE WRITTEN OUT TWICE.
+//
+// Synthesis streams into a single live bubble on the client and only the final
+// `result` event ends it, so the second synthesis this escalation buys is
+// APPENDED to the draft it replaces. Production, 11 August, on "How many neurons
+// are in the fly brain?": the same paragraph twice, in two slightly different
+// wordings, one after the other. The tokens are already sent, so the server
+// cannot unsend them — the client is told to drop them instead.
+test('escalating tells the caller to discard the draft it already streamed', async () => {
+  const ledger = ledgerWith(Q)
+  ledger.budget.toolRoundsLeft = 0
+  const discarded = []
+  const went = await maybeEscalateBeforeAbsence(
+    ledger,
+    'VFB does not currently hold data identifying any cholinergic mushroom body output neurons.',
+    { onDraftDiscarded: (info) => discarded.push(info) }, () => {}
+  )
+  assert.equal(went, true)
+  assert.equal(discarded.length, 1, 'the streamed draft is withdrawn exactly once')
+  assert.equal(discarded[0].reason, 'absence-escalation')
+})
+
+test('a run that does not escalate leaves the streamed draft alone', async () => {
+  const ledger = ledgerWith(Q)
+  ledger.startedAt = Date.now() - (ABSENCE_ESCALATION_DEADLINE_MS + 1000)
+  const discarded = []
+  const went = await maybeEscalateBeforeAbsence(
+    ledger, 'VFB does not currently hold data on that.',
+    { onDraftDiscarded: () => discarded.push(1) }, () => {}
+  )
+  assert.equal(went, false)
+  assert.deepEqual(discarded, [], 'nothing was rewritten, so nothing is withdrawn')
+})
+
+test('a caller that never wired the discard hook still gets its escalation', async () => {
+  // Best-effort, like onStatus: an unwired or throwing hook must not cost the run.
+  const ledger = ledgerWith(Q)
+  ledger.budget.toolRoundsLeft = 0
+  const went = await maybeEscalateBeforeAbsence(
+    ledger, 'VFB does not currently hold data on that.',
+    { onDraftDiscarded: () => { throw new Error('client gone') } }, () => {}
+  )
+  assert.equal(went, true)
+})
+
 test('a run with no time left hedges instead of turning slow into nothing', async () => {
   // The first CI run of this branch: 63 of 64 tasks passed and the 64th was
   // "Timed out after 240000 ms". The escalation buys a second synthesis costing
