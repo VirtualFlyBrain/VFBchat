@@ -20,7 +20,10 @@ const OUT = {
 test('renderNeuronCountEstimate lists cited estimates (exact and floor) and the annotated count, deduplicated', () => {
   const md = renderNeuronCountEstimate(OUT, 'adult central brain')
   assert.match(md, /Published neuron-count estimates — adult central brain/)
-  assert.match(md, /more than 125,000 neurons .* — A central-brain connectome — PMID 39358519/)  // floor rendered
+  // Floor rendered, and its citation is a link now rather than bare text — the
+  // one part of the answer that is someone else's claim was the one part a
+  // reader could not follow.
+  assert.match(md, /more than 125,000 neurons .* — \[A central-brain connectome — PMID 39358519\]\(https:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/39358519\/ "[^"]+"\)/)
   assert.match(md, /~139,255 neurons \(whole adult Drosophila brain\)/)                          // exact rendered
   // dedup: only one 125,000 line
   assert.equal((md.match(/125,000/g) || []).length, 1)

@@ -41,7 +41,7 @@ import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
-import { curatedCountsForRegion, curatedNoteForRegion, curatedAnswerRules } from '../../../lib/curatedNeuronCounts.mjs'
+import { curatedCountsForRegion, curatedNoteForRegion, curatedAnswerRules, curatedArticle } from '../../../lib/curatedNeuronCounts.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
 import { APP_CLIENT_NAME, APP_VERSION } from '../../../lib/appVersion.mjs'
 import {
@@ -8460,7 +8460,11 @@ async function getRegionNeuronCountTool(client, args = {}, context = {}) {
         : 'VFB term metadata did not provide a count for this region. Do not substitute a remembered figure: say what was and was not looked up, and point the user at Virtual Fly Brain\'s reference on neuron counts.',
       curated_note: curatedNote || undefined,
       answer_rules: curatedAnswerRules(),
-      reference: 'https://www.virtualflybrain.org/docs/concepts/neuron-counts/',
+      // From the curated config, not a literal: this URL was repeated here as a
+      // string, so moving the page fixed the config and left the evidence — and
+      // the reference printed under the answer — pointing at a 404.
+      reference: curatedArticle()?.url,
+      reference_title: curatedArticle()?.title,
       scope_note: 'Keep the two kinds of number apart. A VFB query count describes records and classes curated across many datasets, sexes and stages. A connectome figure describes reconstructed neurons in one individual at one release. They are never interchangeable and must never be added or compared.'
     },
     next_actions: [
