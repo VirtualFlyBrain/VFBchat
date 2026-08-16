@@ -849,14 +849,26 @@ const ChatMessage = memo(function ChatMessage({
           </div>
         </div>
       )}
-      {/* Sources: clickable provenance — the VFB term pages backing the answer. */}
+      {/* Sources: clickable provenance — the VFB term pages, documentation pages
+          and publications the answer was built on. Three kinds, one line, and the
+          hover text says which: a term report, a VFB documentation page and a
+          paper on PubMed are different promises about what is behind the link,
+          and the label alone does not distinguish them. Deliberately quiet —
+          0.72em, muted — so it sits under the answer rather than competing with
+          it. Servers older than the kind field send none, hence the fallback. */}
       {msg.role === 'assistant' && Array.isArray(msg.sources) && msg.sources.length > 0 && (
         <div style={{ marginTop: '8px', fontSize: '0.72em', color: '#888' }}>
           Sources:{' '}
           {msg.sources.map((s, i) => (
             <span key={`src-${i}`}>
               {i > 0 ? ', ' : ''}
-              <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.id ? `Open ${s.label} term info in VFB (new tab)` : `Open ${s.label} (new tab)`} style={{ color: '#7fb2e6' }}>
+              <a
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={s.title || (s.id ? `Open ${s.label} term info in VFB (new tab)` : `Open ${s.label} (new tab)`)}
+                style={{ color: '#7fb2e6' }}
+              >
                 {s.label}
               </a>
             </span>

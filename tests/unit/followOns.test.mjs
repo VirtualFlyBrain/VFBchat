@@ -50,8 +50,16 @@ test('buildFollowOns derives ask chips from real queries + an open-in-VFB chip +
   assert.equal(terms[0].name, 'mushroom body')
   assert.equal(terms[0].id, 'FBbt_00005801')
   assert.equal(terms[0].label, 'mushroom body')
-  // source links to the term report (provenance for "(vfb)")
-  assert.deepEqual(sources, [{ label: 'mushroom body', url: 'https://www.virtualflybrain.org/reports/FBbt_00005801', id: 'FBbt_00005801', superseded: null }])
+  // source links to the term report (provenance for "(vfb)"), tagged with what
+  // is on the other side of the link so the Sources line can word its hover text
+  assert.deepEqual(sources, [{
+    kind: 'vfb',
+    label: 'mushroom body',
+    url: 'https://www.virtualflybrain.org/reports/FBbt_00005801',
+    id: 'FBbt_00005801',
+    superseded: null,
+    title: 'Open mushroom body term info in Virtual Fly Brain (new tab)'
+  }])
   // ask chip from the highest-count query, with a clear title and a runnable query
   const ask = chips.find(c => c.kind === 'ask')
   assert.match(ask.query, /input to the mushroom body/)
