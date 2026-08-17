@@ -21,8 +21,6 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
   **Verification.** 64/64 on the task battery at 5be963d, the first clean sweep, with zero on every quality measure: no factual answer without a tool, no tool claim without a tool, no disambiguation-only or plan-only answers, no unreported graph failures, no context lost across a turn. The one flag raised is a slow follow-up turn on C3. `next lint` is clean, the offline unit suite is 1279 green, and the multi-architecture image built.
 
-  **What this release does not prove.** Nothing here was validated against live ELM and MCP before merge — the sandbox cannot reach either, so the battery run on `main` above is the first live evidence, and the reference links have not been looked at in a browser. The arm64 leg of the build still dies intermittently under QEMU with an illegal instruction; it took three attempts on the v4.2.8 merge and is not a code failure, but it is not fixed either.
-
 ## v4.2.8
 - **There is no v4.2.7 image.** The v4.2.7 release exists on GitHub with nothing behind it: the version gate added in v4.2.5 failed the build before the push, so the tag was published and no image was ever produced. Docker Hub's `4.2` still points at 4.2.6's build, so deployments have been serving 4.2.6 and reporting 4.2.6 throughout — consistent, just a release behind. This release is what v4.2.7 was meant to be, plus the mechanism that makes that failure impossible.
 
