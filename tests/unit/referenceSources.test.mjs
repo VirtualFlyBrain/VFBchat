@@ -21,6 +21,7 @@ import { renderNeuronCountEstimate } from '../../lib/neuronCount.mjs'
 import { curatedArticle } from '../../lib/curatedNeuronCounts.mjs'
 import { sanitizeAssistantOutput, isAllowedStructuredUrl } from '../../lib/policy.js'
 import { getOutboundAllowList } from '../../lib/runtimeConfig.js'
+import { readFileSync } from 'node:fs'
 
 const ARTICLE = 'https://www.virtualflybrain.org/docs/concepts/neuron-counts/'
 
@@ -193,4 +194,24 @@ test('curatedArticle reads the shipped config, and the page is a virtualflybrain
   assert.ok(a && a.url.startsWith('https://'))
   assert.match(new URL(a.url).hostname, /virtualflybrain\.org$/)
   assert.ok(a.title.length > 0)
+})
+
+// ---- the NCBI contact address is a role address ----
+
+test('the NCBI contact address defaults to a role address, never a person', () => {
+  // It rides on every E-utilities request as `tool=vfbchat&email=…`, so whatever
+  // is set here is disclosed to a US federal agency on every literature lookup
+  // for as long as the service runs. Nothing else in the literature path carries
+  // personal data — the tools send a DOI, a PMID or a search string — so a named
+  // member of staff in this field would be the only such point, and one added by
+  // configuration rather than by anyone's choice. Read from source: the constant
+  // lives in the chat route, which cannot be imported without standing up the
+  // whole handler.
+  const src = readFileSync(new URL('../../app/api/chat/route.js', import.meta.url), 'utf8')
+  const m = src.match(/const NCBI_CONTACT_EMAIL = '([^']+)'/)
+  assert.ok(m, 'NCBI_CONTACT_EMAIL is not declared as a literal any more — re-point this test')
+  const [local, domain] = m[1].split('@')
+  assert.equal(domain, 'virtualflybrain.org')
+  assert.ok(['data', 'vfb', 'info', 'support', 'admin'].includes(local),
+    `NCBI contact "${m[1]}" does not look like a role address`)
 })

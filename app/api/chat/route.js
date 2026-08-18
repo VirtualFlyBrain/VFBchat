@@ -2170,8 +2170,25 @@ function pubmedSignal() {
 // from 3/s to 10/s and exempts the (shared) server IP from the blocking that
 // otherwise returns empty results. Set NCBI_API_KEY (and optionally NCBI_EMAIL)
 // in the deployment. Without these, PubMed search silently returns nothing.
+//
+// THE CONTACT ADDRESS MUST BE A ROLE ADDRESS, NOT A PERSON'S.
+//
+// It is attached to every single E-utilities request (`tool=vfbchat&email=…`),
+// so whatever is set here is disclosed to a US federal agency on every literature
+// lookup the service makes, for as long as it runs. NCBI wants somewhere to write
+// when a client misbehaves; it does not want, and has no use for, an individual.
+// A named member of staff in that field is the only personal data anywhere in the
+// literature path — the tools themselves send a DOI, a PMID or a search string and
+// nothing about the user — and it would be staff data, disclosed by configuration
+// rather than by anyone's choice.
+//
+// `data@virtualflybrain.org` is the address to use. A deployment that overrides
+// NCBI_EMAIL wins over this default, so setting a personal address in the
+// environment reintroduces the disclosure that this default exists to prevent;
+// deployments should leave it unset.
 const NCBI_API_KEY = (process.env.NCBI_API_KEY || '').trim()
-const NCBI_EMAIL = (process.env.NCBI_EMAIL || 'vfb@virtualflybrain.org').trim()
+const NCBI_CONTACT_EMAIL = 'data@virtualflybrain.org'
+const NCBI_EMAIL = (process.env.NCBI_EMAIL || '').trim() || NCBI_CONTACT_EMAIL
 function ncbiAuth() {
   const params = new URLSearchParams({ tool: 'vfbchat', email: NCBI_EMAIL })
   if (NCBI_API_KEY) params.set('api_key', NCBI_API_KEY)
