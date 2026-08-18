@@ -212,6 +212,12 @@ test('the NCBI contact address defaults to a role address, never a person', () =
   assert.ok(m, 'NCBI_CONTACT_EMAIL is not declared as a literal any more — re-point this test')
   const [local, domain] = m[1].split('@')
   assert.equal(domain, 'virtualflybrain.org')
-  assert.ok(['data', 'vfb', 'info', 'support', 'admin'].includes(local),
-    `NCBI contact "${m[1]}" does not look like a role address`)
+  // Only the addresses this application actually publishes to its own users, in
+  // the privacy notice, the terms and the accessibility statement. `vfb@` is
+  // deliberately NOT here: it was the previous default and appeared exactly once
+  // in the whole repository — on that line — with no sign it was ever a routed
+  // alias. An address NCBI cannot reach is worse than none, because their
+  // practice is to warn by email before they throttle.
+  assert.ok(['data', 'support'].includes(local),
+    `NCBI contact "${m[1]}" is not an address VFB publishes as a contact`)
 })
