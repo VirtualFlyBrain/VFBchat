@@ -1031,7 +1031,7 @@ export default function Home() {
 - Raw security logs are retained for up to 30 days
 - We do not store full chat content for routine analytics
 - If you report a problem, you can optionally attach the visible chat for investigation for up to 30 days
-- Do not share confidential or sensitive information
+- Do not share personal, confidential or sensitive information
 - Use this tool to enhance your understanding of neuroscience concepts
 - See the [Privacy Notice](/privacy) for more information
 
