@@ -33,7 +33,7 @@ import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
 import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
-import { safeToolArgs } from '../../../lib/safeToolArgs.mjs'
+import { safeToolArgs, safeText } from '../../../lib/safeToolArgs.mjs'
 import { createRunSignal, throwIfAborted, isRunAbortedWith, NOBODY_WAITING } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
@@ -1203,7 +1203,7 @@ async function callMcpToolWithRetry(client, name, args, { retries = VFB_MCP_MAX_
       // `spent` and `next` are the two facts that were missing when this was
       // diagnosed from logs alone: a stall looks exactly like a server refusing
       // three times unless the line says which budget ran out.
-      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${safeToolArgs(args)} | error=${error?.message || error}`)
+      console.error(`[VFBchat] MCP CALL FAILED | tool=${name} | attempt=${attempt + 1}/${retries + 1} | transient=${transient} | spent=${elapsedMs}ms/${budgetMs}ms | next=${next.reason} | args=${safeToolArgs(args)} | error=${safeText(error?.message || error)}`)
       if (!next.retry) throw error
       attemptTimeoutMs = next.timeoutMs
       if (next.waitMs > 0) await new Promise(resolve => setTimeout(resolve, next.waitMs))
@@ -1277,7 +1277,7 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
     if (!isFailedRunQueryPayload(retryText)) return retryText
     return annotateFailedRunQuery(retryText)
   } catch (error) {
-    console.error(`[VFBchat] force_refresh retry for ${name} failed: ${error?.message || error}`)
+    console.error(`[VFBchat] force_refresh retry for ${name} failed: ${safeText(error?.message || error)}`)
     return annotateFailedRunQuery(text)
   }
 }

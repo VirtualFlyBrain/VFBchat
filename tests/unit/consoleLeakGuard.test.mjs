@@ -183,6 +183,43 @@ test('a failing tool reports its arguments by shape', async () => {
   assert.match(output, /max_results:5/, 'the safe arguments are still legible')
 })
 
+test('a failing tool reports the upstream error by shape, not verbatim', async () => {
+  // The gap this closes: `args` was rendered shape-only while `error` beside it
+  // was not, and an upstream message quotes what it was given. get_reviewed_page
+  // takes a URL whose PATH is unconstrained — only the host is allow-listed —
+  // and the fetcher throws that URL back in its message. So a redacted `args`
+  // sat next to an unredacted copy of the same user-supplied value.
+  const url = `https://virtualflybrain.org/${CANARY}-unpublished-notes`
+  const { deps } = buildLiveDeps({
+    toolDefs: TOOL_DEFS,
+    apiBaseUrl: 'https://elm.example/api/v1',
+    apiKey: 'k',
+    defaultModel: 'm',
+    streamText: async () => 'x',
+    collectGraphs: () => [],
+    executeTool: async () => { throw new Error(`Fetch failed for ${url}: HTTP 404`) }
+  })
+  const output = await captureConsole(() => deps.runTool('get_reviewed_page', { url }))
+  assertNoLeak(output, 'the tool-failure error message')
+  assert.match(output, /error=<text:\d+>/, 'the upstream error is rendered as a length')
+})
+
+test('a single-token argument the user typed is not printed verbatim', () => {
+  // SAFE_KEYS covers `id`, `gene`, `neuron_type` and friends because their
+  // values come from VFB's vocabulary. The value test used to be "contains no
+  // whitespace", which an unpublished line name passes. It is now
+  // identifier-shaped: no path separators, and 40 characters rather than 80.
+  const labName = `${CANARY}-unpublished-line-from-the-Kyoto-stock-centre`
+  assert.ok(!safeToolArgs({ id: labName }, { trace: false }).includes(CANARY),
+    'an over-long lab identifier is rendered by length')
+  assert.ok(!safeToolArgs({ dataset: `https://example.org/${CANARY}` }, { trace: false }).includes(CANARY),
+    'a URL in a safe key is rendered by length')
+  // Real VFB vocabulary still prints, so the diagnostic keeps its value.
+  assert.match(safeToolArgs({ id: 'FBbt_00007053' }, { trace: false }), /id:FBbt_00007053/)
+  assert.match(safeToolArgs({ gene: 'elav-GAL4' }, { trace: false }), /gene:elav-GAL4/)
+  assert.match(safeToolArgs({ neuron_type: 'DNp01' }, { trace: false }), /neuron_type:DNp01/)
+})
+
 // --- the escape hatch ------------------------------------------------------
 
 test('VFB_HARNESS_TRACE prints the values in full, so the guard survives debugging', () => {

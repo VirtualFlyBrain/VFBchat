@@ -20,6 +20,33 @@ export default function PrivacyPage() {
         </p>
 
         <section style={{ marginTop: '28px' }}>
+          <h2 style={{ color: '#fff' }}>Who is responsible for your data</h2>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            The <strong>University of Edinburgh</strong> is the data controller for the personal data
+            described in this notice. The University is registered with the Information
+            Commissioner&rsquo;s Office under registration number Z6426984. VFB Chat is operated by the
+            Virtual Fly Brain project in the School of Informatics.
+          </p>
+        </section>
+
+        <section style={{ marginTop: '28px' }}>
+          <h2 style={{ color: '#fff' }}>Our lawful basis</h2>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            We process this data in the performance of a <strong>task carried out in the public
+            interest</strong> (UK GDPR Article 6(1)(e)). That task is the University&rsquo;s statutory
+            function in research and the advancement of learning, under which it operates Virtual Fly
+            Brain as an open research resource for the international research community. We process
+            only the minimum technical data needed to run that resource securely and to show how much
+            it is used.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            Where you choose to attach a conversation to a problem report, we rely on your{' '}
+            <strong>consent</strong> for that transcript. You do not have to attach one, and you can
+            ask us to delete it at any time.
+          </p>
+        </section>
+
+        <section style={{ marginTop: '28px' }}>
           <h2 style={{ color: '#fff' }}>What We Collect</h2>
           <ul style={{ lineHeight: 1.7 }}>
             <li>IP address for rate limiting, security, and abuse prevention.</li>
@@ -68,6 +95,12 @@ export default function PrivacyPage() {
             for safeguarding or legal compliance.
           </p>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            To find published papers, the service may also search PubMed (US National Library of
+            Medicine) and bioRxiv. What is sent to them is a search term built from the Virtual Fly
+            Brain terms your question resolved to &mdash; not your question, and nothing that
+            identifies you.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
             Please still avoid typing personal information into your question. We ask this because it is good practice,
             not because we can see it.
           </p>
@@ -101,9 +134,36 @@ export default function PrivacyPage() {
         <section style={{ marginTop: '28px' }}>
           <h2 style={{ color: '#fff' }}>Your Rights and Contact</h2>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
-            Every answer carries a response ID, shown beneath it. We hold no account and no name for you,
-            so that ID is the only way we can find the records relating to a particular exchange. Quote it
-            when you ask what we hold about one, or ask for it to be deleted.
+            Under data protection law you have the right to:
+          </p>
+          <ul style={{ lineHeight: 1.7 }}>
+            <li><strong>Access</strong> &mdash; ask for a copy of the personal data we hold about you</li>
+            <li><strong>Rectification</strong> &mdash; ask us to correct data that is inaccurate</li>
+            <li><strong>Erasure</strong> &mdash; ask us to delete data we hold about you</li>
+            <li><strong>Restriction</strong> &mdash; ask us to limit how we use it</li>
+            <li><strong>Objection</strong> &mdash; object to our processing it</li>
+            <li><strong>Portability</strong> &mdash; where it applies, receive it in a structured, machine-readable form</li>
+            <li><strong>Withdraw consent</strong> &mdash; where we rely on consent, which for this service means a conversation you attached to a problem report</li>
+          </ul>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            <strong>How to exercise them.</strong> Every answer carries a response ID, shown beneath it.
+            We hold no account and no name for you, so that ID is the only way we can find the records
+            relating to a particular exchange &mdash; quote it when you ask what we hold, or ask for it
+            to be deleted. Because we hold nothing that identifies you, there will be cases where we
+            cannot locate any data for a request; where that happens we will say so.
+          </p>
+          <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
+            <strong>If you are unhappy with how we have handled your data</strong>, please contact the
+            University&rsquo;s Data Protection Officer using the details below. You also have the right
+            to complain to the UK supervisory authority, the{' '}
+            <a
+              href="https://ico.org.uk/make-a-complaint/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#66d9ff', textDecoration: 'underline' }}
+            >
+              Information Commissioner&rsquo;s Office
+            </a>, at any time.
           </p>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
             For the main Virtual Fly Brain website privacy notice and broader policy information, see{' '}
