@@ -685,7 +685,9 @@ function ResponseIdentifier({ responseId }) {
       .catch(() => setCopied('select and copy'))
   }, [responseId])
   return (
-    <div style={{ marginTop: '8px', fontSize: '0.68em', color: '#6f6f6f', display: 'flex', alignItems: 'baseline', gap: '6px', flexWrap: 'wrap' }}>
+    // #8a8a8a, not #6f6f6f: at 0.68em this is small text, so WCAG 2.2 AA wants
+    // 4.5:1 and the old value measured 3.94:1 against the answer background.
+    <div style={{ marginTop: '8px', fontSize: '0.68em', color: '#8a8a8a', display: 'flex', alignItems: 'baseline', gap: '6px', flexWrap: 'wrap' }}>
       <span>Response ID:</span>
       <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#9a9a9a', userSelect: 'all' }}>
         {responseId}
@@ -774,7 +776,11 @@ const ChatMessage = memo(function ChatMessage({
                         <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
                           <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
                           {Array.isArray(r.tags) && r.tags.length > 0 && (
-                            <div style={{ color: '#777', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
+                            // #8a8a8a, not #777: these tags render at about 11px
+                            // inside a table row, so they are small text and
+                            // #777 measured 4.42:1 — just under the 4.5:1 that
+                            // WCAG 2.2 AA requires.
+                            <div style={{ color: '#8a8a8a', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
                           )}
                         </td>
                       </tr>
