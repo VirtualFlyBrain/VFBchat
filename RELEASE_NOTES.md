@@ -4,6 +4,92 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.10
+- **The privacy notice now identifies who is responsible for the data, and on what
+  legal basis.** It named neither. It gave the data categories, the recipients, the
+  transfer mechanism, the retention periods and the DPO's address — and never said
+  that the University of Edinburgh is the controller, never stated a lawful basis,
+  listed only two of the six data subject rights, and offered no route to the ICO.
+  Those are Article 13 essentials, and the transparency answer in the service's data
+  protection assessment rests entirely on that page. It now names the controller
+  with its ICO registration; states Article 6(1)(e) public task, grounded in the
+  Universities (Scotland) Acts 1858 to 1966 and the Further and Higher Education
+  (Scotland) Act 2005, with consent for a transcript a user chooses to attach to a
+  problem report; gives the full rights list and how to exercise them using the
+  response identifier shown under every answer; and gives the ICO complaint route.
+  Legitimate interests was considered and is not available: Article 6(1) provides
+  that it does not apply to processing carried out by a public authority in the
+  performance of its tasks, and the IP address held for abuse prevention exists
+  solely to keep a public-task service available. The notice also now says that
+  literature search reaches PubMed and bioRxiv, and what is sent to them — a string
+  built from the resolved VFB term, never the question.
+
+  **The accessibility audit now sees an answer.** It loaded each page and ran axe
+  against it, which on the chat page is a heading, an input and a send button.
+  Everything a reader actually spends time in exists only after a question has been
+  answered — the answer text, result tables, the image gallery and its data-derived
+  alt text, inline citations, the response identifier and its copy button, the
+  feedback controls — and none of it was covered, although it is the surface most
+  likely to be wrong, because it is assembled from model output rather than written
+  by hand. A fifth target drives the real interface to a rendered answer against a
+  stubbed response, so axe sees the production DOM with only the words fixed. It
+  found two contrast failures on its first run, both now fixed: the `Response ID:`
+  label at 3.94:1 and the tag line in a result row at 4.42:1, where WCAG 2.2 AA
+  wants 4.5:1 for text that size.
+
+  **The accessibility statement now says what has not been tested.** It claimed ten
+  measures without saying how any had been checked, and two of them — live regions
+  for streamed content, and alternative text on images — were precisely about the
+  state the audit never visited. It now separates what is verified automatically on
+  every change, what automation cannot establish (whether data-derived alt text is
+  *useful*, whether a live region announces well), and what has not been tested at
+  all: screen readers, voice recognition, and reflow at 400% with a long answer. The
+  Regulations ask for an accurate statement, not a clean one.
+
+  **The container log no longer echoes a web address the user typed.** Tool
+  arguments were rendered by shape while the upstream error beside them was printed
+  verbatim, and `get_reviewed_page` takes a URL whose path is unconstrained — only
+  the host is allow-listed — which the fetcher throws back in its message. The
+  redaction was defeated by the value next to it, in a public CI log. Errors now go
+  through the same renderer at all five sites. The argument value test was "contains
+  no whitespace", which a URL and a seventy-character lab identifier both pass; it
+  is now identifier-shaped, forty characters and no path separators, so real VFB
+  vocabulary still prints and the diagnostic keeps its value. The behavioural guard
+  had caught neither, because it planted its canary only in the question and the
+  term name and its tool-failure case threw an error containing no user text. Two
+  new cases close both paths.
+
+  **Hostnames a user types are no longer kept by name for twenty-six months.** They
+  are extracted by regex so the service can refuse to fetch anything off its
+  allow-list, and the refusal was recorded in the long-retention counters with the
+  name attached — a fragment of what someone wrote, in the tier meant to hold
+  nothing but counts. It is now a count. The names remain in the thirty-day security
+  and blocked-search logs, which is where an abuse investigation would look anyway.
+
+  **The documentation index points at the site that exists.** The task battery
+  failed on a Circuit Browser question because the model constructed a plausible URL
+  on an allow-listed host and got a 404 — the index held thirteen entries, two of
+  them documentation pages, against seventy-seven pages the site publishes. The home
+  page pointed at the non-canonical bare host, which answers a redirect to `http`;
+  the 3D viewer pointed at a single-page app that serves no readable text; and
+  `/reports/` is a routed namespace rather than a document. All three corrected, the
+  whole Website Features section added, and a landing page for each of Concepts,
+  Data, Tutorials, APIs, Anatomy Diagrams, Resources and Overview, with titles and
+  summaries taken from each page's own front matter. Every one of the twenty-seven
+  URLs returns 200 with no redirect.
+
+  **Also:** `NCBI_EMAIL` is passed through the compose file, having been set on the
+  server but never reaching the container, because Compose forwards only what is
+  listed. And the chat's opening guidance now asks users not to share personal
+  information, where it named only confidential and sensitive.
+
+  **Verification.** 62/64 on the task battery, the two failures being 240-second
+  timeouts on live model calls rather than assertions. The offline unit suite is
+  1279 green across 88 files. `next lint` and `next build` are clean. The WCAG 2.2
+  AA audit reports zero machine-detectable violations across all five targets,
+  including the answered state — which is a floor and not a certificate, and the
+  statement now says so.
+
 ## v4.2.9
 - **Every citation in an answer can now be followed.** The synthesiser is forbidden to write URLs, because a model that writes its own links invents them; the automatic linking that rule promises in exchange only ever covered VFB term reports. So anything that was not an ontology term could not be cited by any route. The visible case was the neuron-count answer, which opens by saying there is no single figure — it depends on the boundaries, the specimen and the counting method — and cited nothing, although that framing is drawn from VFB's own reviewed article on neuron counts, and although the tool payload already carried the article's URL and an instruction to point the reader at it. The model was simultaneously told never to write a URL, so the two cancelled, every time. References are now emitted deterministically, exactly as the term sources already were: `lib/referenceSources.mjs` turns literature evidence and the article and primary papers behind a curated count into sources, deduplicated across trailing slash, `www` and scheme. Each source carries what is on the other side of the link — a term report, a documentation page, a paper — and words its own hover text accordingly. The count block links every figure to its paper, prints the curator's note that qualifies it, and closes with the article. The article's URL now comes from `config/fly-neuron-counts.json` rather than a string literal, so moving the page cannot leave the reference pointing at a 404.
 
