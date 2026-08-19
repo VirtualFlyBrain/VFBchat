@@ -33,11 +33,14 @@ export default function PrivacyPage() {
           <h2 style={{ color: '#fff' }}>Our lawful basis</h2>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
             We process this data in the performance of a <strong>task carried out in the public
-            interest</strong> (UK GDPR Article 6(1)(e)). That task is the University&rsquo;s statutory
-            function in research and the advancement of learning, under which it operates Virtual Fly
-            Brain as an open research resource for the international research community. We process
-            only the minimum technical data needed to run that resource securely and to show how much
-            it is used.
+            interest</strong> (UK GDPR Article 6(1)(e)). The University&rsquo;s constitution is
+            statutory &mdash; the Universities (Scotland) Acts 1858 to 1966 &mdash; and the Further and
+            Higher Education (Scotland) Act 2005 provides for the undertaking of research among
+            fundable bodies, of which the University is one. Operating Virtual Fly Brain as an open
+            research resource, and making its data reachable, falls within those functions. We process
+            only the minimum technical data needed to run the service securely and to show how much it
+            is used; the IP address held for abuse prevention is processed on the same basis, because
+            it exists solely to keep that service available.
           </p>
           <p style={{ color: '#b8b8b8', lineHeight: 1.6 }}>
             Where you choose to attach a conversation to a problem report, we rely on your{' '}
