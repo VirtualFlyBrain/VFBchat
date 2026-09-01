@@ -1611,3 +1611,45 @@ test('maybeInjectConnectivityStep: a class with UpstreamClassConnectivity runs t
   maybeInjectConnectivityStep(bare, 'what are the main inputs to KCg-s?')
   assert.equal(bare.plan[0].tool, 'vfb_find_connectivity_partners')
 })
+
+// A symbol the question names is looked up even when the planner, shown the
+// prior conversation, read it as a back-reference to the previous turn's term.
+test('unplannedQuestionSymbols puts a named symbol up for resolution when nothing planned or carried covers it', async () => {
+  const { unplannedQuestionSymbols } = await import('../../lib/orchestrator.mjs')
+  assert.deepEqual(unplannedQuestionSymbols('what are the main inputs to KCg-s?', ['gamma dorsal Kenyon cell'], {}), ['KCg-s'])
+  assert.deepEqual(unplannedQuestionSymbols('What are the top 5 downstream partners of KCg-m_R?', ['adult gamma Kenyon cell'], {}), ['KCg-m_R'])
+  // Covered by the plan, by a carried term, or by the registry: nothing.
+  assert.deepEqual(unplannedQuestionSymbols('what are the main inputs to KCg-s?', ['KCg-s'], {}), [])
+  assert.deepEqual(unplannedQuestionSymbols('what are the main inputs to KCg-s?', [], { terms: { x: { label: 'KCg-s', digest: { name: 'gamma-s Kenyon cell' } } } }), [])
+  assert.deepEqual(unplannedQuestionSymbols('what are the main inputs to KCg-s?', [], { registry: { 'kcg-s': { id: 'FBbt_00049830' } } }), [])
+  // Not symbols: dataset names, ids, reagent vocabulary, plain words, numbers.
+  assert.deepEqual(unplannedQuestionSymbols("List all DA1 lPN neurons in VFB with their VFB IDs and which datasets they're in (FlyWire, hemibrain, BANC, etc).", ['DA1 lPN'], {}), [])
+  assert.deepEqual(unplannedQuestionSymbols('Which FlyWire neuron is the closest NBLAST match to hemibrain neuron VFB_jrchjtdb?', [], {}), [])
+  assert.deepEqual(unplannedQuestionSymbols('Which split-GAL4 lines label KCg-d?', ['KCg-d'], {}), [])
+  assert.deepEqual(unplannedQuestionSymbols('What is the medulla? 5 um', ['medulla'], {}), [])
+})
+
+test('displaceBackReferences drops the planner\'s substituted term and re-aims its steps at the named symbol', async () => {
+  const { displaceBackReferences } = await import('../../lib/orchestrator.mjs')
+  const ledger = {
+    terms: {
+      'gamma dorsal Kenyon cell': { id: 'FBbt_00110932', label: 'gamma dorsal Kenyon cell', digest: { name: 'KCg-d' } },
+      'KCg-s': { id: 'FBbt_00049830', label: 'KCg-s', digest: { name: 'KCg-s' } }
+    },
+    plan: [{ id: 's1', tool: 'vfb_run_query', args: { id: 'FBbt_00110932', query_type: 'UpstreamClassConnectivity' }, status: 'pending', note: '' }]
+  }
+  displaceBackReferences(ledger, 'what are the main inputs to KCg-s?', ['KCg-s'])
+  assert.deepEqual(Object.keys(ledger.terms), ['KCg-s'])
+  assert.equal(ledger.plan[0].args.id, 'FBbt_00049830')
+  // A question that names both keeps both; a pronoun keeps both.
+  const both = { terms: { a: { id: 'A', label: 'gamma dorsal Kenyon cell' }, 'KCg-s': { id: 'B', label: 'KCg-s' } }, plan: [] }
+  displaceBackReferences(both, 'compare KCg-s with gamma dorsal Kenyon cell', ['KCg-s'])
+  assert.deepEqual(Object.keys(both.terms).sort(), ['KCg-s', 'a'])
+  const pron = { terms: { a: { id: 'A', label: 'gamma dorsal Kenyon cell' }, 'KCg-s': { id: 'B', label: 'KCg-s' } }, plan: [] }
+  displaceBackReferences(pron, 'does KCg-s share inputs with it?', ['KCg-s'])
+  assert.deepEqual(Object.keys(pron.terms).sort(), ['KCg-s', 'a'])
+  // An unresolved symbol displaces nothing.
+  const miss = { terms: { a: { id: 'A', label: 'gamma dorsal Kenyon cell' }, 'XYZ-9': { id: null } }, plan: [] }
+  displaceBackReferences(miss, 'inputs to XYZ-9?', ['XYZ-9'])
+  assert.deepEqual(Object.keys(miss.terms).sort(), ['XYZ-9', 'a'])
+})
