@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { NEGATIVE_FEEDBACK_REASON_CODES } from '../lib/feedback.js'
 import {
   GRAPH_PALETTE,
@@ -246,7 +247,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     // Horizontal gutter must leave room for the (wrapped) node labels that sit
     // under the left/right column nodes — a narrow margin clipped long class names
     // like "adult octopaminergic and glutamatergic neuron" off the left edge.
-    const marginX = Math.min(140, Math.max(70, svgSize.width * 0.18))
+    const marginX = Math.min(190, Math.max(90, svgSize.width * 0.24))
     const marginY = 40
     const margin = marginX
     const availableHeight = Math.max(1, svgSize.height - (marginY * 2))
@@ -285,7 +286,11 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
         bucket.forEach((node, index) => {
           positions.set(node.data.id, {
             x: roleColumns[role],
-            y: marginY + ((index + 1) * availableHeight / (bucket.length + 1))
+            y: marginY + ((index + 1) * availableHeight / (bucket.length + 1)),
+            // Column nodes take their label BESIDE them, away from the edges,
+            // so a stack of long class names no longer overprints the next
+            // node down (#50). Bridge/isolated nodes keep the label below.
+            labelSide: role === 'source' ? 'left' : role === 'target' ? 'right' : 'below'
           })
         })
       })
@@ -308,6 +313,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
       group: node.data.group,
       color: node.data.color,
       radius: Math.max(14, Math.min(32, Number(node.data.size) / 2 || 18)),
+      labelSide: 'below',
       ...(positions.get(node.data.id) || { x: svgSize.width / 2, y: svgSize.height / 2 })
     }))
     const laidOutNodeById = new Map(laidOutNodes.map(node => [node.id, node]))
@@ -354,12 +360,18 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
         const w = entry.contentRect.width
-        if (w > 0) setDimensions({ width: w, height: Math.max(350, Math.min(500, w * 0.6)) })
+        // Tall enough for the longest column: fifteen partners stacked in
+        // 400px put every label on top of the next node (#50).
+        const columnRows = Math.max(1, ...Object.values(
+          nodes.reduce((acc, n) => { const g = n.group || 'x'; acc[g] = (acc[g] || 0) + 1; return acc }, {})
+        ), Math.ceil(nodes.length / 2))
+        const needed = 60 + columnRows * 46
+        if (w > 0) setDimensions({ width: w, height: Math.max(Math.max(350, Math.min(500, w * 0.6)), Math.min(900, needed)) })
       }
     })
     ro.observe(containerRef.current)
     return () => ro.disconnect()
-  }, [])
+  }, [nodes])
 
   if (nodes.length === 0 || edges.length === 0) return null
 
@@ -526,20 +538,28 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
                 stroke="#1a1a2e"
                 strokeWidth="1"
               />
-              <text
-                x={node.x}
-                y={node.y + node.radius + 13}
-                textAnchor="middle"
-                fill="#e5e7eb"
-                fontSize="11"
-                paintOrder="stroke"
-                stroke="#0f0f12"
-                strokeWidth="3"
-              >
-                {wrapGraphLabel(node.label).map((line, i) => (
-                  <tspan key={i} x={node.x} dy={i === 0 ? 0 : 12}>{line}</tspan>
-                ))}
-              </text>
+              {(() => {
+                const side = node.labelSide || 'below'
+                const lines = wrapGraphLabel(node.label, side === 'below' ? 20 : 26, side === 'below' ? 3 : 2)
+                const tx = side === 'left' ? node.x - node.radius - 6 : side === 'right' ? node.x + node.radius + 6 : node.x
+                const ty = side === 'below' ? node.y + node.radius + 13 : node.y - ((lines.length - 1) * 6) + 4
+                return (
+                  <text
+                    x={tx}
+                    y={ty}
+                    textAnchor={side === 'left' ? 'end' : side === 'right' ? 'start' : 'middle'}
+                    fill="#e5e7eb"
+                    fontSize="11"
+                    paintOrder="stroke"
+                    stroke="#0f0f12"
+                    strokeWidth="3"
+                  >
+                    {lines.map((line, i) => (
+                      <tspan key={i} x={tx} dy={i === 0 ? 0 : 12}>{line}</tspan>
+                    ))}
+                  </text>
+                )
+              })()}
             </g>
           ))}
         </svg>
@@ -547,6 +567,147 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     </div>
   )
 })
+
+// A result table. Every row has a name (linked to its VFB report) and
+// optional tags/thumbnail — the shape the term-info previews have always had.
+// A table may also carry `columns` (numeric/text columns the backend ranked
+// on) and per-row `cells`; those render as sortable columns, so a ranked
+// partner list can be re-ordered by any of its figures without another
+// question (#47/#50). Sorting is per table, client-side, on the rows given.
+function ResultTable({ table: tbl }) {
+  const columns = useMemo(() => (Array.isArray(tbl?.columns) ? tbl.columns : []), [tbl?.columns])
+  const [sort, setSort] = useState({ key: tbl?.sortKey || null, dir: 'desc' })
+  const rows = useMemo(() => {
+    const list = Array.isArray(tbl?.rows) ? tbl.rows : []
+    if (!sort.key || !columns.some(c => c.key === sort.key)) return list
+    const val = r => r?.cells?.[sort.key]
+    const num = v => (typeof v === 'number' ? v : Number.isFinite(Number(v)) && String(v).trim() !== '' ? Number(v) : null)
+    return [...list].map((r, i) => ({ r, i })).sort((a, b) => {
+      const av = val(a.r); const bv = val(b.r)
+      const an = num(av); const bn = num(bv)
+      let cmp
+      if (an !== null && bn !== null) cmp = an - bn
+      else if (an !== null) cmp = 1
+      else if (bn !== null) cmp = -1
+      else cmp = String(av ?? '').localeCompare(String(bv ?? ''))
+      return (sort.dir === 'desc' ? -cmp : cmp) || (a.i - b.i)
+    }).map(e => e.r)
+  }, [tbl, sort, columns])
+  const hasThumbs = rows.some(r => r?.thumbnail)
+  const toggle = key => setSort(prev => (prev.key === key ? { key, dir: prev.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' }))
+  const countText = (() => {
+    const kind = tbl?.countKind || (typeof tbl?.count === 'number' && tbl.count < 0 ? 'unknown' : 'exact')
+    if (tbl?.countNoun && kind === 'exact' && typeof tbl?.count === 'number') return ` — ${tbl.count} ${tbl.countNoun}`
+    return tableCountLabel(tbl)
+  })()
+  return (
+    <div style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
+      <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
+        {tbl.title}{countText}
+        {tbl.subtitle && <span style={{ color: '#8a8a8a' }}> · {tbl.subtitle}</span>}
+      </div>
+      <div style={{ maxHeight: '360px', overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
+          {columns.length > 0 && (
+            <thead>
+              <tr style={{ position: 'sticky', top: 0, background: '#0d0d0d' }}>
+                {hasThumbs && <th aria-hidden="true" />}
+                <th scope="col" style={{ textAlign: 'left', padding: '4px 8px', color: '#8a8a8a', fontWeight: 500 }}>Name</th>
+                {columns.map(c => (
+                  <th key={c.key} scope="col" title={c.hint || ''} aria-sort={sort.key === c.key ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none'}
+                    style={{ textAlign: c.align || 'right', padding: '4px 8px', whiteSpace: 'nowrap' }}>
+                    <button type="button" onClick={() => toggle(c.key)}
+                      style={{ background: 'none', border: 'none', color: sort.key === c.key ? '#9ecbff' : '#8a8a8a', cursor: 'pointer', font: 'inherit', fontWeight: 500, padding: 0 }}>
+                      {c.label}{sort.key === c.key ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={`${r.id || r.name}-${ri}`} style={{ borderTop: ri || columns.length ? '1px solid #1a1a1a' : 'none' }}>
+                {hasThumbs && (
+                  <td style={{ padding: '4px 8px', verticalAlign: 'middle', width: '1%' }}>
+                    <VfbThumbnail src={r.thumbnail} alt={r.name} href={r.reportUrl} maxHeight={48} />
+                  </td>
+                )}
+                <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
+                  {r.reportUrl
+                    ? <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
+                    : <span>{r.name}</span>}
+                  {Array.isArray(r.tags) && r.tags.length > 0 && (
+                    // #8a8a8a, not #777: these tags render at about 11px
+                    // inside a table row, so they are small text and
+                    // #777 measured 4.42:1 — just under the 4.5:1 that
+                    // WCAG 2.2 AA requires.
+                    <div style={{ color: '#8a8a8a', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
+                  )}
+                  {Array.isArray(r.links) && r.links.length > 0 && (
+                    <div style={{ fontSize: '0.85em', marginTop: '2px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {r.links.map((l, li) => (
+                        <a key={li} href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: '#9ecbff' }}>{l.label} ↗</a>
+                      ))}
+                    </div>
+                  )}
+                </td>
+                {columns.map(c => (
+                  <td key={c.key} style={{ padding: '4px 8px', verticalAlign: 'middle', textAlign: c.align || 'right', whiteSpace: 'nowrap', color: '#e0e0e0', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatCell(r?.cells?.[c.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {tbl.queryUrl && tableViewAllLabel(tbl) && (
+        <div style={{ padding: '6px 10px', borderTop: '1px solid #222', fontSize: '0.75em' }}>
+          <a href={tbl.queryUrl} target="_blank" rel="noopener noreferrer" title="Run this query in Virtual Fly Brain (new tab)" style={{ color: '#9ecbff' }}>
+            {tableViewAllLabel(tbl)} ↗
+          </a>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function formatCell(v) {
+  if (v === null || v === undefined || v === '') return '–'
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString('en-GB') : v.toLocaleString('en-GB', { maximumFractionDigits: 2 })
+  return String(v)
+}
+
+// The graphs of a message. Collapsed behind a button when the message already
+// shows the same data as a ranked table — the table answers the question, the
+// picture is a follow-up — and open otherwise.
+function GraphSection({ graphs, msgId, collapsed }) {
+  const [open, setOpen] = useState(!collapsed)
+  if (!open) {
+    return (
+      <div style={{ marginTop: '6px' }}>
+        <button type="button" onClick={() => setOpen(true)}
+          style={{ background: '#111', color: '#9ecbff', border: '1px solid #2a2a2a', borderRadius: '6px', padding: '4px 10px', fontSize: '0.78em', cursor: 'pointer' }}>
+          Show as a graph{graphs.length > 1 ? ` (${graphs.length})` : ''} ▸
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div>
+      {collapsed && (
+        <button type="button" onClick={() => setOpen(false)}
+          style={{ marginTop: '6px', background: 'none', color: '#8a8a8a', border: 'none', padding: 0, fontSize: '0.75em', cursor: 'pointer' }}>
+          Hide graph ▾
+        </button>
+      )}
+      {graphs.map((graph, graphIndex) => (
+        <BasicGraphView key={`${msgId}-graph-${graphIndex}`} graph={graph} />
+      ))}
+    </div>
+  )
+}
 
 // ── Memoized single-message bubble ──────────────────────────────────
 // A VFB thumbnail: height-capped, click opens the entity in VFB (new tab), and
@@ -741,63 +902,32 @@ const ChatMessage = memo(function ChatMessage({
         className="message-content"
         style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
       >
+        {/* remark-gfm: without it react-markdown is CommonMark only, and the
+            deterministic pipe tables (scRNA-seq expression) rendered as one
+            paragraph of literal "|" — issue #41/#45. */}
         <ReactMarkdown
           components={markdownComponents}
+          remarkPlugins={[remarkGfm]}
         >
           {msg.content}
         </ReactMarkdown>
       </div>
-      {Array.isArray(msg.graphs) && msg.graphs.length > 0 && (
-        <div>
-          {msg.graphs.map((graph, graphIndex) => (
-            <BasicGraphView
-              key={`${msg.id}-graph-${graphIndex}`}
-              graph={graph}
-            />
-          ))}
-        </div>
-      )}
-      {/* Scrollable result tables (detailed query results with thumbnails). */}
+      {/* Result tables come first: they carry the names and the numbers the
+          prose describes. A graph is the optional follow-up when a ranked
+          partner table is present (#50), and the default view otherwise. */}
       {msg.role === 'assistant' && Array.isArray(msg.tables) && msg.tables.length > 0 && (
         <div style={{ marginTop: '10px' }}>
           {msg.tables.map((tbl, ti) => (
-            <div key={`tbl-${ti}`} style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
-              <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
-                {tbl.title}{tableCountLabel(tbl)}
-              </div>
-              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
-                  <tbody>
-                    {(tbl.rows || []).map((r, ri) => (
-                      <tr key={ri} style={{ borderTop: ri ? '1px solid #1a1a1a' : 'none' }}>
-                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
-                          <VfbThumbnail src={r.thumbnail} alt={r.name} href={r.reportUrl} maxHeight={48} />
-                        </td>
-                        <td style={{ padding: '4px 8px', verticalAlign: 'middle' }}>
-                          <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" title={`Open ${r.name} in VFB (new tab)`} style={{ color: '#9ecbff', textDecoration: 'none' }}>{r.name}</a>
-                          {Array.isArray(r.tags) && r.tags.length > 0 && (
-                            // #8a8a8a, not #777: these tags render at about 11px
-                            // inside a table row, so they are small text and
-                            // #777 measured 4.42:1 — just under the 4.5:1 that
-                            // WCAG 2.2 AA requires.
-                            <div style={{ color: '#8a8a8a', fontSize: '0.85em', marginTop: '2px' }}>{r.tags.join(' · ')}</div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {tbl.queryUrl && tableViewAllLabel(tbl) && (
-                <div style={{ padding: '6px 10px', borderTop: '1px solid #222', fontSize: '0.75em' }}>
-                  <a href={tbl.queryUrl} target="_blank" rel="noopener noreferrer" title="Run this query in Virtual Fly Brain (new tab)" style={{ color: '#9ecbff' }}>
-                    {tableViewAllLabel(tbl)} ↗
-                  </a>
-                </div>
-              )}
-            </div>
+            <ResultTable key={`tbl-${ti}`} table={tbl} />
           ))}
         </div>
+      )}
+      {Array.isArray(msg.graphs) && msg.graphs.length > 0 && (
+        <GraphSection
+          graphs={msg.graphs}
+          msgId={msg.id}
+          collapsed={Array.isArray(msg.tables) && msg.tables.some(t => t?.kind === 'partners')}
+        />
       )}
       {/* Image gallery from API images field */}
       {msg.images && msg.images.length > 0 && (
@@ -902,6 +1032,7 @@ export default function Home() {
   const [thinkingSteps, setThinkingSteps] = useState([{ message: 'Thinking', done: false }])
   const [feedbackStateByResponseId, setFeedbackStateByResponseId] = useState({})
   const chatEndRef = useRef(null)
+  const chatPanelRef = useRef(null)
   // What the conversation has already resolved: ids, authoritative labels and
   // each term's query catalogue, as the server last merged them. The server is
   // stateless, so this round trip IS the session — without it, every turn
@@ -980,8 +1111,18 @@ export default function Home() {
 
   // Auto-scroll to bottom when messages change or thinking starts/stops
   // NOT on thinkingDots – that would cause layout jumps every 500ms
+  // Scroll the PANEL, never the document. scrollIntoView walks every scrollable
+  // ancestor — the overflow:hidden shell and the document included — so once a
+  // long answer landed its tables and thumbnails the window itself had
+  // scrolled and the conversation sat above the viewport (#43). Only follow
+  // the stream while the reader is at the bottom; a reader who has scrolled
+  // up to re-read is left where they are.
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = chatPanelRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom > 160 && !isThinking) return
+    el.scrollTop = el.scrollHeight
   }, [messages, isThinking])
 
   function createVFBUrl(scene) {
@@ -1607,7 +1748,10 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
     img: renderImage,
     p: ({ children }) => <p style={{ margin: '0.4em 0' }}>{convertUrlsToLinks(children)}</p>,
     ul: ({ children }) => <ul style={{ margin: '0.4em 0', paddingLeft: '20px' }}>{children}</ul>,
-    ol: ({ children }) => <ol style={{ margin: '0.4em 0', paddingLeft: '20px' }}>{children}</ol>,
+    // `start` must pass through: prose between two numbered items splits the
+    // list into several <ol>s, and remark numbers each one's start correctly
+    // (2, 3, …) — dropping the prop rendered a ranked list as 1., 1., 1. (#42).
+    ol: ({ children, start }) => <ol start={start} style={{ margin: '0.4em 0', paddingLeft: '20px' }}>{children}</ol>,
     li: ({ children }) => <li style={{ margin: '0.2em 0' }}>{convertUrlsToLinks(children)}</li>,
     strong: ({ children }) => <strong style={{ color: '#fff' }}>{children}</strong>,
     h1: ({ children }) => <h3 style={{ color: '#fff', margin: '0.5em 0 0.3em' }}>{children}</h3>,
@@ -1624,9 +1768,11 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
   /* eslint-enable react-hooks/exhaustive-deps */
 
   return (
-    <div style={{
+    <div className="chat-shell" style={{
       backgroundColor: '#000',
       color: '#e0e0e0',
+      // Overridden to 100dvh by the .chat-shell rule below where dvh is
+      // supported: on a phone 100vh is taller than the visible viewport.
       height: '100vh',
       display: 'flex',
       flexDirection: 'column',
@@ -1674,6 +1820,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
           allowed on main and do the announcing job on their own, so the role
           simply goes. */}
       <main
+        ref={chatPanelRef}
         aria-label="Chat conversation"
         aria-live="polite"
         style={{
@@ -1833,6 +1980,9 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
       <SiteFooter variant="app" />
 
       <style jsx global>{`
+        @supports (height: 100dvh) {
+          .chat-shell { height: 100dvh !important; }
+        }
         .sr-only {
           position: absolute;
           width: 1px;
