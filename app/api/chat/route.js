@@ -30,7 +30,7 @@ import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
 import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
 import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
 import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
-import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
+import { isAggregateClassPartner, rankClassPartners } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs, safeText } from '../../../lib/safeToolArgs.mjs'
@@ -3724,10 +3724,13 @@ function extractRowsFromRunQueryPayload(rawPayload) {
 }
 
 function normalizeEndpointSearchText(value = '') {
+  // The prime survives normalisation: it is the only thing separating
+  // "alpha/beta Kenyon cell" from "alpha'/beta' Kenyon cell" (issue #40).
   return String(value || '')
     .toLowerCase()
+    .replace(/[\u2019\u2018`\u00b4\u2032]/g, "'")
     .replace(/[_-]+/g, ' ')
-    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/[^a-z0-9\s']/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -5697,7 +5700,14 @@ async function findConnectivityPartnersTool(client, args = {}) {
     })
   }
 
-  const { rows, count, used_cached_recovery: usedCachedRecovery } = await getConnectivityRowsForComparison(client, endpoint, queryType)
+  const { rows: allRows, count, used_cached_recovery: usedCachedRecovery } = await getConnectivityRowsForComparison(client, endpoint, queryType)
+  // The class table carries rows for the queried class AND for each of its
+  // subclasses (query_id differs per row). Keep the queried class's own rows;
+  // otherwise each partner is counted once per subclass and a subclass's
+  // figures are reported as the parent's. See selectQueriedRows in
+  // lib/classPartners.mjs for the same rule on the harness path.
+  const ownRows = allRows.filter(row => String(row?.query_id || '').trim() === String(endpoint.id))
+  const rows = ownRows.length ? ownRows : allRows
   const partnerRows = []
   const seenPartnerIds = new Set()
   for (const row of rows) {
@@ -5714,14 +5724,33 @@ async function findConnectivityPartnersTool(client, args = {}) {
   }
   partnerRows.sort(compareConnectivityRowStrength)
 
-  // Split BEFORE limiting. Generic neuron superclasses ("neuron", "CNS neuron", …)
-  // aggregate every partner's weight and so fill the top of the ranking; slicing
-  // first would leave no specific partners. Take the top specific partners from
-  // the full list, then keep a few aggregate classes for context.
-  const specificPartnersAll = partnerRows.filter(partner => !isLikelyAggregateConnectivityPartner(partner, partnerFilter))
-  const aggregatePartnersAll = partnerRows.filter(partner => isLikelyAggregateConnectivityPartner(partner, partnerFilter))
-  const specificPartners = specificPartnersAll.slice(0, limit)
-  const aggregatePartners = aggregatePartnersAll.slice(0, Math.min(3, limit))
+  // Rank with the shared class-partner ranker rather than by total weight.
+  // Total weight is extensive — it grows with the size of the partner class —
+  // so sorting by it and slicing ranked the ontology (neuron, CNS neuron,
+  // interneuron…) and cut the specific partners before they could be shown
+  // (issue #47). rankClassPartners collapses the near-duplicate ontology
+  // chains, sets the self-row aside, and orders the specific partners by mean
+  // synaptic weight per connected pair with a floor on reach. The roll-up
+  // classes are kept after them, as before, so nothing VFB ranked is hidden.
+  const byId = new Map(partnerRows.map(p => [p.id, p]))
+  const ranked = rankClassPartners({
+    direction,
+    queryId: endpoint.id,
+    queryLabel: endpoint.label || '',
+    total: partnerRows.length,
+    totalIndividuals: 0,
+    rows: partnerRows.map(p => ({
+      id: p.id,
+      label: p.label,
+      totalWeight: Number(p.total_weight) || 0,
+      pairwise: Number(p.pairwise_connections) || 0,
+      connected: Number(p.connected_n) || 0,
+      percentConnected: Number(p.percent_connected) || 0,
+      avgWeight: Number(p.avg_weight) || (Number(p.pairwise_connections) ? (Number(p.total_weight) || 0) / Number(p.pairwise_connections) : 0)
+    }))
+  }, { topN: limit, aggregateN: Math.min(3, limit), partnerFilter })
+  const specificPartners = (ranked?.partners || []).map(r => byId.get(r.id)).filter(Boolean)
+  const aggregatePartners = (ranked?.aggregates || []).map(r => byId.get(r.id)).filter(Boolean)
   const topPartners = [...specificPartners, ...aggregatePartners]
 
   const partnerTargetBreakdown = []
@@ -5867,8 +5896,9 @@ async function findConnectivityPartnersTool(client, args = {}) {
     },
     evidence_summary: {
       result_scope: partnerFilter ? 'filtered_class_connectivity_partners' : 'ranked_class_connectivity_partners',
+      ranked_by: 'avg_weight (mean synaptic weight per connected pair) among specific partner classes; roll-up superclasses listed after them',
       answer_hint: partnerRows.length > 0
-        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}.${recommendedPartnerTargetAnswerText ? ` Top mapped pairs to list directly: ${recommendedPartnerTargetAnswerText}.` : ''}${includePartnerTargets ? ' Do not defer the exact mappings to a JSON section.' : ''}`
+        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}. top_partners are ordered by mean synaptic weight per connected pair (avg_weight), strongest first; name them in that order.${recommendedPartnerTargetAnswerText ? ` Top mapped pairs to list directly: ${recommendedPartnerTargetAnswerText}.` : ''}${includePartnerTargets ? ' Do not defer the exact mappings to a JSON section.' : ''}`
         : `VFB returned ${count} ${direction} rows for ${endpoint.label}, but none matched the requested partner filter${partnerFilter ? ` "${partnerFilter}"` : ''}.`,
       recommended_answer_rows: recommendedPartnerTargetAnswerRows,
       caution: 'Rows are class-level connectivity summaries from the selected endpoint query; broad aggregate classes are not one-to-one neuron types.'
@@ -11136,6 +11166,10 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
           obj = out
           if (typeof out === 'string') { try { obj = JSON.parse(out) } catch { obj = null } }
         }
+        // A partner-tool payload is drawn by the orchestrator from the RANKED
+        // partners (lib/classPartners.mjs partnerGraph), not from the raw
+        // top_partners; drawing both would put two graphs under one answer.
+        if (obj && typeof obj === 'object' && obj.endpoint && Array.isArray(obj.top_partners)) return []
         return buildConnectivityGraphs(obj).map(normalizeGraphSpec).filter(Boolean)
       },
       streamText: ({ messages, model, sourceQuotes, sampling }) => streamSynthCompletion({

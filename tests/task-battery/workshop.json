@@ -1,0 +1,170 @@
+[
+  {
+    "id": "W1",
+    "tier": 8,
+    "title": "Workshop S1 — discovery, published prompt",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "List the individual DA1 lPN neurons in VFB with VFB IDs and datasets.",
+        "expect": { "context_carries_id": "FBbt_00067363", "no_unmatched_claim": true, "min_followons": 2 }
+      }
+    ]
+  },
+  {
+    "id": "W1b",
+    "tier": 8,
+    "title": "Workshop S1 — discovery, original prompt with a trailing dataset clause (issue #39)",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "List all DA1 lPN neurons in VFB with their VFB IDs and which datasets they're in (FlyWire, hemibrain, BANC, etc).",
+        "expect": { "context_carries_id": "FBbt_00067363", "no_unmatched_claim": true }
+      }
+    ]
+  },
+  {
+    "id": "W1c",
+    "tier": 8,
+    "title": "Workshop S1 — ontology view",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "What is DA1 lPN?",
+        "expect": { "context_carries_id": "FBbt_00067363", "no_unmatched_claim": true, "min_followons": 3 }
+      }
+    ]
+  },
+  {
+    "id": "W2",
+    "tier": 8,
+    "title": "Workshop S2 — bridging by NBLAST",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "Which FlyWire neuron is the closest NBLAST match to hemibrain neuron VFB_jrchjtdb? Give both VFB IDs, the score, and whether they are the same cell type.",
+        "expect": { "context_carries_id": "VFB_jrchjtdb", "no_unmatched_claim": true, "mentions": "FlyWire" }
+      }
+    ]
+  },
+  {
+    "id": "W3",
+    "tier": 8,
+    "title": "Workshop S3 — images plus facts",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "Show me images of DA1_lPN_R and tell me its neurotransmitter and which brain regions it connects to.",
+        "expect": { "no_unmatched_claim": true, "min_followons": 2 }
+      }
+    ]
+  },
+  {
+    "id": "W4",
+    "tier": 8,
+    "title": "Workshop S4 — downstream partners of an individual",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "Which neurons are downstream of DA1_lPN_R? List the 10 strongest partners with synapse counts and VFB IDs.",
+        "expect": { "no_unmatched_claim": true }
+      }
+    ]
+  },
+  {
+    "id": "W5",
+    "tier": 8,
+    "title": "Workshop S5 — similar morphology",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "Which neurons have a similar morphology to DA1_lPN_R? Give the top 5 NBLAST matches with scores and which dataset each is from.",
+        "expect": { "no_unmatched_claim": true, "mentions": "NBLAST" }
+      }
+    ]
+  },
+  {
+    "id": "W6",
+    "tier": 8,
+    "title": "Workshop S6 — scRNAseq survey",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "What scRNAseq expression data does VFB hold for Kenyon cells? Name the datasets and list the top marker genes with expression levels.",
+        "expect": { "context_carries_id": "FBbt_00003686", "no_unmatched_claim": true, "mentions": "Davie" }
+      },
+      {
+        "question": "What single-cell transcriptomic clusters are there for Kenyon cell?",
+        "expect": { "context_carries_id": "FBbt_00003686", "no_unmatched_claim": true }
+      }
+    ]
+  },
+  {
+    "id": "W6b",
+    "tier": 8,
+    "title": "Workshop S6 — slash-bearing subtype label (issue #40)",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "What scRNAseq expression data does VFB have for alpha/beta Kenyon cells? List the datasets and the top marker genes with expression levels.",
+        "expect": { "context_carries_id": "FBbt_00100248", "no_unmatched_claim": true }
+      }
+    ]
+  },
+  {
+    "id": "W7",
+    "tier": 8,
+    "title": "Workshop S7 — putting it together, one question at a time",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "What neuron types are intrinsic to the mushroom body?",
+        "expect": { "no_unmatched_claim": true, "mentions": "Kenyon cell" }
+      },
+      {
+        "question": "Show me instances of Kenyon cell with VFB IDs.",
+        "expect": { "context_carries_id": "FBbt_00003686", "no_unmatched_claim": true }
+      },
+      {
+        "question": "What are the top 5 downstream partners of KCg-m_R?",
+        "expect": { "no_unmatched_claim": true }
+      },
+      {
+        "question": "Which neurons have a similar morphology to KCg-m_R?",
+        "expect": { "no_unmatched_claim": true }
+      },
+      {
+        "question": "What expression data exists for Kenyon cells?",
+        "expect": { "context_carries_id": "FBbt_00003686", "no_unmatched_claim": true }
+      }
+    ]
+  },
+  {
+    "id": "W8",
+    "tier": 8,
+    "title": "Issue #46/#47/#48/#50 — the 2026-08-31 walk-through",
+    "category": "workshop",
+    "turns": [
+      {
+        "question": "find me fly stocks for split drivers expressed in gamma dorsal KCs",
+        "expect": { "context_carries_id": "FBbt_00110932", "no_unmatched_claim": true }
+      },
+      {
+        "question": "which fly stocks are available for these splits?",
+        "expect": { "context_carries_id": "FBbt_00110932", "no_unmatched_claim": true }
+      },
+      {
+        "question": "What does the gamma dorsal Kenyon cell connect to downstream?",
+        "expect": { "context_carries_id": "FBbt_00110932", "no_unmatched_claim": true }
+      },
+      {
+        "question": "show me the hierarchy of Kenyon cell subtypes",
+        "expect": { "context_carries_id": "FBbt_00003686", "no_unmatched_claim": true }
+      },
+      {
+        "question": "what are the main inputs to KCg-s?",
+        "expect": { "context_carries_id": "FBbt_00049830", "no_unmatched_claim": true }
+      }
+    ]
+  }
+]

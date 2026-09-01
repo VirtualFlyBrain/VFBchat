@@ -367,3 +367,110 @@ test('the label falls back to the caller when the payload does not name the quer
   const s = summariseClassPartners(payload, { label: 'Kenyon cell' })
   assert.ok(s.claim.includes('Kenyon cell'), s.claim)
 })
+
+// --- the live KCg-s table: subclass rows, the tool payload, and the displays --
+//
+// tests/fixtures/upstreamClassConnectivity_KCg-s.json is a slice of the real
+// UpstreamClassConnectivity result for gamma-s Kenyon cell (FBbt_00049830):
+// 53 of its 1,170 rows, every numeric column verbatim. The point of the fixture
+// is that the table carries rows for the queried class AND for each of its
+// subclasses (query_id FBbt_00049787, …88, …31, …32), so every partner appears
+// up to five times with five different sets of figures (issue #47/#50).
+
+import { readFileSync } from 'node:fs'
+import {
+  parseConnectivityToolPartners,
+  isConnectivityToolPayload,
+  partnerTable,
+  partnerGraph
+} from '../../lib/classPartners.mjs'
+
+const KCGS = JSON.parse(readFileSync(new URL('../fixtures/upstreamClassConnectivity_KCg-s.json', import.meta.url), 'utf8'))
+const KCGS_ID = 'FBbt_00049830'
+
+test('only the queried class\'s own rows are read; subclass rows are not partners', () => {
+  const table = parseClassPartnerRows(KCGS, { queryId: KCGS_ID })
+  assert.equal(table.direction, 'upstream')
+  assert.equal(table.queryId, KCGS_ID)
+  assert.equal(table.queryLabel, 'gamma-s Kenyon cell')
+  // 12 rows carry query_id FBbt_00049830 in the fixture; 41 belong to subclasses.
+  assert.equal(table.rows.length, 12)
+  const ids = table.rows.map(r => r.id)
+  assert.equal(new Set(ids).size, ids.length, 'no partner is listed twice')
+  // The subclass row for VP3 vPN says 98.5 per pair; the parent's own row says 67.
+  assert.equal(table.rows.find(r => r.id === 'FBbt_00111337').avgWeight, 67)
+})
+
+test('without a query id the largest query_id group — the parent — is chosen', () => {
+  const table = parseClassPartnerRows(KCGS)
+  assert.equal(table.queryId, KCGS_ID)
+  assert.equal(table.rows.length, 12)
+})
+
+test('the ranked inputs to KCg-s are the cell types, with the ontology after them', () => {
+  const s = summariseClassPartners(KCGS, { queryId: KCGS_ID })
+  const top = labelsOf(s.partners)
+  assert.equal(top[0], 'adult antennal lobe projection neuron VP3 vPN')
+  // Three names for one set of four connections collapse to one row.
+  assert.equal(top.filter(l => /calyx-pedunculus|PV3|local visual/.test(l)).length, 1)
+  assert.ok(top.includes('adult mushroom body anterior paired lateral cell'))
+  assert.ok(!top.includes('neuron') && !top.includes('adult neuron'))
+  // "neuron" and "adult neuron" carry identical figures, so they collapse to
+  // the longer name with the other kept as an alias.
+  assert.deepEqual(labelsOf(s.aggregates), ['adult neuron'])
+  assert.deepEqual(s.aggregates[0].alsoNamed, ['neuron'])
+  assert.equal(s.self[0].label, 'gamma-s Kenyon cell')
+  assert.match(s.claim, /input to gamma-s Kenyon cell/)
+})
+
+test('the partner tool\'s payload is read into the same shape and ranked the same way', () => {
+  const tool = {
+    tool: 'vfb_find_connectivity_partners',
+    endpoint: { id: KCGS_ID, label: 'gamma-s Kenyon cell', query_type: 'UpstreamClassConnectivity' },
+    query: { direction: 'upstream' },
+    partner_count: 12,
+    top_partners: KCGS.rows.filter(r => r.query_id === KCGS_ID).map(r => ({
+      id: r.id, label: r.upstream_class.replace(/^\[(.*)\]\(.*\)$/, '$1'),
+      total_weight: r.total_weight, pairwise_connections: r.pairwise_connections,
+      connected_n: r.connected_n, total_n: r.total_n, percent_connected: r.percent_connected, avg_weight: r.avg_weight
+    }))
+  }
+  assert.equal(isConnectivityToolPayload(tool), true)
+  assert.equal(isConnectivityToolPayload(KCGS), false)
+  const parsed = parseConnectivityToolPartners(tool)
+  assert.equal(parsed.direction, 'upstream')
+  assert.equal(parsed.rows.length, 12)
+  const s = summariseClassPartners(tool)
+  assert.equal(s.partners[0].label, 'adult antennal lobe projection neuron VP3 vPN')
+  assert.equal(s.queryId, KCGS_ID)
+})
+
+test('the partner table names every cell type and carries the numbers as sortable columns', () => {
+  const s = summariseClassPartners(KCGS, { queryId: KCGS_ID })
+  const t = partnerTable(s, { queryUrl: 'https://example/query' })
+  assert.equal(t.kind, 'partners')
+  assert.match(t.title, /^Upstream partner classes of gamma-s Kenyon cell/)
+  assert.equal(t.sortKey, 'avgWeight')
+  assert.deepEqual(t.columns.map(c => c.key), ['avgWeight', 'percentConnected', 'pairwise', 'totalWeight'])
+  assert.equal(t.rows[0].name, 'adult antennal lobe projection neuron VP3 vPN')
+  assert.equal(t.rows[0].reportUrl, 'https://www.virtualflybrain.org/reports/FBbt_00111337')
+  assert.deepEqual(t.rows[0].cells, { avgWeight: 67, percentConnected: 67, pairwise: 9, totalWeight: 603 })
+  // Roll-ups and the self-row are shown and labelled, after the partners.
+  const rollup = t.rows.find(r => r.name === 'adult neuron')
+  assert.ok(rollup && rollup.tags.includes('roll-up class') && rollup.tags.includes('also listed as neuron'))
+  const self = t.rows.find(r => r.name === 'gamma-s Kenyon cell')
+  assert.ok(self && self.tags.includes('self-connection'))
+  assert.ok(t.rows.indexOf(rollup) > t.rows.length - 5)
+  assert.equal(t.queryUrl, 'https://example/query')
+})
+
+test('the partner graph draws only the ranked specific partners, pointing the right way', () => {
+  const s = summariseClassPartners(KCGS, { queryId: KCGS_ID })
+  const g = partnerGraph(s)
+  assert.ok(g.nodes.length <= 9)
+  assert.ok(!g.nodes.some(n => n.label === 'neuron'))
+  assert.ok(g.edges.every(e => e.target === KCGS_ID), 'upstream partners point AT the queried class')
+  assert.equal(g.nodes[0].id, KCGS_ID)
+  assert.ok(g.edges.every(e => Number.isFinite(e.weight) && /per pair/.test(e.label)))
+  assert.equal(partnerGraph(null), null)
+})

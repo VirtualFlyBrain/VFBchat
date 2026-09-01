@@ -126,7 +126,14 @@ test('a dataset SCOPE does not hijack the question into a dataset enumeration', 
   const hijacked = [
     "Search VFB for the neuron type 'DA1 lPN' and list every individual neuron across all datasets, with their dataset and VFB ID.",
     'List every LPLC2 neuron in each dataset.',
-    'Show me all images of DA1 lPN across the connectome datasets.'
+    'Show me all images of DA1 lPN across the connectome datasets.',
+    // Issue #39 — the NeuroFly workshop's original discovery prompt: the scope
+    // preposition is stranded after the noun, and the subject is an unquoted
+    // symbol ("DA1 lPN neurons"), so neither of the two original vetoes fired.
+    "List all DA1 lPN neurons in VFB with their VFB IDs and which datasets they're in (FlyWire, hemibrain, BANC, etc).",
+    "List all adult antennal lobe projection neuron DA1 lPN neurons in VFB with their VFB IDs and which datasets they're in (FlyWire, hemibrain, BANC, etc).",
+    'How many DA1 lPN (FBbt:00067363) neurons are in VFB? List them with VFB IDs and which dataset each comes from.',
+    'Which datasets contain Kenyon cells?'
   ]
   for (const q of hijacked) {
     assert.equal(detectFastPath(q), null, `must reach the planner: ${q}`)
@@ -140,7 +147,9 @@ test('the genuine dataset enumeration still fast-paths', () => {
     'What datasets are available in VFB?',
     'Which connectome datasets does VFB have?',
     'List the datasets.',
-    'What datasets does VFB have?'
+    'What datasets does VFB have?',
+    'Which datasets are in VFB?',
+    'Which datasets in VFB have data from FlyWire?'
   ]) {
     const fp = detectFastPath(q)
     assert.equal(fp?.steps?.[0]?.args?.query_type, 'AllDatasets', q)
