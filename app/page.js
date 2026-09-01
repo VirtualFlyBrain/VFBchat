@@ -10,6 +10,9 @@ import {
   GRAPH_PALETTE,
   GRAPH_ROLE_STYLES,
   GRAPH_EDGE_NEUTRAL,
+  GRAPH_SUBCLASS_COLOR,
+  GRAPH_SUBCLASS_WIDTH,
+  GRAPH_SUBCLASS_DASH,
   GRAPH_EDGE_WEIGHT_BANDS,
   getEdgeWeightBand,
   shouldColorEdgesByWeight,
@@ -227,7 +230,11 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           id: `e${i}`,
           source: String(e.source),
           target: String(e.target),
-          label: e.label || (Number.isFinite(Number(e.weight)) ? String(e.weight) : ''),
+          relation: e.relation || null,
+          // Structural edges carry no weight; don't stamp "subclass of" on each.
+          label: e.relation === 'SUBCLASSOF'
+            ? ''
+            : (e.label || (Number.isFinite(Number(e.weight)) ? String(e.weight) : '')),
           weight: Number(e.weight) || 1,
           width: Math.max(1, 1 + ((Number(e.weight) || 1) / maxWeight) * 4)
         }
@@ -312,7 +319,10 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
     }))
     const laidOutNodeById = new Map(laidOutNodes.map(node => [node.id, node]))
 
-    const edgeWeights = graphEdges.map(edge => Number(edge.data.weight) || 1)
+    // Weight banding is about connectivity edges; structural (SUBCLASSOF) edges
+    // have no weight and would otherwise flatten the scale.
+    const connectivityEdges = graphEdges.filter(edge => edge.data.relation !== 'SUBCLASSOF')
+    const edgeWeights = connectivityEdges.map(edge => Number(edge.data.weight) || 1)
     const maxEdgeWeight = Math.max(1, ...edgeWeights)
     const weightsVary = shouldColorEdgesByWeight(edgeWeights)
 
@@ -324,22 +334,26 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
           const source = laidOutNodeById.get(edge.data.source)
           const target = laidOutNodeById.get(edge.data.target)
           if (!source || !target) return null
-          const band = weightsVary
+          const isSubclass = edge.data.relation === 'SUBCLASSOF'
+          const band = (!isSubclass && weightsVary)
             ? getEdgeWeightBand(edge.data.weight, maxEdgeWeight)
             : null
           return {
             id: edge.data.id,
             label: edge.data.label,
-            width: edge.data.width,
-            band: band?.key || null,
-            color: band?.color || GRAPH_EDGE_NEUTRAL,
-            title: formatEdgeTooltip({
-              sourceLabel: source.label,
-              targetLabel: target.label,
-              label: edge.data.label,
-              bandLabel: band?.label || '',
-              directed: isDirected
-            }),
+            width: isSubclass ? GRAPH_SUBCLASS_WIDTH : edge.data.width,
+            dashed: isSubclass,
+            band: isSubclass ? 'subclass' : (band?.key || null),
+            color: isSubclass ? GRAPH_SUBCLASS_COLOR : (band?.color || GRAPH_EDGE_NEUTRAL),
+            title: isSubclass
+              ? `${source.label} is a subclass of ${target.label}`
+              : formatEdgeTooltip({
+                  sourceLabel: source.label,
+                  targetLabel: target.label,
+                  label: edge.data.label,
+                  bandLabel: band?.label || '',
+                  directed: isDirected
+                }),
             source,
             target
           }
@@ -451,7 +465,9 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
                 Ids are static rather than per-instance: every graph on the page
                 defines the same markers with the same fills, so a collision
                 between two graphs resolves to an identical arrow. */}
-            {[{ key: 'neutral', color: GRAPH_EDGE_NEUTRAL }, ...GRAPH_EDGE_WEIGHT_BANDS].map(band => (
+            {[{ key: 'neutral', color: GRAPH_EDGE_NEUTRAL },
+              { key: 'subclass', color: GRAPH_SUBCLASS_COLOR },
+              ...GRAPH_EDGE_WEIGHT_BANDS].map(band => (
               <marker
                 key={band.key}
                 id={`graph-arrow-${band.key}`}
@@ -496,6 +512,7 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
                   y2={y2}
                   stroke={edge.color}
                   strokeWidth={edge.width}
+                  strokeDasharray={edge.dashed ? GRAPH_SUBCLASS_DASH : undefined}
                   markerEnd={isDirected ? `url(#graph-arrow-${edge.band || 'neutral'})` : undefined}
                 />
                 {edge.label && (
