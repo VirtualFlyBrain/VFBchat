@@ -1117,11 +1117,15 @@ export default function Home() {
   // scrolled and the conversation sat above the viewport (#43). Only follow
   // the stream while the reader is at the bottom; a reader who has scrolled
   // up to re-read is left where they are.
-  useEffect(() => {
+  const stickToBottomRef = useRef(true)
+  const onChatPanelScroll = useCallback(() => {
     const el = chatPanelRef.current
     if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom > 160 && !isThinking) return
+    stickToBottomRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 120
+  }, [])
+  useEffect(() => {
+    const el = chatPanelRef.current
+    if (!el || !stickToBottomRef.current) return
     el.scrollTop = el.scrollHeight
   }, [messages, isThinking])
 
@@ -1821,6 +1825,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
           simply goes. */}
       <main
         ref={chatPanelRef}
+        onScroll={onChatPanelScroll}
         aria-label="Chat conversation"
         aria-live="polite"
         style={{

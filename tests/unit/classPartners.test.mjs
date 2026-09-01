@@ -474,3 +474,19 @@ test('the partner graph draws only the ranked specific partners, pointing the ri
   assert.ok(g.edges.every(e => Number.isFinite(e.weight) && /per pair/.test(e.label)))
   assert.equal(partnerGraph(null), null)
 })
+
+test('rows whose counts coincide by chance are not collapsed: the synapses have to agree too', () => {
+  // KCg-s upstream, verbatim: an unrelated class with the same 9 pairs and 6
+  // connected individuals but 46 synapses to VP3 vPN's 603. Collapsing them
+  // on counts alone made the strongest input an alias of a minor one.
+  const rows = [
+    { id: 'A', label: 'adult antennal lobe projection neuron VP3 vPN', totalWeight: 603, pairwise: 9, connected: 6, percentConnected: 67, avgWeight: 67 },
+    { id: 'B', label: 'adult antennal lobe projection neuron VP1m+VP2 lvPN 2', totalWeight: 46, pairwise: 9, connected: 6, percentConnected: 23, avgWeight: 5.1 },
+    { id: 'C', label: 'antennal lobe projection neuron VP3 vPN', totalWeight: 603, pairwise: 9, connected: 6, percentConnected: 67, avgWeight: 67 }
+  ]
+  const out = collapseOntologyChains(rows)
+  assert.deepEqual(out.map(r => r.id).sort(), ['A', 'B'])
+  assert.deepEqual(out.find(r => r.id === 'A').alsoNamed, ['antennal lobe projection neuron VP3 vPN'])
+  const s = summariseClassPartners(KCGS, { queryId: KCGS_ID })
+  assert.equal(s.partners[0].label, 'adult antennal lobe projection neuron VP3 vPN')
+})
