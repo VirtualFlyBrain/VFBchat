@@ -36,6 +36,7 @@ import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs, safeText } from '../../../lib/safeToolArgs.mjs'
 import { createRunSignal, throwIfAborted, isRunAbortedWith, NOBODY_WAITING } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
+import { parseSplitRows, parseStockRows, intersectSplitStocks } from '../../../lib/splitStocks.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
@@ -1769,6 +1770,20 @@ function getToolConfig() {
         collection_filter: { type: 'string', description: 'Optional stock centre filter, e.g. Bloomington, Kyoto, VDRC' }
       },
       required: ['feature_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_split_stocks',
+    description: 'Find the fly stocks for the split-GAL4 lines that target a NEURON CLASS. Use this for "which stocks / fly lines can I order to label <neuron type>", "stocks for the splits targeting <neuron type>". Runs SplitsTargeting on the class, then FindStocks on each split\'s two hemidriver constructs, and reports the stock(s) carrying both — i.e. the orderable split-GAL4 stock (Bloomington number, genotype). Do not use vfb_find_stocks for an anatomy term; it takes a FlyBase feature id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        neuron_type: { type: 'string', description: 'Neuron-class label or FBbt ID, e.g. "gamma dorsal Kenyon cell" or "FBbt_00110932".' },
+        limit: { type: 'number', description: 'Maximum splits to check for stocks (default 12).' }
+      },
+      required: ['neuron_type']
     }
   })
 
@@ -7501,6 +7516,76 @@ async function resolveScrnaseqTermId(client, requested = '') {
   return flagged ? idOf(flagged) : null
 }
 
+// Three hops the planner never chained on its own (issue #46): the class's
+// SplitsTargeting rows name two hemidriver constructs each (FBtp ids in the row
+// id); FindStocks on a construct lists every stock carrying it; the stock in
+// BOTH lists is the split-GAL4 stock. All the FindStocks calls go as one batched
+// run_query. The set logic lives in lib/splitStocks.mjs.
+const SPLIT_STOCKS_TOOL = 'vfb_find_split_stocks'
+async function findSplitStocksTool(client, args = {}) {
+  const requested = String(args.neuron_type || '').trim()
+  if (!requested) {
+    return JSON.stringify({ error: `${SPLIT_STOCKS_TOOL} requires neuron_type.`, tool: SPLIT_STOCKS_TOOL, recoverable: true })
+  }
+  const limit = normalizeInteger(args.limit, 12, 1, 30)
+  let id = sanitizeVfbId(requested)
+  let label = requested
+  if (/^FBbt_\d{8}$/i.test(id)) {
+    const ti = await getTermInfoEvidence(client, id)
+    label = getReadableTermName(ti.record, id)
+  } else {
+    const r = await resolveComparisonUpstreamType(client, requested)
+    if (r?.id) { id = r.id; label = r.label || requested } else { id = '' }
+  }
+  if (!id) {
+    return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB neuron class.`, tool: SPLIT_STOCKS_TOOL, recoverable: true })
+  }
+  let splitsPayload = null
+  try {
+    splitsPayload = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'SplitsTargeting', limit: 0 }))
+  } catch (error) {
+    return JSON.stringify({ error: `SplitsTargeting failed for ${label} (${id}): ${error?.message || error}`, tool: SPLIT_STOCKS_TOOL, recoverable: true, resolved: { id, label } })
+  }
+  const allSplits = parseSplitRows(splitsPayload)
+  const splitCount = Number.isFinite(Number(splitsPayload?.count)) && Number(splitsPayload.count) >= 0 ? Number(splitsPayload.count) : allSplits.length
+  if (!allSplits.length) {
+    return JSON.stringify({
+      tool: SPLIT_STOCKS_TOOL, resolved: { id, label }, split_count: splitCount, splits: [],
+      note: splitCount > 0
+        ? `VFB lists ${splitCount} split-GAL4 expression patterns for ${label}, but none names its two hemidriver constructs, so no stock lookup was possible.`
+        : `VFB records no split-GAL4 lines targeting ${label}.`
+    })
+  }
+  const splits = allSplits.slice(0, limit)
+  const constructs = [...new Set(splits.flatMap(s => s.constructs))]
+  const stocksByConstruct = new Map()
+  try {
+    const batch = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+      queries: constructs.map(c => ({ id: c, query_type: 'FindStocks' }))
+    }))
+    for (const c of constructs) {
+      const entry = batch?.[`${c}::FindStocks`] ?? (constructs.length === 1 && Array.isArray(batch?.rows) ? batch : null)
+      if (entry && typeof entry === 'object' && !(Number(entry.count) < 0)) stocksByConstruct.set(c, parseStockRows(entry))
+    }
+  } catch (error) {
+    return JSON.stringify({ error: `FindStocks failed for the hemidriver constructs of ${label}: ${error?.message || error}`, tool: SPLIT_STOCKS_TOOL, recoverable: true, resolved: { id, label }, split_count: splitCount })
+  }
+  const resolved = intersectSplitStocks(splits, stocksByConstruct)
+  return JSON.stringify({
+    tool: SPLIT_STOCKS_TOOL,
+    resolved: { id, label },
+    split_count: splitCount,
+    constructs_checked: stocksByConstruct.size,
+    splits: resolved.map(s => ({
+      id: s.id, label: s.label, constructs: s.constructs, constructs_checked: s.constructs_checked,
+      stocks: s.stocks.map(st => ({ stock_id: st.id, stock_number: st.number, collection: st.collection, genotype: st.genotype }))
+    })),
+    evidence_summary: {
+      answer_hint: `${resolved.filter(s => s.stocks.length).length} of ${resolved.length} split-GAL4 lines targeting ${label} have a FlyBase stock carrying both hemidrivers; name each split with its stock centre and number.`
+    }
+  })
+}
+
 async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   const requested = String(args.neuron_type || '').trim()
   if (!requested) {
@@ -8911,6 +8996,11 @@ async function executeFunctionTool(name, args, context = {}) {
     return scrnaseqGeneExpressionTool(client, normalizedArgs, context)
   }
 
+  if (name === 'vfb_find_split_stocks') {
+    const client = await getMcpClientForContext('vfb', context)
+    return findSplitStocksTool(client, normalizedArgs)
+  }
+
   if (name === 'vfb_find_similar_neurons') {
     const client = await getMcpClientForContext('vfb', context)
     return findSimilarNeuronsTool(client, normalizedArgs, context)
@@ -9701,7 +9791,7 @@ TOOL SELECTION:
 - For adult-vs-larval or stage-comparison anatomy questions, use vfb_compare_region_organization. For adult vs larval antennal lobe, answer from the returned stage descriptions/query counts and avoid PubMed unless the user specifically asks for papers.
 - For containment hierarchy questions, use vfb_trace_containment_chain. For DA1 glomerulus, list the returned chain instead of treating an empty PartsOf preview as absence of hierarchy.
 - For approximate neuron-count questions about broad regions, use vfb_get_region_neuron_count so the answer distinguishes VFB query/table counts from literature/connectome cell-census counts.
-- FlyBase entities: vfb_resolve_entity → vfb_find_stocks.
+- FlyBase entities: vfb_resolve_entity → vfb_find_stocks. Stocks for a NEURON CLASS: vfb_find_split_stocks (SplitsTargeting → FindStocks on both hemidrivers).
 - Split-GAL4 combinations: vfb_resolve_combination → vfb_find_combo_publications, but only when the user gives a concrete combination/line name. For broad "genetic tools for X" questions, use vfb_find_genetic_tools.
 - Connectivity between neuron classes: call vfb_query_connectivity directly with the user's full neuron class labels or FBbt IDs.
 - Broad multi-step pathway questions between systems/regions, such as ORNs to lateral horn, visual system to mushroom body, sensory neurons to fan-shaped body, thermosensory neurons to mushroom body, or central complex to lateral accessory lobe: use vfb_find_pathway_evidence first. It is better to return route evidence plus concrete narrowing options than to dead-stop on a broad direct connectivity query. Do not search PubMed solely because the wording mentions "memory" or "influence" if VFB pathway evidence already addresses the route.
@@ -9749,7 +9839,7 @@ GRAPHS:
 TOOL PARAMETERS:
 - Use plain short-form IDs (e.g. FBbt_00048241). Never pass markdown links or IRIs as IDs.
 - For vfb_run_query, copy query_type exactly from the term's Queries[].query. Do not invent, rename, or substitute query names across terms.
-- If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature.
+- If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature or vfb_find_split_stocks was run for the neuron class.
 - If vfb_get_neurotransmitter_profile returns primary_transmitter_candidates, answer with the top candidate and its VFB tag evidence. Do not call it "unverified" when the candidate comes from VFB tags; use scope notes instead.
 - If vfb_summarize_neuron_taxonomy returns curated_type_rows, answer from those rows and the query summaries. Do not mention compressed evidence or internal helper names, and do not add cell counts, transmitter claims, or connectivity claims unless they are explicitly in the returned evidence.
 - If vfb_summarize_region_connections returns major_input_evidence, lead with the region-level input evidence and give a scoped next step for weighted ranking. If it returns major_target_regions, lead with those target regions and then give a scoped next step for weights.
