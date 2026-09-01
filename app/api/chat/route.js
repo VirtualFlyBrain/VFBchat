@@ -57,7 +57,7 @@ import {
   PREVIEW_STATUS_COMPLETE,
   PREVIEW_STATUS_PENDING
 } from '../../../lib/termInfoDigest.mjs'
-import { orderImagesByTemplate, requestedTemplateFromScene } from '../../../lib/resultTables.mjs'
+import { orderImagesByTemplate, requestedTemplateFromScene, isListQuestion } from '../../../lib/resultTables.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
@@ -1579,6 +1579,22 @@ function getToolConfig() {
 
   tools.push({
     type: 'function',
+    name: 'vfb_get_hierarchy',
+    description: 'Hierarchy tree for a VFB term from the ontology: relationship "subclass_of" for a cell-type taxonomy ("what types/subtypes of Kenyon cell are there?", "show me the hierarchy of X"), "part_of" for brain-region structure ("what are the parts of the mushroom body?"). direction "descendants" lists children as a nested tree, "ancestors" the parent chain, "both" both. max_depth 1 = direct children only; 2-3 for a multi-level tree; -1 = the whole tree (avoid on broad terms). Prefer this over reading SubclassesOf/PartsOf previews when the question asks for the tree or for levels below the first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'VFB term ID, e.g. FBbt_00003686 (Kenyon cell) or FBbt_00005801 (mushroom body).' },
+        relationship: { type: 'string', enum: ['subclass_of', 'part_of'], description: '"subclass_of" for cell types, "part_of" for regions.' },
+        direction: { type: 'string', enum: ['descendants', 'ancestors', 'both'], description: 'Default "descendants".' },
+        max_depth: { type: 'number', description: 'Levels to expand (default 2).' }
+      },
+      required: ['id', 'relationship']
+    }
+  })
+
+  tools.push({
+    type: 'function',
     name: 'vfb_trace_containment_chain',
     description: 'Trace a formal anatomy containment/part_of chain from a VFB anatomy term up toward adult brain-level structures. Use this for questions such as the DA1 glomerulus containment hierarchy.',
     parameters: {
@@ -2680,6 +2696,7 @@ const MCP_TOOL_ROUTING = {
   vfb_get_term_info: { server: 'vfb', mcpName: 'get_term_info' },
   vfb_run_query: { server: 'vfb', mcpName: 'run_query' },
   vfb_resolve_entity: { server: 'vfb', mcpName: 'resolve_entity' },
+  vfb_get_hierarchy: { server: 'vfb', mcpName: 'get_hierarchy' },
   vfb_find_stocks: { server: 'vfb', mcpName: 'find_stocks' },
   vfb_resolve_combination: { server: 'vfb', mcpName: 'resolve_combination' },
   vfb_find_combo_publications: { server: 'vfb', mcpName: 'find_combo_publications' },
@@ -9316,7 +9333,14 @@ async function executeFunctionTool(name, args, context = {}) {
     // tool names stay the same, so the model's usage is unchanged.
     let mcpName = routing.mcpName
     let mcpArgs = cleanArgs
-    if (name === 'vfb_find_stocks') {
+    if (name === 'vfb_get_hierarchy') {
+      mcpArgs = {
+        id: sanitizeVfbIdParam(cleanArgs.id),
+        relationship: cleanArgs.relationship === 'part_of' ? 'part_of' : 'subclass_of',
+        direction: ['descendants', 'ancestors', 'both'].includes(cleanArgs.direction) ? cleanArgs.direction : 'descendants',
+        max_depth: normalizeInteger(cleanArgs.max_depth, 2, -1, 6)
+      }
+    } else if (name === 'vfb_find_stocks') {
       mcpName = 'run_query'
       mcpArgs = { id: sanitizeVfbIdParam(cleanArgs.feature_id), query_type: 'FindStocks', limit: 0 }
     } else if (name === 'vfb_find_combo_publications') {
@@ -9351,6 +9375,17 @@ async function executeFunctionTool(name, args, context = {}) {
         const scopedOutputText = addStageScopeNoteToTermInfoOutput(outputText, context.userMessage || '')
         rememberTermInfoResult(context, scopedOutputText, cleanArgs.id)
         return scopedOutputText
+      }
+      if (name === 'vfb_get_hierarchy') {
+        // The MCP returns the tree three times over — nested JSON, an ASCII
+        // drawing, and a standalone HTML page. Keep the JSON: the harness
+        // renders the tree itself, and the extras would only pad the prompt.
+        const tree = parseJsonPayload(outputText)
+        if (tree && typeof tree === 'object') {
+          const { html, display, display_full: displayFull, ...rest } = tree
+          return JSON.stringify({ tool: 'vfb_get_hierarchy', ...rest })
+        }
+        return outputText
       }
       return name === 'vfb_search_terms'
         ? postprocessVfbSearchTermsOutput(outputText, cleanArgs, context, client)
@@ -11418,6 +11453,11 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       const md = renderNeuronCountEstimate(c, c?.query?.resolved_region || '')
       if (md) answerText += `\n\n${md}`
     }
+    // Deterministic appendices the orchestrator wrote from structured data —
+    // an ontology tree, today — rendered verbatim after the prose.
+    for (const md of (live.appendices || [])) {
+      if (md) answerText += `\n\n${md}`
+    }
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,
@@ -11439,9 +11479,18 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     // a fact about the current upstream and not a control.
     const rawTables = scrubStructuredTables(live.tables || [], outboundAllowList)
     const tables = rawTables.tables
-    const gallerySource = tables.length
-      ? (live.thumbnails || [])
-      : ((live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || []))
+    // The gallery is gated on LIST intent, and the gate is on galleryThumbnails
+    // only (lib/resultTables.mjs). live.thumbnails is every VFB thumbnail
+    // regex-scraped from every tool result this turn — the term's example
+    // images included — so falling back to it put the same eight brains under
+    // a receptor-expression answer, a hierarchy answer, every answer (issue
+    // #45). The ungated list is now used only when the question asked for
+    // images/results and the digest previews had none to offer; a
+    // definitional or quantitative answer gets no gallery.
+    const listIntent = isListQuestion(userMessage || '')
+    const gallerySource = (live.galleryThumbnails || []).length
+      ? live.galleryThumbnails
+      : (listIntent ? (live.thumbnails || []) : [])
     const merged = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
     const filtered = filterStructuredImages(merged, outboundAllowList)
     const rawImages = filtered.images
