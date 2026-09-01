@@ -157,3 +157,21 @@ test('galleryThumbnails collects { url, label, id } for a list question, none fo
   // definitional question — suppressed
   assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'What is the lateral horn'), [])
 })
+
+// Issue #45: a definitional answer shows the term's OWN images, not every
+// thumbnail any tool touched this turn.
+test('termExampleThumbnails takes each resolved term\'s own images, a few per term', async () => {
+  const { termExampleThumbnails } = await import('../../lib/resultTables.mjs')
+  const ledger = { terms: {
+    kc: { id: 'FBbt_00003686', label: 'Kenyon cell', digest: { name: 'Kenyon cell', images: [
+      { id: 'VFB_1', label: 'KCg-m_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0001/VFB_00101567/thumbnail.png', template: 'VFB_00101567' },
+      { id: 'VFB_2', label: 'KCab_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0002/VFB_00101567/thumbnail.png', template: 'VFB_00101567' },
+      { id: 'VFB_2', label: 'KCab_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0002/VFB_00101567/thumbnail.png', template: 'VFB_00101567' }
+    ] } },
+    unresolved: { id: null, digest: { images: [{ id: 'x', thumbnail: 'https://example/x.png' }] } }
+  } }
+  const out = termExampleThumbnails(ledger, { perTerm: 4 })
+  assert.deepEqual(out.map(i => i.id), ['VFB_1', 'VFB_2'])
+  assert.equal(out[0].label, 'KCg-m_R')
+  assert.deepEqual(termExampleThumbnails({ terms: {} }), [])
+})

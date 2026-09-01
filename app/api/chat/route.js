@@ -58,6 +58,7 @@ import {
   PREVIEW_STATUS_PENDING
 } from '../../../lib/termInfoDigest.mjs'
 import { orderImagesByTemplate, requestedTemplateFromScene, isListQuestion } from '../../../lib/resultTables.mjs'
+import { questionKinds } from '../../../lib/queryTypes.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
@@ -11488,9 +11489,25 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     // images/results and the digest previews had none to offer; a
     // definitional or quantitative answer gets no gallery.
     const listIntent = isListQuestion(userMessage || '')
-    const gallerySource = (live.galleryThumbnails || []).length
-      ? live.galleryThumbnails
-      : (listIntent ? (live.thumbnails || []) : [])
+    const kinds = questionKinds(userMessage || '')
+    const imageIntent = kinds.has('individual_images')
+    // A question on a non-visual axis — expression, connectivity, stocks,
+    // datasets, papers, similarity — is not answered by pictures of the term.
+    const nonVisualAxis = ['scrnaseq', 'expression', 'connectivity', 'stocks', 'dataset', 'publications', 'similarity', 'splits'].some(k => kinds.has(k))
+    let gallerySource = []
+    if (imageIntent) {
+      gallerySource = (live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || [])
+    } else if (!tables.length && listIntent && !nonVisualAxis) {
+      // A list question whose answer produced no table: the digest previews
+      // are the only pictures of the things listed. When a table was built it
+      // carries its own per-row thumbnails, and a strip of the term's example
+      // images under a connectivity or expression table is decoration.
+      gallerySource = live.galleryThumbnails || []
+    } else if (!tables.length && !nonVisualAxis) {
+      // Definitional: the term's OWN registered or example images — pictures
+      // of the thing asked about, not of everything any tool touched.
+      gallerySource = live.termThumbnails || []
+    }
     const merged = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
     const filtered = filterStructuredImages(merged, outboundAllowList)
     const rawImages = filtered.images
