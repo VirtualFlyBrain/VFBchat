@@ -43,7 +43,7 @@ test('the claim gives the direct subtypes and the size of the tree', () => {
 test('the rendered tree is a nested, linked list, capped with an honest note', () => {
   const md = renderHierarchyMarkdown(parseHierarchy(KC))
   assert.match(md, /^\*\*Subtypes of Kenyon cell\*\* \(8 in VFB's ontology, 2 levels shown\)/)
-  assert.match(md, /\n- \[Kenyon cell\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003686\)\n  - \[adult Kenyon cell\]\(.*FBbt_00049825\)\n    - \[Kenyon cell of main calyx\]/)
+  assert.match(md, /\n- \[Kenyon cell\]\(https:\/\/www\.virtualflybrain\.org\/reports\/FBbt_00003686\)\n\t- \[adult Kenyon cell\]\(.*FBbt_00049825\)\n\t\t- \[Kenyon cell of main calyx\]/)
   const capped = renderHierarchyMarkdown(parseHierarchy(KC), { maxNodes: 2 })
   assert.match(capped, /… and 6 more not shown/)
 })
@@ -53,7 +53,7 @@ test('ancestors render as a chain ending at the term', () => {
     ancestors: [{ id: 'FBbt_00049825', label: 'adult Kenyon cell', ancestors: [{ id: 'FBbt_00003686', label: 'Kenyon cell' }] }] })
   const s = summariseHierarchy(tree)
   assert.match(s.claim, /alpha\/beta Kenyon cell is a subtype of adult Kenyon cell, which is a subtype of Kenyon cell/)
-  assert.match(renderHierarchyMarkdown(tree), /- \[adult Kenyon cell\].*\n  - \[Kenyon cell\].*\n    - \*\*alpha\/beta Kenyon cell\*\*/)
+  assert.match(renderHierarchyMarkdown(tree), /- \[adult Kenyon cell\].*\n\t- \[Kenyon cell\].*\n\t\t- \*\*alpha\/beta Kenyon cell\*\*/)
 })
 
 test('a hierarchy question on a class with subclasses injects the tree step', () => {

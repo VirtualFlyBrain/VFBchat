@@ -1058,7 +1058,10 @@ export default function Home() {
     cleaned = cleaned.replace(/citeturn[\w?]*\d*/g, '')         // citeturn0search0, citeturn0?, citeturn0vfbsomething etc.
     cleaned = cleaned.replace(/\bcite(?=\[|https?:\/\/)/g, '')  // orphaned "cite" before links
     // Clean up leftover whitespace/punctuation from stripped artifacts
-    cleaned = cleaned.replace(/ {2,}/g, ' ').replace(/\.\s*\?\s*/g, '. ').replace(/\. \./g, '.')
+    // Collapse runs of spaces INSIDE a line only. Leading spaces are markdown
+    // structure — a nested list's indentation, an indented code block — and
+    // collapsing them flattened every nested list into one level.
+    cleaned = cleaned.replace(/(\S) {2,}/g, '$1 ').replace(/\.\s*\?\s*/g, '. ').replace(/\. \./g, '.')
 
     // Preserve existing markdown links/images exactly as-is to avoid
     // creating nested markdown when we linkify plain IDs below.

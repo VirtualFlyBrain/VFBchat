@@ -11454,11 +11454,6 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       const md = renderNeuronCountEstimate(c, c?.query?.resolved_region || '')
       if (md) answerText += `\n\n${md}`
     }
-    // Deterministic appendices the orchestrator wrote from structured data —
-    // an ontology tree, today — rendered verbatim after the prose.
-    for (const md of (live.appendices || [])) {
-      if (md) answerText += `\n\n${md}`
-    }
 
     const built = buildSuccessfulTextResult({
       responseText: answerText,
@@ -11468,6 +11463,15 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       outboundAllowList: getOutboundAllowList(),
       graphSpecs: live.graphs
     })
+    // Deterministic appendices the orchestrator wrote from structured data —
+    // an ontology tree, today — go on AFTER the prose sanitisers, which
+    // collapse the indentation a nested list is made of. They still pass the
+    // outbound allow-list, because they carry links.
+    for (const md of (live.appendices || [])) {
+      if (!md) continue
+      const { sanitizedText } = sanitizeAssistantOutput(md, getOutboundAllowList())
+      if (sanitizedText) built.responseText += `\n\n${sanitizedText}`
+    }
     // Result tables (detailed query results) carry their own per-row thumbnails,
     // so only show a separate image gallery when there is no table.
     const outboundAllowList = getOutboundAllowList()
