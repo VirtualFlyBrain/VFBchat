@@ -30,12 +30,13 @@ import { createFenceRepairer } from '../../../lib/fencedBlockRepair.mjs'
 import { sentenceStart } from '../../../lib/sentenceRewrite.mjs'
 import { stripHarnessFraming } from '../../../lib/harnessFraming.mjs'
 import { stripSupersededFigures } from '../../../lib/countProvenance.mjs'
-import { isAggregateClassPartner } from '../../../lib/classPartners.mjs'
+import { isAggregateClassPartner, rankClassPartners } from '../../../lib/classPartners.mjs'
 import { planNextAttempt } from '../../../lib/callBudget.mjs'
 import { detectJailbreakRule } from '../../../lib/jailbreak.mjs'
 import { safeToolArgs, safeText } from '../../../lib/safeToolArgs.mjs'
 import { createRunSignal, throwIfAborted, isRunAbortedWith, NOBODY_WAITING } from '../../../lib/runSignal.mjs'
 import { parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes, buildExpressionMatrix, renderExpressionMarkdown } from '../../../lib/scrnaseq.mjs'
+import { parseSplitRows, parseStockRows, intersectSplitStocks } from '../../../lib/splitStocks.mjs'
 import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '../../../lib/similarNeurons.mjs'
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
@@ -56,7 +57,8 @@ import {
   PREVIEW_STATUS_COMPLETE,
   PREVIEW_STATUS_PENDING
 } from '../../../lib/termInfoDigest.mjs'
-import { orderImagesByTemplate, requestedTemplateFromScene } from '../../../lib/resultTables.mjs'
+import { orderImagesByTemplate, requestedTemplateFromScene, isListQuestion } from '../../../lib/resultTables.mjs'
+import { questionKinds } from '../../../lib/queryTypes.mjs'
 import { classifyComplexity } from '../../../lib/guidanceCards.mjs'
 import { linkifyKnownTerms, linkifyCounts } from '../../../lib/followOns.mjs'
 import { getMissingRequiredArgs, buildRepairMessages, mergeRepairedArgs } from '../../../lib/toolRepair.mjs'
@@ -1578,6 +1580,22 @@ function getToolConfig() {
 
   tools.push({
     type: 'function',
+    name: 'vfb_get_hierarchy',
+    description: 'Hierarchy tree for a VFB term from the ontology: relationship "subclass_of" for a cell-type taxonomy ("what types/subtypes of Kenyon cell are there?", "show me the hierarchy of X"), "part_of" for brain-region structure ("what are the parts of the mushroom body?"). direction "descendants" lists children as a nested tree, "ancestors" the parent chain, "both" both. max_depth 1 = direct children only; 2-3 for a multi-level tree; -1 = the whole tree (avoid on broad terms). Prefer this over reading SubclassesOf/PartsOf previews when the question asks for the tree or for levels below the first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'VFB term ID, e.g. FBbt_00003686 (Kenyon cell) or FBbt_00005801 (mushroom body).' },
+        relationship: { type: 'string', enum: ['subclass_of', 'part_of'], description: '"subclass_of" for cell types, "part_of" for regions.' },
+        direction: { type: 'string', enum: ['descendants', 'ancestors', 'both'], description: 'Default "descendants".' },
+        max_depth: { type: 'number', description: 'Levels to expand (default 2).' }
+      },
+      required: ['id', 'relationship']
+    }
+  })
+
+  tools.push({
+    type: 'function',
     name: 'vfb_trace_containment_chain',
     description: 'Trace a formal anatomy containment/part_of chain from a VFB anatomy term up toward adult brain-level structures. Use this for questions such as the DA1 glomerulus containment hierarchy.',
     parameters: {
@@ -1769,6 +1787,20 @@ function getToolConfig() {
         collection_filter: { type: 'string', description: 'Optional stock centre filter, e.g. Bloomington, Kyoto, VDRC' }
       },
       required: ['feature_id']
+    }
+  })
+
+  tools.push({
+    type: 'function',
+    name: 'vfb_find_split_stocks',
+    description: 'Find the fly stocks for the split-GAL4 lines that target a NEURON CLASS. Use this for "which stocks / fly lines can I order to label <neuron type>", "stocks for the splits targeting <neuron type>". Runs SplitsTargeting on the class, then FindStocks on each split\'s two hemidriver constructs, and reports the stock(s) carrying both — i.e. the orderable split-GAL4 stock (Bloomington number, genotype). Do not use vfb_find_stocks for an anatomy term; it takes a FlyBase feature id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        neuron_type: { type: 'string', description: 'Neuron-class label or FBbt ID, e.g. "gamma dorsal Kenyon cell" or "FBbt_00110932".' },
+        limit: { type: 'number', description: 'Maximum splits to check for stocks (default 12).' }
+      },
+      required: ['neuron_type']
     }
   })
 
@@ -2665,6 +2697,7 @@ const MCP_TOOL_ROUTING = {
   vfb_get_term_info: { server: 'vfb', mcpName: 'get_term_info' },
   vfb_run_query: { server: 'vfb', mcpName: 'run_query' },
   vfb_resolve_entity: { server: 'vfb', mcpName: 'resolve_entity' },
+  vfb_get_hierarchy: { server: 'vfb', mcpName: 'get_hierarchy' },
   vfb_find_stocks: { server: 'vfb', mcpName: 'find_stocks' },
   vfb_resolve_combination: { server: 'vfb', mcpName: 'resolve_combination' },
   vfb_find_combo_publications: { server: 'vfb', mcpName: 'find_combo_publications' },
@@ -3724,10 +3757,13 @@ function extractRowsFromRunQueryPayload(rawPayload) {
 }
 
 function normalizeEndpointSearchText(value = '') {
+  // The prime survives normalisation: it is the only thing separating
+  // "alpha/beta Kenyon cell" from "alpha'/beta' Kenyon cell" (issue #40).
   return String(value || '')
     .toLowerCase()
+    .replace(/[\u2019\u2018`\u00b4\u2032]/g, "'")
     .replace(/[_-]+/g, ' ')
-    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/[^a-z0-9\s']/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -5697,7 +5733,14 @@ async function findConnectivityPartnersTool(client, args = {}) {
     })
   }
 
-  const { rows, count, used_cached_recovery: usedCachedRecovery } = await getConnectivityRowsForComparison(client, endpoint, queryType)
+  const { rows: allRows, count, used_cached_recovery: usedCachedRecovery } = await getConnectivityRowsForComparison(client, endpoint, queryType)
+  // The class table carries rows for the queried class AND for each of its
+  // subclasses (query_id differs per row). Keep the queried class's own rows;
+  // otherwise each partner is counted once per subclass and a subclass's
+  // figures are reported as the parent's. See selectQueriedRows in
+  // lib/classPartners.mjs for the same rule on the harness path.
+  const ownRows = allRows.filter(row => String(row?.query_id || '').trim() === String(endpoint.id))
+  const rows = ownRows.length ? ownRows : allRows
   const partnerRows = []
   const seenPartnerIds = new Set()
   for (const row of rows) {
@@ -5714,14 +5757,33 @@ async function findConnectivityPartnersTool(client, args = {}) {
   }
   partnerRows.sort(compareConnectivityRowStrength)
 
-  // Split BEFORE limiting. Generic neuron superclasses ("neuron", "CNS neuron", …)
-  // aggregate every partner's weight and so fill the top of the ranking; slicing
-  // first would leave no specific partners. Take the top specific partners from
-  // the full list, then keep a few aggregate classes for context.
-  const specificPartnersAll = partnerRows.filter(partner => !isLikelyAggregateConnectivityPartner(partner, partnerFilter))
-  const aggregatePartnersAll = partnerRows.filter(partner => isLikelyAggregateConnectivityPartner(partner, partnerFilter))
-  const specificPartners = specificPartnersAll.slice(0, limit)
-  const aggregatePartners = aggregatePartnersAll.slice(0, Math.min(3, limit))
+  // Rank with the shared class-partner ranker rather than by total weight.
+  // Total weight is extensive — it grows with the size of the partner class —
+  // so sorting by it and slicing ranked the ontology (neuron, CNS neuron,
+  // interneuron…) and cut the specific partners before they could be shown
+  // (issue #47). rankClassPartners collapses the near-duplicate ontology
+  // chains, sets the self-row aside, and orders the specific partners by mean
+  // synaptic weight per connected pair with a floor on reach. The roll-up
+  // classes are kept after them, as before, so nothing VFB ranked is hidden.
+  const byId = new Map(partnerRows.map(p => [p.id, p]))
+  const ranked = rankClassPartners({
+    direction,
+    queryId: endpoint.id,
+    queryLabel: endpoint.label || '',
+    total: partnerRows.length,
+    totalIndividuals: 0,
+    rows: partnerRows.map(p => ({
+      id: p.id,
+      label: p.label,
+      totalWeight: Number(p.total_weight) || 0,
+      pairwise: Number(p.pairwise_connections) || 0,
+      connected: Number(p.connected_n) || 0,
+      percentConnected: Number(p.percent_connected) || 0,
+      avgWeight: Number(p.avg_weight) || (Number(p.pairwise_connections) ? (Number(p.total_weight) || 0) / Number(p.pairwise_connections) : 0)
+    }))
+  }, { topN: limit, aggregateN: Math.min(3, limit), partnerFilter })
+  const specificPartners = (ranked?.partners || []).map(r => byId.get(r.id)).filter(Boolean)
+  const aggregatePartners = (ranked?.aggregates || []).map(r => byId.get(r.id)).filter(Boolean)
   const topPartners = [...specificPartners, ...aggregatePartners]
 
   const partnerTargetBreakdown = []
@@ -5867,8 +5929,9 @@ async function findConnectivityPartnersTool(client, args = {}) {
     },
     evidence_summary: {
       result_scope: partnerFilter ? 'filtered_class_connectivity_partners' : 'ranked_class_connectivity_partners',
+      ranked_by: 'avg_weight (mean synaptic weight per connected pair) among specific partner classes; roll-up superclasses listed after them',
       answer_hint: partnerRows.length > 0
-        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}.${recommendedPartnerTargetAnswerText ? ` Top mapped pairs to list directly: ${recommendedPartnerTargetAnswerText}.` : ''}${includePartnerTargets ? ' Do not defer the exact mappings to a JSON section.' : ''}`
+        ? `VFB found ${partnerRows.length} ${direction} class-connectivity partner${partnerRows.length === 1 ? '' : 's'}${partnerFilter ? ` matching "${partnerFilter}"` : ''} for ${endpoint.label}. top_partners are ordered by mean synaptic weight per connected pair (avg_weight), strongest first; name them in that order.${recommendedPartnerTargetAnswerText ? ` Top mapped pairs to list directly: ${recommendedPartnerTargetAnswerText}.` : ''}${includePartnerTargets ? ' Do not defer the exact mappings to a JSON section.' : ''}`
         : `VFB returned ${count} ${direction} rows for ${endpoint.label}, but none matched the requested partner filter${partnerFilter ? ` "${partnerFilter}"` : ''}.`,
       recommended_answer_rows: recommendedPartnerTargetAnswerRows,
       caution: 'Rows are class-level connectivity summaries from the selected endpoint query; broad aggregate classes are not one-to-one neuron types.'
@@ -7471,6 +7534,76 @@ async function resolveScrnaseqTermId(client, requested = '') {
   return flagged ? idOf(flagged) : null
 }
 
+// Three hops the planner never chained on its own (issue #46): the class's
+// SplitsTargeting rows name two hemidriver constructs each (FBtp ids in the row
+// id); FindStocks on a construct lists every stock carrying it; the stock in
+// BOTH lists is the split-GAL4 stock. All the FindStocks calls go as one batched
+// run_query. The set logic lives in lib/splitStocks.mjs.
+const SPLIT_STOCKS_TOOL = 'vfb_find_split_stocks'
+async function findSplitStocksTool(client, args = {}) {
+  const requested = String(args.neuron_type || '').trim()
+  if (!requested) {
+    return JSON.stringify({ error: `${SPLIT_STOCKS_TOOL} requires neuron_type.`, tool: SPLIT_STOCKS_TOOL, recoverable: true })
+  }
+  const limit = normalizeInteger(args.limit, 12, 1, 30)
+  let id = sanitizeVfbId(requested)
+  let label = requested
+  if (/^FBbt_\d{8}$/i.test(id)) {
+    const ti = await getTermInfoEvidence(client, id)
+    label = getReadableTermName(ti.record, id)
+  } else {
+    const r = await resolveComparisonUpstreamType(client, requested)
+    if (r?.id) { id = r.id; label = r.label || requested } else { id = '' }
+  }
+  if (!id) {
+    return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB neuron class.`, tool: SPLIT_STOCKS_TOOL, recoverable: true })
+  }
+  let splitsPayload = null
+  try {
+    splitsPayload = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'SplitsTargeting', limit: 0 }))
+  } catch (error) {
+    return JSON.stringify({ error: `SplitsTargeting failed for ${label} (${id}): ${error?.message || error}`, tool: SPLIT_STOCKS_TOOL, recoverable: true, resolved: { id, label } })
+  }
+  const allSplits = parseSplitRows(splitsPayload)
+  const splitCount = Number.isFinite(Number(splitsPayload?.count)) && Number(splitsPayload.count) >= 0 ? Number(splitsPayload.count) : allSplits.length
+  if (!allSplits.length) {
+    return JSON.stringify({
+      tool: SPLIT_STOCKS_TOOL, resolved: { id, label }, split_count: splitCount, splits: [],
+      note: splitCount > 0
+        ? `VFB lists ${splitCount} split-GAL4 expression patterns for ${label}, but none names its two hemidriver constructs, so no stock lookup was possible.`
+        : `VFB records no split-GAL4 lines targeting ${label}.`
+    })
+  }
+  const splits = allSplits.slice(0, limit)
+  const constructs = [...new Set(splits.flatMap(s => s.constructs))]
+  const stocksByConstruct = new Map()
+  try {
+    const batch = parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', {
+      queries: constructs.map(c => ({ id: c, query_type: 'FindStocks' }))
+    }))
+    for (const c of constructs) {
+      const entry = batch?.[`${c}::FindStocks`] ?? (constructs.length === 1 && Array.isArray(batch?.rows) ? batch : null)
+      if (entry && typeof entry === 'object' && !(Number(entry.count) < 0)) stocksByConstruct.set(c, parseStockRows(entry))
+    }
+  } catch (error) {
+    return JSON.stringify({ error: `FindStocks failed for the hemidriver constructs of ${label}: ${error?.message || error}`, tool: SPLIT_STOCKS_TOOL, recoverable: true, resolved: { id, label }, split_count: splitCount })
+  }
+  const resolved = intersectSplitStocks(splits, stocksByConstruct)
+  return JSON.stringify({
+    tool: SPLIT_STOCKS_TOOL,
+    resolved: { id, label },
+    split_count: splitCount,
+    constructs_checked: stocksByConstruct.size,
+    splits: resolved.map(s => ({
+      id: s.id, label: s.label, constructs: s.constructs, constructs_checked: s.constructs_checked,
+      stocks: s.stocks.map(st => ({ stock_id: st.id, stock_number: st.number, collection: st.collection, genotype: st.genotype }))
+    })),
+    evidence_summary: {
+      answer_hint: `${resolved.filter(s => s.stocks.length).length} of ${resolved.length} split-GAL4 lines targeting ${label} have a FlyBase stock carrying both hemidrivers; name each split with its stock centre and number.`
+    }
+  })
+}
+
 async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   const requested = String(args.neuron_type || '').trim()
   if (!requested) {
@@ -8881,6 +9014,11 @@ async function executeFunctionTool(name, args, context = {}) {
     return scrnaseqGeneExpressionTool(client, normalizedArgs, context)
   }
 
+  if (name === 'vfb_find_split_stocks') {
+    const client = await getMcpClientForContext('vfb', context)
+    return findSplitStocksTool(client, normalizedArgs)
+  }
+
   if (name === 'vfb_find_similar_neurons') {
     const client = await getMcpClientForContext('vfb', context)
     return findSimilarNeuronsTool(client, normalizedArgs, context)
@@ -9196,7 +9334,14 @@ async function executeFunctionTool(name, args, context = {}) {
     // tool names stay the same, so the model's usage is unchanged.
     let mcpName = routing.mcpName
     let mcpArgs = cleanArgs
-    if (name === 'vfb_find_stocks') {
+    if (name === 'vfb_get_hierarchy') {
+      mcpArgs = {
+        id: sanitizeVfbIdParam(cleanArgs.id),
+        relationship: cleanArgs.relationship === 'part_of' ? 'part_of' : 'subclass_of',
+        direction: ['descendants', 'ancestors', 'both'].includes(cleanArgs.direction) ? cleanArgs.direction : 'descendants',
+        max_depth: normalizeInteger(cleanArgs.max_depth, 2, -1, 6)
+      }
+    } else if (name === 'vfb_find_stocks') {
       mcpName = 'run_query'
       mcpArgs = { id: sanitizeVfbIdParam(cleanArgs.feature_id), query_type: 'FindStocks', limit: 0 }
     } else if (name === 'vfb_find_combo_publications') {
@@ -9231,6 +9376,17 @@ async function executeFunctionTool(name, args, context = {}) {
         const scopedOutputText = addStageScopeNoteToTermInfoOutput(outputText, context.userMessage || '')
         rememberTermInfoResult(context, scopedOutputText, cleanArgs.id)
         return scopedOutputText
+      }
+      if (name === 'vfb_get_hierarchy') {
+        // The MCP returns the tree three times over — nested JSON, an ASCII
+        // drawing, and a standalone HTML page. Keep the JSON: the harness
+        // renders the tree itself, and the extras would only pad the prompt.
+        const tree = parseJsonPayload(outputText)
+        if (tree && typeof tree === 'object') {
+          const { html, display, display_full: displayFull, ...rest } = tree
+          return JSON.stringify({ tool: 'vfb_get_hierarchy', ...rest })
+        }
+        return outputText
       }
       return name === 'vfb_search_terms'
         ? postprocessVfbSearchTermsOutput(outputText, cleanArgs, context, client)
@@ -9671,7 +9827,7 @@ TOOL SELECTION:
 - For adult-vs-larval or stage-comparison anatomy questions, use vfb_compare_region_organization. For adult vs larval antennal lobe, answer from the returned stage descriptions/query counts and avoid PubMed unless the user specifically asks for papers.
 - For containment hierarchy questions, use vfb_trace_containment_chain. For DA1 glomerulus, list the returned chain instead of treating an empty PartsOf preview as absence of hierarchy.
 - For approximate neuron-count questions about broad regions, use vfb_get_region_neuron_count so the answer distinguishes VFB query/table counts from literature/connectome cell-census counts.
-- FlyBase entities: vfb_resolve_entity → vfb_find_stocks.
+- FlyBase entities: vfb_resolve_entity → vfb_find_stocks. Stocks for a NEURON CLASS: vfb_find_split_stocks (SplitsTargeting → FindStocks on both hemidrivers).
 - Split-GAL4 combinations: vfb_resolve_combination → vfb_find_combo_publications, but only when the user gives a concrete combination/line name. For broad "genetic tools for X" questions, use vfb_find_genetic_tools.
 - Connectivity between neuron classes: call vfb_query_connectivity directly with the user's full neuron class labels or FBbt IDs.
 - Broad multi-step pathway questions between systems/regions, such as ORNs to lateral horn, visual system to mushroom body, sensory neurons to fan-shaped body, thermosensory neurons to mushroom body, or central complex to lateral accessory lobe: use vfb_find_pathway_evidence first. It is better to return route evidence plus concrete narrowing options than to dead-stop on a broad direct connectivity query. Do not search PubMed solely because the wording mentions "memory" or "influence" if VFB pathway evidence already addresses the route.
@@ -9719,7 +9875,7 @@ GRAPHS:
 TOOL PARAMETERS:
 - Use plain short-form IDs (e.g. FBbt_00048241). Never pass markdown links or IRIs as IDs.
 - For vfb_run_query, copy query_type exactly from the term's Queries[].query. Do not invent, rename, or substitute query names across terms.
-- If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature.
+- If vfb_find_genetic_tools returns top_tools, answer from those rows and their publications; do not claim stock availability unless vfb_find_stocks was run for a concrete feature or vfb_find_split_stocks was run for the neuron class.
 - If vfb_get_neurotransmitter_profile returns primary_transmitter_candidates, answer with the top candidate and its VFB tag evidence. Do not call it "unverified" when the candidate comes from VFB tags; use scope notes instead.
 - If vfb_summarize_neuron_taxonomy returns curated_type_rows, answer from those rows and the query summaries. Do not mention compressed evidence or internal helper names, and do not add cell counts, transmitter claims, or connectivity claims unless they are explicitly in the returned evidence.
 - If vfb_summarize_region_connections returns major_input_evidence, lead with the region-level input evidence and give a scoped next step for weighted ranking. If it returns major_target_regions, lead with those target regions and then give a scoped next step for weights.
@@ -11136,6 +11292,10 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
           obj = out
           if (typeof out === 'string') { try { obj = JSON.parse(out) } catch { obj = null } }
         }
+        // A partner-tool payload is drawn by the orchestrator from the RANKED
+        // partners (lib/classPartners.mjs partnerGraph), not from the raw
+        // top_partners; drawing both would put two graphs under one answer.
+        if (obj && typeof obj === 'object' && obj.endpoint && Array.isArray(obj.top_partners)) return []
         return buildConnectivityGraphs(obj).map(normalizeGraphSpec).filter(Boolean)
       },
       streamText: ({ messages, model, sourceQuotes, sampling }) => streamSynthCompletion({
@@ -11303,6 +11463,15 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       outboundAllowList: getOutboundAllowList(),
       graphSpecs: live.graphs
     })
+    // Deterministic appendices the orchestrator wrote from structured data —
+    // an ontology tree, today — go on AFTER the prose sanitisers, which
+    // collapse the indentation a nested list is made of. They still pass the
+    // outbound allow-list, because they carry links.
+    for (const md of (live.appendices || [])) {
+      if (!md) continue
+      const { sanitizedText } = sanitizeAssistantOutput(md, getOutboundAllowList())
+      if (sanitizedText) built.responseText += `\n\n${sanitizedText}`
+    }
     // Result tables (detailed query results) carry their own per-row thumbnails,
     // so only show a separate image gallery when there is no table.
     const outboundAllowList = getOutboundAllowList()
@@ -11315,9 +11484,34 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     // a fact about the current upstream and not a control.
     const rawTables = scrubStructuredTables(live.tables || [], outboundAllowList)
     const tables = rawTables.tables
-    const gallerySource = tables.length
-      ? (live.thumbnails || [])
-      : ((live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || []))
+    // The gallery is gated on LIST intent, and the gate is on galleryThumbnails
+    // only (lib/resultTables.mjs). live.thumbnails is every VFB thumbnail
+    // regex-scraped from every tool result this turn — the term's example
+    // images included — so falling back to it put the same eight brains under
+    // a receptor-expression answer, a hierarchy answer, every answer (issue
+    // #45). The ungated list is now used only when the question asked for
+    // images/results and the digest previews had none to offer; a
+    // definitional or quantitative answer gets no gallery.
+    const listIntent = isListQuestion(userMessage || '')
+    const kinds = questionKinds(userMessage || '')
+    const imageIntent = kinds.has('individual_images')
+    // A question on a non-visual axis — expression, connectivity, stocks,
+    // datasets, papers, similarity — is not answered by pictures of the term.
+    const nonVisualAxis = ['scrnaseq', 'expression', 'connectivity', 'stocks', 'dataset', 'publications', 'similarity', 'splits'].some(k => kinds.has(k))
+    let gallerySource = []
+    if (imageIntent) {
+      gallerySource = (live.galleryThumbnails || []).length ? live.galleryThumbnails : (live.thumbnails || [])
+    } else if (!tables.length && listIntent && !nonVisualAxis) {
+      // A list question whose answer produced no table: the digest previews
+      // are the only pictures of the things listed. When a table was built it
+      // carries its own per-row thumbnails, and a strip of the term's example
+      // images under a connectivity or expression table is decoration.
+      gallerySource = live.galleryThumbnails || []
+    } else if (!tables.length && !nonVisualAxis) {
+      // Definitional: the term's OWN registered or example images — pictures
+      // of the thing asked about, not of everything any tool touched.
+      gallerySource = live.termThumbnails || []
+    }
     const merged = built.images.length > 0 ? built.images : mergeThumbnailImages([], gallerySource)
     const filtered = filterStructuredImages(merged, outboundAllowList)
     const rawImages = filtered.images

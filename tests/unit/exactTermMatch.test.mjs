@@ -85,6 +85,24 @@ test('a plural name matches the singular class once both are singularised', () =
   assert.equal(exactTermMatchId(KENYON_SINGULAR, 'Kenyon cells'), 'FBbt_00003686')
 })
 
+// Issue #40. The two rows are verbatim from search_terms("alpha/beta Kenyon
+// cell"), in the order VFB ranks them: the PRIMED sibling first. A tokeniser that
+// drops punctuation cannot tell them apart, and returned the primed class for
+// the unprimed name (and vice versa) on the singularised-exact stage.
+const AB_SIBLINGS = { results: [
+  { label: "alpha'/beta' Kenyon cell (FBbt_00100249)", short_form: 'FBbt_00100249', original_label: "alpha'/beta' Kenyon cell", facets_annotation: ['Entity', 'Class', 'Neuron', 'Anatomy', 'Cell'] },
+  { label: 'alpha/beta Kenyon cell (FBbt_00100248)', short_form: 'FBbt_00100248', original_label: 'alpha/beta Kenyon cell', facets_annotation: ['Entity', 'Class', 'Neuron', 'Anatomy', 'Cell', 'hasScRNAseq'] }
+] }
+
+test('the prime separates alpha/beta from alpha\'/beta\' — in both directions, plural or not', () => {
+  assert.equal(exactTermMatchId(AB_SIBLINGS, 'alpha/beta Kenyon cell'), 'FBbt_00100248')
+  assert.equal(exactTermMatchId(AB_SIBLINGS, 'alpha/beta Kenyon cells'), 'FBbt_00100248')
+  assert.equal(exactTermMatchId(AB_SIBLINGS, "alpha'/beta' Kenyon cells"), 'FBbt_00100249')
+  // Curly quotes, as a word processor or a phone keyboard writes them.
+  assert.equal(exactTermMatchId(AB_SIBLINGS, 'alpha\u2019/beta\u2019 Kenyon cells'), 'FBbt_00100249')
+  assert.equal(pickBestTermId(AB_SIBLINGS, 'alpha/beta Kenyon cells'), 'FBbt_00100248')
+})
+
 test('exactTermMatchId returns null rather than guessing', () => {
   // These are all things the ladder below it would happily answer. This function
   // exists precisely so the retry can tell "VFB named it" from "VFB offered

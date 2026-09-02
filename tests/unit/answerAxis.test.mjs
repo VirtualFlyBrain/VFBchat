@@ -64,6 +64,10 @@ test('intrinsicTermNames supplies the class the question never names', () => {
     intrinsicTermNames(W7C1, ['mushroom body', 'mushroom body intrinsic neuron']),
     []
   )
+  // Issue #44: the planner copied the whole noun phrase. It contains the word
+  // "intrinsic" but is not a class; the region inside it still gets its class.
+  assert.deepEqual(intrinsicTermNames(W7C1, ['neuron types intrinsic to the mushroom body']), ['mushroom body intrinsic neuron'])
+  assert.deepEqual(intrinsicTermNames(W7C1, ['neurons intrinsic to the mushroom body', 'mushroom body']), ['mushroom body intrinsic neuron'])
 })
 
 test('W7.C1 — the REGION offers nothing, and no later rule may substitute', () => {

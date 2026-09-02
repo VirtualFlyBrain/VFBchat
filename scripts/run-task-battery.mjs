@@ -947,7 +947,7 @@ async function main() {
   const selectedTasks = selectTasks(tasks, options)
   const repetitions = normalizeInteger(envOrOption(options, 'repetitions', 'TASK_BATTERY_REPETITIONS', '1'), 1, 1, 10)
   const concurrency = normalizeInteger(envOrOption(options, 'concurrency', 'TASK_BATTERY_CONCURRENCY', '1'), 1, 1, 16)
-  const timeoutMs = normalizeInteger(envOrOption(options, 'timeoutMs', 'TASK_BATTERY_TIMEOUT_MS', '600000'), 600000, 30000, 1800000)
+  const timeoutMs = normalizeInteger(envOrOption(options, 'timeoutMs', 'TASK_BATTERY_TIMEOUT_MS', '900000'), 900000, 30000, 1800000)
   const startedAt = new Date()
   const runId = `task-battery-${timestampForFile(startedAt)}`
 

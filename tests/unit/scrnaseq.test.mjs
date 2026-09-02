@@ -111,3 +111,38 @@ test('buildExpressionMatrix notes when requested genes are absent', () => {
   assert.equal(m.genes.length, 0)
   assert.match(m.note, /None of the requested genes/)
 })
+
+// Issue #45: "which receptor genes are most highly expressed" is a FUNCTION
+// filter on the clusterExpression table's function column, not a symbol list.
+test('a function class in the question filters the expression table by FlyBase function tag', async () => {
+  const { extractRequestedGenes, extractRequestedFunctions, geneMatchesFunction, buildExpressionMatrix, renderExpressionMarkdown } = await import('../../lib/scrnaseq.mjs')
+  assert.deepEqual(extractRequestedFunctions('Which receptor genes are most highly expressed in Kenyon cells?'), ['receptor'])
+  assert.deepEqual(extractRequestedFunctions('which dopamine receptors do Kenyon cells express?'), ['dopamine receptor'])
+  assert.deepEqual(extractRequestedFunctions('which transcription factors and ion channels are expressed?'), ['transcription factor', 'ion channel'])
+  assert.deepEqual(extractRequestedFunctions('top marker genes with expression levels'), [])
+  assert.equal(geneMatchesFunction('GABA_receptor; Ion_channel; Receptor', ['receptor']), true)
+  assert.equal(geneMatchesFunction('Dopamine_receptor; GPCR', ['receptor']), true)
+  assert.equal(geneMatchesFunction('DNA_binding; Transcription_factor', ['receptor']), false)
+  assert.equal(geneMatchesFunction('Dopamine_receptor; GPCR', ['gaba receptor']), false)
+  assert.equal(geneMatchesFunction('', ['receptor']), false)
+
+  const clusters = [{ id: 'c1', name: 'alpha_beta_KC', dataset: 'Davie', pub: { label: 'Davie et al., 2018' } }]
+  const rows = [
+    { symbol: '18SrRNA', fbgn: 'FBgn1', expressionLevel: 31752, expressionExtent: 1, function: '' },
+    { symbol: 'pros', fbgn: 'FBgn2', expressionLevel: 13181, expressionExtent: 0.99, function: 'DNA_binding; Transcription_factor' },
+    { symbol: 'Rdl', fbgn: 'FBgn3', expressionLevel: 4101, expressionExtent: 0.99, function: 'GABA_receptor; Ion_channel; Neurotransmitter_receptor; Receptor' },
+    { symbol: 'Dop2R', fbgn: 'FBgn4', expressionLevel: 2500, expressionExtent: 0.9, function: 'Dopamine_receptor; GPCR; Receptor' }
+  ]
+  const perCluster = new Map([['c1', rows]])
+  const req = extractRequestedGenes('Which receptor genes are most highly expressed in Kenyon cells?')
+  const m = buildExpressionMatrix(clusters, perCluster, req)
+  assert.deepEqual(m.genes.map(g => g.symbol), ['Rdl', 'Dop2R'], 'receptors only, strongest first')
+  assert.deepEqual(m.requested_functions, ['receptor'])
+  assert.match(renderExpressionMarkdown(m, 'Kenyon cell'), /receptor genes, by expression level/)
+  // No function asked: the top genes of any kind, as before.
+  const all = buildExpressionMatrix(clusters, perCluster, extractRequestedGenes('top marker genes for Kenyon cells'))
+  assert.equal(all.genes[0].symbol, '18SrRNA')
+  // Nothing matches: an honest note naming the class asked for.
+  const none = buildExpressionMatrix(clusters, perCluster, extractRequestedGenes('which neuropeptides do Kenyon cells express?'))
+  assert.match(none.note, /None of the requested neuropeptide genes/)
+})
