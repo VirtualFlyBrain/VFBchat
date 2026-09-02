@@ -197,3 +197,14 @@ test('pickDocCandidates: nothing to pick from is an empty list, not a throw', ()
   assert.deepEqual(pickDocCandidates({}), [])
   assert.deepEqual(pickDocCandidates({ results: 'nope' }), [])
 })
+
+// "How many larval dataset?" read the neuron-counts page: it shared "many"
+// with "How many neurons…", and "dataset" did not match "Datasets by stage".
+test('pickDocCandidates relevance ignores question words and matches across singular/plural', async () => {
+  const { docCandidateRelevant } = await import('../../lib/orchestrator.mjs')
+  const stages = { title: 'Datasets by stage', url: 'https://www.virtualflybrain.org/docs/data/stages' }
+  const counts = { title: 'How many neurons are in a fly brain?', url: 'https://www.virtualflybrain.org/docs/concepts/neuron-counts' }
+  assert.equal(docCandidateRelevant('How many larval dataset?', stages), true)
+  assert.equal(docCandidateRelevant('How many larval dataset?', counts), false)
+  assert.equal(docCandidateRelevant('How many neurons does a fly have?', counts), true)
+})
