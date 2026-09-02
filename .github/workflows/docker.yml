@@ -29,20 +29,25 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  # The version this run releases under, resolved once and handed to every job
+  # below. Read off the tag rather than from metadata-action's `version`
+  # output, which is the branch name on a branch push and "main" is not a
+  # version. Empty on anything that is not a release, which falls through to
+  # package.json — the existing behaviour for branch and PR builds.
+  version:
     runs-on: ubuntu-latest
 
     outputs:
-      released_version: ${{ steps.appver.outputs.value }}
+      value: ${{ steps.appver.outputs.value }}
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
-        node-version: 20
+        node-version: 22
 
     # Cheap, runs on every push and PR, and needs no Docker. It catches the
     # half-applied bump — package.json edited by hand and package-lock.json left
@@ -51,43 +56,6 @@ jobs:
     - name: Release surfaces must agree
       run: node scripts/set-version.mjs --check
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Log in to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_HUB_USER }}
-        password: ${{ secrets.DOCKER_HUB_PASSWORD }}
-
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: virtualflybrain/vfbchat
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=raw,value=latest,enable={{is_default_branch}}
-        # The OCI labels are part of "correct release details everywhere": they
-        # are what `docker inspect` reports about an image somebody found running
-        # and cannot otherwise identify. version/revision/created come from the
-        # action; the rest name the project so the image is traceable without
-        # this repo to hand.
-        labels: |
-          org.opencontainers.image.title=VFB Chat
-          org.opencontainers.image.description=Virtual Fly Brain conversational interface
-          org.opencontainers.image.vendor=Virtual Fly Brain
-          org.opencontainers.image.licenses=Apache-2.0
-          org.opencontainers.image.documentation=https://github.com/VirtualFlyBrain/VFBchat/blob/main/README.md
-
-    # The version the image reports at /api/version and sends as its User-Agent.
-    # Read off the tag rather than from metadata-action's `version` output, which
-    # is the branch name on a branch push and "main" is not a version. Empty on
-    # anything that is not a release, which falls through to package.json — the
-    # existing behaviour for branch and PR builds.
     - name: Resolve the version from the release tag
       id: appver
       env:
@@ -106,42 +74,163 @@ jobs:
         echo "value=$version" >> "$GITHUB_OUTPUT"
         echo "Releasing **$version** from tag \`$RAW_TAG\`." >> "$GITHUB_STEP_SUMMARY"
 
+  # One job per architecture, each on a runner of that architecture. The arm64
+  # image used to be built under user-mode QEMU on the amd64 runner, and Next's
+  # native SWC binary intermittently hit an instruction QEMU does not implement:
+  # `qemu: uncaught target signal 4 (Illegal instruction)`, exit 132, in
+  # `npm run build`, on a change that had nothing to do with it. GitHub's arm64
+  # runners are free for public repositories, so nothing is emulated any more.
+  # Each leg pushes its image by digest only; the manifest that carries the
+  # tags is assembled in `merge` below.
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 22
+
     # A release must not be able to describe itself as the wrong version. Until
     # v4.2.7 this compared the tag against package.json and failed the build on a
     # mismatch, which caught the drift but published nothing — the release existed
     # on GitHub with no image behind it. The tag is unambiguous, so make the tree
     # agree with it instead. The build context is this working tree, so the
     # rewrite reaches the image; sync-release-to-main below carries the same
-    # change back to the repo.
+    # change back to the repo. Repeated per leg because each has its own tree.
     - name: Apply the release to every version-carrying file
-      if: steps.appver.outputs.value != ''
+      if: needs.version.outputs.value != ''
       env:
         NOTES: ${{ github.event.release.body }}
       run: |
         set -euo pipefail
         printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
-        node scripts/set-version.mjs "${{ steps.appver.outputs.value }}" --notes-file "$RUNNER_TEMP/release-notes.md" | tee -a "$GITHUB_STEP_SUMMARY"
+        node scripts/set-version.mjs "${{ needs.version.outputs.value }}" --notes-file "$RUNNER_TEMP/release-notes.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
+    - name: Platform slug
+      id: platform
+      run: echo "slug=${{ matrix.platform }}" | tr '/' '-' >> "$GITHUB_OUTPUT"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKER_HUB_USER }}
+        password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+    # Labels only. The tags go on the manifest, not on the per-arch images.
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: virtualflybrain/vfbchat
+        labels: |
+          org.opencontainers.image.title=VFB Chat
+          org.opencontainers.image.description=Virtual Fly Brain conversational interface
+          org.opencontainers.image.vendor=Virtual Fly Brain
+          org.opencontainers.image.licenses=Apache-2.0
+          org.opencontainers.image.documentation=https://github.com/VirtualFlyBrain/VFBchat/blob/main/README.md
+
+    - name: Build and push by digest
+      id: build
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: ./Dockerfile
-        push: true
-        platforms: linux/amd64,linux/arm64
-        tags: ${{ steps.meta.outputs.tags }}
+        platforms: ${{ matrix.platform }}
         labels: ${{ steps.meta.outputs.labels }}
         build-args: |
-          APP_VERSION=${{ steps.appver.outputs.value }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+          APP_VERSION=${{ needs.version.outputs.value }}
+        outputs: type=image,name=virtualflybrain/vfbchat,push-by-digest=true,name-canonical=true,push=true
+        cache-from: type=gha,scope=${{ steps.platform.outputs.slug }}
+        cache-to: type=gha,mode=max,scope=${{ steps.platform.outputs.slug }}
+
+    - name: Export digest
+      run: |
+        mkdir -p "$RUNNER_TEMP/digests"
+        digest="${{ steps.build.outputs.digest }}"
+        touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+    - name: Upload digest
+      uses: actions/upload-artifact@v7
+      with:
+        name: digest-${{ steps.platform.outputs.slug }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  # Assemble the multi-arch manifest from the two digests and put every tag on
+  # it. This is the only place the tags are written, so a run that lost one
+  # architecture publishes nothing rather than a manifest with a hole in it.
+  merge:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+
+    outputs:
+      released_version: ${{ needs.version.outputs.value }}
+
+    steps:
+    - name: Download digests
+      uses: actions/download-artifact@v8
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digest-*
+        merge-multiple: true
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKER_HUB_USER }}
+        password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: virtualflybrain/vfbchat
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Create the manifest and push the tags
+      working-directory: ${{ runner.temp }}/digests
+      run: |
+        set -euo pipefail
+        ls -1
+        docker buildx imagetools create \
+          $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          $(printf 'virtualflybrain/vfbchat@sha256:%s ' *)
+
+    - name: Inspect
+      run: docker buildx imagetools inspect "virtualflybrain/vfbchat:${{ steps.meta.outputs.version }}"
 
   # The image is right by now; this is what stops the repo drifting again. It
   # runs only after a release image has actually been pushed, so a failed build
   # never leaves a commit claiming a version that does not exist.
   sync-release-to-main:
-    needs: build
-    if: needs.build.outputs.released_version != ''
+    needs: merge
+    if: needs.merge.outputs.released_version != ''
     runs-on: ubuntu-latest
 
     permissions:
@@ -153,20 +242,20 @@ jobs:
     # version means the second finds the work done and exits a no-op, instead of
     # racing the first for the same two-file push.
     concurrency:
-      group: release-sync-${{ needs.build.outputs.released_version }}
+      group: release-sync-${{ needs.merge.outputs.released_version }}
       cancel-in-progress: false
 
     steps:
       - name: Checkout the default branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
 
       # --only-if-newer is the guard against a hotfix or a re-published old
       # release walking the default branch backwards: v4.2.7 landing while main
@@ -178,7 +267,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
-          node scripts/set-version.mjs "${{ needs.build.outputs.released_version }}" \
+          node scripts/set-version.mjs "${{ needs.merge.outputs.released_version }}" \
             --only-if-newer --notes-file "$RUNNER_TEMP/release-notes.md"
 
       # [skip ci] keeps a release-bookkeeping commit from re-running the
@@ -193,7 +282,7 @@ jobs:
         if: steps.apply.outputs.changed == 'true'
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
-          VERSION: ${{ needs.build.outputs.released_version }}
+          VERSION: ${{ needs.merge.outputs.released_version }}
           FILES: ${{ steps.apply.outputs.files }}
         run: |
           set -euo pipefail
@@ -226,7 +315,7 @@ jobs:
       - name: Summarise
         if: always()
         env:
-          VERSION: ${{ needs.build.outputs.released_version }}
+          VERSION: ${{ needs.merge.outputs.released_version }}
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           {
