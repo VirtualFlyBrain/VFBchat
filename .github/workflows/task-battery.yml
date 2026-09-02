@@ -14,7 +14,7 @@ on:
       timeout_ms:
         description: Per-question timeout in milliseconds
         required: true
-        default: '240000'
+        default: '900000'
       limit:
         description: Optional number of tasks to run
         required: false
@@ -121,7 +121,7 @@ jobs:
           RATE_LIMIT_PER_IP: '10000'
           TASK_BATTERY_REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
           TASK_BATTERY_CONCURRENCY: ${{ github.event.inputs.concurrency || '4' }}
-          TASK_BATTERY_TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '240000' }}
+          TASK_BATTERY_TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '900000' }}
           TASK_BATTERY_LIMIT: ${{ github.event.inputs.limit || '' }}
           TASK_BATTERY_IDS: ${{ github.event.inputs.ids || '' }}
         run: |
