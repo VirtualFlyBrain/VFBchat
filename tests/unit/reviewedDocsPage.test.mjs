@@ -181,3 +181,26 @@ test('role="main" counts as a main region, not just <main>', () => {
   assert.ok(blocks.some(b => b.startsWith('Query VFB for neurons')), blocks.join(' | '))
   assert.ok(!blocks.some(b => b.includes('Menu entry')), blocks.join(' | '))
 })
+
+// virtualflybrain.org's docs layout puts the section tree (a <details> of
+// <li> links) inside <main> ahead of <article class="doc__main">. With <li>
+// readable in an isolated region, the tree filled the block cap before the
+// article began, and get_reviewed_page on /docs/data/stages/ returned the
+// sidebar and nothing of the page.
+test('inside <main>, a single <article> is the page; the sidebar tree beside it is not', async () => {
+  const { extractContentBlocks } = await import('../../lib/reviewedDocsSearch.js')
+  const html = `<html><body><header>Site</header><main id="main"><div class="doc">
+    <details class="doc__side" open><summary>Documentation</summary><ul class="tree">
+      ${Array.from({ length: 60 }, (_, i) => `<li><a href="/docs/p${i}/">Sidebar link ${i}</a></li>`).join('')}
+    </ul></details>
+    <article class="doc__main"><h1>Datasets by stage</h1>
+      <p>VFB&rsquo;s datasets are documented by technique and by source elsewhere on this site, but nothing groups them by stage.</p>
+      <h2>L1 (first instar)</h2>
+      <table><tr><th>Dataset</th><th>Short form</th></tr><tr><td>L1 CNS EM</td><td>FBlc0001</td></tr></table>
+    </article></div></main><footer>Foot</footer></body></html>`
+  const blocks = extractContentBlocks(html)
+  assert.equal(blocks[0], 'Datasets by stage')
+  assert.match(blocks[1], /^VFB's datasets are documented/)
+  assert.ok(blocks.includes('L1 CNS EM | FBlc0001'))
+  assert.ok(!blocks.some(b => /Sidebar link/.test(b)))
+})

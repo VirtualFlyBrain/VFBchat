@@ -778,11 +778,10 @@ test('the doc retrieve reads past a top hit that does not answer', async () => {
   let synthMessages = null
   deps.callText = async ({ messages }) => { synthMessages = messages; return 'ANSWER' }
   await runHarness('How do I use the VFB MCP tool?', deps)
-  assert.deepEqual(fetched.slice(0, 2), [
-    'https://www.virtualflybrain.org/docs/website-features/termcontext',
-    'https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide'
-  ])
-  assert.ok(!fetched.includes('https://www.virtualflybrain.org/docs/past-workshops/connectome/tools'), 'stops at the first page that answers')
+  // The candidates whose title shares a topic word with the question are read
+  // first, so the MCP guide is opened before the Term Context page that merely
+  // out-ranked it on the word "context" — one fetch, not two.
+  assert.deepEqual(fetched, ['https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide'], 'stops at the first page that answers')
   assert.match(synthMessages[1].content, /mcp\.virtualflybrain\.org/)
   // …and having answered from a doc page, the synthesiser is told not to close
   // with "VFB does not currently hold instructions on this".
