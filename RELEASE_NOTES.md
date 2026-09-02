@@ -4,6 +4,87 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.11
+- **Connectivity answers now rank the biology on every route, and show it as a
+  table.** "What are the main inputs to KCg-s?" was answered with adult neuron,
+  Kenyon cell and interneuron, and a graph of fifteen overlapping labels. The
+  deterministic ranker that orders partner classes by mean synaptic weight per
+  connected pair existed, but only fired on one of the two payload shapes a class
+  question can produce; the other — the partner tool's, which the planner and the
+  injector actually use — went to the extractor pre-ranked by total weight, which
+  ranks the ontology. A class now runs its whole connectivity table, the ranker
+  fires on both shapes, and the answer carries a sortable table (partner, synapses
+  per connected pair, % connected, pairs, total) with the roll-up classes and the
+  self-connection appended and labelled rather than hidden. The graph sits behind
+  "Show as a graph", draws only the ranked specific partners, and puts its labels
+  beside the nodes. Two facts about VFB's class-connectivity table surfaced on the
+  way: it carries rows for the queried class *and* every subclass, so only the
+  queried class's rows are read now (a subclass's 98.5 synapses per pair had been
+  reported as the parent's); and on a four-cell class unrelated partners can share
+  pair and connected counts by chance, so the chain-collapse now requires the
+  synapse total to agree as well. (#47, #50)
+
+  **Fly stocks for a neuron class's split-GAL4 lines.** "Find me fly stocks for
+  split drivers expressed in gamma dorsal KCs" was told VFB does not list stock
+  numbers. It does, one hop further than the planner looked: each SplitsTargeting
+  row names its two hemidriver constructs, FindStocks accepts a construct, and the
+  stock in both constructs' results is the split-GAL4 stock — Bloomington 68318 for
+  R21B06-DBD ∩ R13F02-AD. A new `vfb_find_split_stocks` macro runs that chain with
+  the lookups batched, and the answer lists each split with its stock centre and
+  number; seven of the nine KCg-d splits have one. "Split drivers" now counts as
+  split-GAL4 wording. (#46)
+
+  **Ontology hierarchies are drawn as trees.** "Show me the hierarchy of Kenyon cell
+  subtypes" ran the 32,328-row image list, because "show me" was an image cue, and
+  then explained that VFB does not provide a multi-level tree. The MCP's
+  `get_hierarchy` tool was referenced by two guidance cards but had never been put
+  in the tool catalogue. It is wired now, runs deterministically for hierarchy,
+  subtype and parts wording, and the tree is rendered as a nested, linked list
+  under the answer; the SubclassesOf table replaces the image list, because result
+  tables are now chosen by the kind of thing the question asks for rather than by
+  word overlap. (#48)
+
+  **Term resolution.** The AllDatasets fast path no longer hijacks a question whose
+  dataset clause is a scope with a stranded preposition ("which datasets they're
+  in") or whose subject is an unquoted symbol ("DA1 lPN neurons") — the NeuroFly
+  workshop's own discovery prompt. The term tokeniser keeps the prime, so
+  alpha/beta and alpha'/beta' Kenyon cell resolve to their own classes instead of
+  whichever VFB ranked first. A symbol the question names is looked up even when
+  the planner, shown the previous turn, read it as a back-reference to that turn's
+  term — "inputs to KCg-s" after a turn on KCg-d now answers about KCg-s. The
+  intrinsic-neuron class is resolved when the planner copies the whole phrase
+  ("neuron types intrinsic to the mushroom body"), and evidence reaches the
+  synthesiser VFB first, documentation second, literature last — so the mushroom
+  body's intrinsic neurons are the Kenyon cells, not the MBONs a paper snippet
+  named. (#39, #40, #44)
+
+  **Expression answers filter by gene function.** "Which receptor genes are most
+  highly expressed in Kenyon cells?" listed ribosomal RNAs: only hand-kept symbol
+  lists could filter. The cluster expression table tags every gene with FlyBase's
+  function vocabulary — Receptor, Dopamine_receptor, Transcription_factor,
+  Ion_channel, GPCR and so on — so a function named in the question now filters on
+  that column, ranked by level. (#45)
+
+  **Rendering.** Pipe tables render (remark-gfm had never been installed, so the
+  scRNA-seq expression matrix arrived as a paragraph of literal bars); ranked lists
+  number 1, 2, 3 rather than 1, 1, 1; the chat panel scrolls itself, only while the
+  reader is at the bottom, instead of scrolling the whole document out from under
+  the conversation; and the thumbnail strip is chosen by what the question is
+  about — an image question gets the query previews, a definitional one the
+  term's own example images, and a question on the expression, connectivity,
+  stocks or dataset axis gets none. (#41, #42, #43, #45)
+
+  **Verification.** `tests/task-battery/workshop.json` holds every NeuroFly workshop
+  chat prompt and the 31 August walk-through as a tier-8 battery. Against v4.2.10 it
+  fails three of eleven tasks, at the points the issues describe; against this
+  release it passes all eleven. The per-question battery timeout is 900 s.
+
+  **Build.** Each architecture is now built on a runner of that architecture and
+  the multi-arch manifest assembled from the two digests; the arm64 image was
+  built under QEMU, where Next's native compiler intermittently died with an
+  illegal instruction. Every workflow action is on a current major, ahead of the
+  retirement of the Node 20 action runtime.
+
 ## v4.2.10
 - **The privacy notice now identifies who is responsible for the data, and on what
   legal basis.** It named neither. It gave the data categories, the recipients, the
