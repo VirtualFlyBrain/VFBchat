@@ -157,3 +157,33 @@ test('galleryThumbnails collects { url, label, id } for a list question, none fo
   // definitional question — suppressed
   assert.deepEqual(galleryThumbnails(ledgerWithRows(), 'What is the lateral horn'), [])
 })
+
+// Issue #45: a definitional answer shows the term's OWN images, not every
+// thumbnail any tool touched this turn.
+test('termExampleThumbnails takes each resolved term\'s own images, a few per term', async () => {
+  const { termExampleThumbnails } = await import('../../lib/resultTables.mjs')
+  const ledger = { terms: {
+    kc: { id: 'FBbt_00003686', label: 'Kenyon cell', digest: { name: 'Kenyon cell', images: [
+      { id: 'VFB_1', label: 'KCg-m_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0001/VFB_00101567/thumbnail.png', template: 'VFB_00101567' },
+      { id: 'VFB_2', label: 'KCab_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0002/VFB_00101567/thumbnail.png', template: 'VFB_00101567' },
+      { id: 'VFB_2', label: 'KCab_R', thumbnail: 'https://www.virtualflybrain.org/data/VFB/i/0000/0002/VFB_00101567/thumbnail.png', template: 'VFB_00101567' }
+    ] } },
+    unresolved: { id: null, digest: { images: [{ id: 'x', thumbnail: 'https://example/x.png' }] } }
+  } }
+  const out = termExampleThumbnails(ledger, { perTerm: 4 })
+  assert.deepEqual(out.map(i => i.id), ['VFB_1', 'VFB_2'])
+  assert.equal(out[0].label, 'KCg-m_R')
+  assert.deepEqual(termExampleThumbnails({ terms: {} }), [])
+})
+
+// Issue #48: the table for a question is chosen by the KIND it asks for, not
+// by which preview happens to be biggest.
+test('buildTables prefers the query whose kind the question asks for', async () => {
+  const { buildTables } = await import('../../lib/resultTables.mjs')
+  const ledger = { terms: { kc: { id: 'FBbt_00003686', digest: { name: 'Kenyon cell', queries: [
+    { query_type: 'ListAllAvailableImages', label: 'List all available images of Kenyon cell', count: 32328, output_format: 'table', previewRows: [{ name: 'a', id: 'VFB_1' }] },
+    { query_type: 'SubclassesOf', label: 'Subclasses of Kenyon cell', count: 37, output_format: 'table', previewRows: [{ name: 'b', id: 'FBbt_2' }] }
+  ] } } } }
+  assert.deepEqual(buildTables(ledger, 'show me the hierarchy of Kenyon cell subtypes').map(t => t.queryType), ['SubclassesOf'])
+  assert.deepEqual(buildTables(ledger, 'Show me instances of Kenyon cell with VFB IDs.').map(t => t.queryType), ['ListAllAvailableImages'])
+})
