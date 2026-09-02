@@ -4,6 +4,36 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.12
+- **Documentation answers now read the page.** On the current site layout,
+  `get_reviewed_page` returned the docs sidebar — the section tree, ~100 links
+  that sit inside `<main>` ahead of the article — and nothing of the article
+  itself, because the block cap filled on those links before the first
+  paragraph. Every documentation page was affected; "How many larval datasets
+  does VFB hold?" was answered from the dataset name list. Inside `<main>`, a
+  single `<article>` is now the page, the caps are raised so a 210-row reference
+  table fits under the extractor's window, and Goldmark's typographic entities
+  are decoded.
+
+  **The site's own search index is a source.** `virtualflybrain.org/search/` is
+  client-side over `/index.json` — every page's title, description, section and
+  body text, rebuilt with the site. The chat now reads that file too, alongside
+  its seed list and the sitemap crawl, so the first question after a cold start
+  ranks on what the pages say rather than on their URL slugs. Only the pages
+  half is used; terms come from the MCP, as before.
+
+  **The right page is opened first.** Candidates whose title or URL share a
+  topic word with the question are read before ones that merely out-rank them;
+  question words ("how many") no longer count as topic words, and tokens are
+  stemmed, so "dataset" finds "Datasets by stage". The synthesiser is told that a
+  documentation page which addresses the question as asked outranks a raw
+  catalogue listing that does not.
+
+  **Housekeeping.** The static lookup cache at the repository root, unread since
+  August and carrying wrong ids, is deleted. The task battery commits its results
+  only from a successful run on the default branch, with a rebase-and-retry push;
+  branch runs keep a 90-day artifact instead.
+
 ## v4.2.11
 - **Connectivity answers now rank the biology on every route, and show it as a
   table.** "What are the main inputs to KCg-s?" was answered with adult neuron,
