@@ -128,6 +128,8 @@ jobs:
           args=(--task-file tests/task-battery/tasks.json --server-command start --port 3210)
           npm run benchmark:task-battery -- "${args[@]}"
 
+      # Every run keeps its results here, for 90 days, whichever branch it ran
+      # on. The commit below is only for the default branch's baseline.
       - name: Upload benchmark artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -135,20 +137,52 @@ jobs:
           name: task-battery-results
           path: VFBchat/test-results/task-battery
           if-no-files-found: warn
+          retention-days: 90
 
+      # Only the default branch, and only a run that actually finished. This
+      # step used to fire on every branch it tested, which committed ~380 KB of
+      # generated JSON onto each PR branch (a PR read as +8,000 lines against a
+      # +64/−26 source change, and any two branches in flight conflicted on
+      # latest.json), and it never checked that the battery had succeeded, so a
+      # run that died early replaced a good baseline with a partial one.
+      #
+      # The push retries after a rebase: a re-run checks out the commit it was
+      # first started on, so by the time it pushes, main already carries the
+      # first attempt's results commit — which is exactly how run 33594619488
+      # passed 64/64 and then went red on "non-fast-forward".
       - name: Commit benchmark results
-        if: steps.creds.outputs.available == 'true' && github.event_name != 'pull_request' && (github.event.inputs.commit_results != 'false')
+        if: >-
+          steps.creds.outputs.available == 'true'
+          && github.event_name != 'pull_request'
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+          && steps.task_battery.outcome == 'success'
+          && (github.event.inputs.commit_results != 'false')
         working-directory: VFBchat
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add test-results/task-battery
           if git diff --cached --quiet; then
             echo "No benchmark result changes to commit."
-          else
-            git commit -m "Add task battery results for ${GITHUB_SHA::7} [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "Add task battery results for ${GITHUB_SHA::7} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:$BRANCH"; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "$BRANCH moved under us; rebasing and retrying."
+            git fetch origin "$BRANCH"
+            # latest.json is regenerated every run; on a clash, this run's copy
+            # is the newer baseline and the timestamped file never collides.
+            GIT_EDITOR=true git rebase -X theirs "origin/$BRANCH" || { git rebase --abort; exit 1; }
+          done
+          echo "::error::Could not push the battery results to $BRANCH after three attempts."
+          exit 1
 
       - name: Fail when task battery had errors
         if: steps.task_battery.outcome == 'failure'
