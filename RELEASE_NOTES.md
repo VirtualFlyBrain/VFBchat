@@ -4,6 +4,13 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.13
+- **The welcome-screen prompts answer.** Three of the five example prompts on the chat's own first screen failed, and none was in the battery. "What neurons are involved in visual processing?" searched the phrase verbatim, found nothing, and then fetched an id from memory; a planner search that returns nothing is now withdrawn and its phrase handed to the resolver, which learned that "<modality> processing" is FBbt's "<modality> system", and a step whose id no search, term or prior turn supplied is withdrawn. "Find neurons similar to DA1 using NBLAST" resolved DA1 to a larval tracheal anastomosis (an exact synonym) and ran NBLAST on it; a symbol matched on a synonym outside the kind the question names is re-searched within that kind, and the answer names the other readings (DA1 lPN, DA1 vPN, MN-DA1). "What genes are expressed in the antennal lobe?" denied single-cell data for a region whose cell types have 23 clusters; the expression tool now hops to the region's most general cell type with scRNA-seq data and says so.
+
+  **Unmatched names now lead somewhere.** When nothing resolves, one search per content word collects terms VFB does hold, and the answer ends with concrete rephrasings built on them instead of "could not be matched".
+
+  All five welcome prompts are tier-1 battery tasks (WS1–WS5); the main battery passes 69/69. Workshop feedback from Kit Longden, 3 September ([#57](https://github.com/VirtualFlyBrain/VFBchat/pull/57)).
+
 ## v4.2.12
 - **Documentation answers now read the page.** On the current site layout,
   `get_reviewed_page` returned the docs sidebar — the section tree, ~100 links
