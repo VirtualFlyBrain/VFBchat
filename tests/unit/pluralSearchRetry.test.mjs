@@ -161,7 +161,10 @@ test('when the singular finds nothing either, the term abstains as before', asyn
   const deps = makeDeps({})
   const r = await runHarness('How are visual system neurons classified in VFB?', deps)
 
-  assert.deepEqual(deps.calls.searches, ['visual system neurons', 'visual system neuron'])
+  // The ladder, then one LOOSE search per content word ("system" is a category
+  // word and "neurons" the noun, so only "visual") to find terms VFB does hold
+  // that the answer can suggest rephrasing around.
+  assert.deepEqual(deps.calls.searches, ['visual system neurons', 'visual system neuron', 'visual'])
   const term = r.ledger.terms['visual system neurons']
   assert.equal(term.id, null)
   assert.equal(term.attempted, true)

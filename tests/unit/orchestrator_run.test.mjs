@@ -413,9 +413,16 @@ test('maybeInjectScrnaseqStep injects the expression macro for a gene-expression
   const inj = ledger.plan.find(s => s.tool === 'vfb_scrnaseq_gene_expression')
   assert.ok(inj, 'scRNAseq step injected')
   assert.equal(inj.args.neuron_type, 'Kenyon cell')
-  // not for a term without scRNAseq data, and not for a non-expression question
-  const noSc = { plan: [], terms: { x: { id: 'i', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Anatomy'] } } } }
-  maybeInjectScrnaseqStep(noSc, 'which genes does the medulla express?')
+  // A REGION without the flag is still routed: the tool hops to the region's
+  // cell types that carry scRNA-seq clusters ("what genes are expressed in the
+  // antennal lobe?" → antennal lobe projection neuron).
+  const region = { plan: [], terms: { x: { id: 'i', label: 'medulla', digest: { name: 'medulla' }, info: { SuperTypes: ['Anatomy'] } } } }
+  maybeInjectScrnaseqStep(region, 'which genes does the medulla express?')
+  assert.equal(region.plan[0]?.tool, 'vfb_scrnaseq_gene_expression')
+  assert.equal(region.plan[0]?.args.neuron_type, 'medulla')
+  // not for a neuron class without scRNAseq data, and not for a non-expression question
+  const noSc = { plan: [], terms: { x: { id: 'i', label: 'LC10', digest: { name: 'LC10' }, info: { SuperTypes: ['Neuron', 'Anatomy'] } } } }
+  maybeInjectScrnaseqStep(noSc, 'which genes does LC10 express?')
   assert.equal(noSc.plan.length, 0)
   const notExpr = { plan: [], terms: { x: { id: 'i', label: 'KC', digest: { name: 'Kenyon cell' }, info: { SuperTypes: ['Neuron', 'hasScRNAseq'] } } } }
   maybeInjectScrnaseqStep(notExpr, 'what is a Kenyon cell?')

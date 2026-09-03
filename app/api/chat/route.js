@@ -7630,7 +7630,27 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   if (!id) {
     return JSON.stringify({ error: `Could not resolve "${requested}" to a VFB term.`, tool: 'vfb_scrnaseq_gene_expression', recoverable: true })
   }
-  const supertypes = [].concat(record?.SuperTypes || [], record?.Tags || []).map(s => String(s).toLowerCase())
+  let supertypes = [].concat(record?.SuperTypes || [], record?.Tags || []).map(s => String(s).toLowerCase())
+  // A REGION carries no transcriptome — cells do. "What genes are expressed in
+  // the antennal lobe?" resolves to the neuropil, which has no scRNA-seq flag,
+  // and the answer was that VFB holds no single-cell data for it, above a
+  // knowledge base holding FCA and Davie clusters for antennal lobe projection
+  // neurons and antennal lobe receptor neurons. The cell types that carry the
+  // region's name and the scRNA-seq flag are one filtered search away; take the
+  // most general (shortest label — its clusters roll up the subtypes') and run
+  // the chain on that, reporting the hop and the others.
+  let via_region = null
+  let other_cell_types = []
+  if (!supertypes.includes('hasscrnaseq') && !supertypes.includes('neuron') && (supertypes.includes('synaptic_neuropil') || supertypes.includes('synaptic_neuropil_domain') || supertypes.includes('nervous_system'))) {
+    const hop = await scrnaseqCellTypesInRegion(client, label)
+    if (hop.length) {
+      via_region = { id, label }
+      other_cell_types = hop.slice(1).map(h => ({ id: h.id, label: h.label }))
+      id = hop[0].id
+      const ti = await getTermInfoEvidence(client, id); record = ti.record; label = getReadableTermName(record, id)
+      supertypes = [].concat(record?.SuperTypes || [], record?.Tags || []).map(s => String(s).toLowerCase())
+    }
+  }
   if (!supertypes.includes('hasscrnaseq')) {
     return JSON.stringify({ tool: 'vfb_scrnaseq_gene_expression', resolved: { id, label }, has_scrnaseq: false, note: `VFB does not currently hold scRNA-seq expression data for ${label}.` })
   }
@@ -7657,8 +7677,40 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
     resolved: { id, label },
     has_scrnaseq: true,
     cluster_count: clusters.length,
+    ...(via_region ? {
+      via_region,
+      other_cell_types,
+      evidence_summary: {
+        answer_hint: `${via_region.label} is a region, and VFB's single-cell data is per cell type, not per region; the profile below is for ${label}, the most general cell type of the ${via_region.label} with scRNA-seq clusters in VFB${other_cell_types.length ? ` (also available: ${other_cell_types.map(o => o.label).join(', ')})` : ''}. Say that hop in one clause. Transgene (driver-line) expression in the region is a different question.`
+      }
+    } : {}),
     ...matrix
   })
+}
+
+/**
+ * Cell-type classes flagged hasScRNAseq whose name carries the region's,
+ * most general first (shortest label). "antennal lobe" → antennal lobe
+ * projection neuron (23 clusters), adult antennal lobe receptor neuron, …
+ */
+async function scrnaseqCellTypesInRegion(client, regionLabel) {
+  const q = String(regionLabel || '').trim()
+  if (!q) return []
+  let parsed = null
+  try {
+    parsed = parseJsonPayload(await callVfbToolTextWithFallback(client, 'search_terms', { query: q, filter_types: ['neuron', 'class', 'hasScRNAseq'], rows: 20, minimize_results: false }))
+  } catch { return [] }
+  const docs = parsed?.response?.docs || parsed?.docs || parsed?.results || []
+  const region = q.toLowerCase()
+  const out = []
+  for (const d of Array.isArray(docs) ? docs : []) {
+    const id = String(d?.short_form || d?.id || '')
+    const label = String(d?.original_label || d?.label || '').replace(/\s*\([^)]*\)\s*$/, '').trim()
+    if (!/^FBbt_\d+$/.test(id) || !label.toLowerCase().includes(region)) continue
+    if (!out.some(o => o.id === id)) out.push({ id, label })
+  }
+  out.sort((a, b) => a.label.length - b.label.length)
+  return out.slice(0, 4)
 }
 
 // How many registered neurons to seed NBLAST from, and how deep to read each
