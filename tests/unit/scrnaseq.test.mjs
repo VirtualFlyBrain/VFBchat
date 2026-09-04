@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseScrnaseqClusters, parseClusterExpression, extractRequestedGenes,
-  buildExpressionMatrix, renderExpressionMarkdown, GENE_SETS
+  buildExpressionMatrix, renderExpressionMarkdown, GENE_SETS, describeCluster, clusterDatasetLabel
 } from '../../lib/scrnaseq.mjs'
 
 // Shapes mirror the live VFB anatScRNAseqQuery / clusterExpression output.
@@ -145,4 +145,33 @@ test('a function class in the question filters the expression table by FlyBase f
   // Nothing matches: an honest note naming the class asked for.
   const none = buildExpressionMatrix(clusters, perCluster, extractRequestedGenes('which neuropeptides do Kenyon cells express?'))
   assert.match(none.note, /None of the requested neuropeptide genes/)
+})
+
+// Issue #58: four columns all headed "gamma Kenyon cell". What differs between
+// the columns is the DATASET — study, year, sex, tissue — and that is what the
+// header must say.
+test('cluster names decode to study, year, condition, sex and tissue', () => {
+  assert.equal(clusterDatasetLabel('scRNAseq_2018_Davie_FULL_seq_clustering_gamma_Kenyon_cells'), 'Davie 2018 · whole fly')
+  assert.equal(clusterDatasetLabel('scRNAseq_2022_FCA_FEMALE_HEAD_seq_clustering_gamma_Kenyon_cells'), 'FCA 2022 · female head')
+  assert.equal(clusterDatasetLabel('scRNAseq_2023_AFCA_D30_MALE_FULL_seq_clustering_gamma_Kenyon_cells'), 'AFCA 2023 D30 · male whole fly')
+  assert.equal(clusterDatasetLabel('not a cluster name'), '')
+  assert.deepEqual(describeCluster('scRNAseq_2022_FCA_MIXED_ANT_seq_clustering_Gr21a_ORNs'),
+    { study: 'FCA', year: '2022', condition: '', sex: 'mixed', tissue: 'antenna', cell: 'Gr21a ORNs' })
+})
+
+test('column headers carry the dataset, and the cell type only when it varies', () => {
+  const genes = [{ symbol: 'mub', perCluster: [
+    { clusterId: 'a', clusterName: 'scRNAseq_2018_Davie_FULL_seq_clustering_gamma_Kenyon_cells', cellType: 'adult gamma Kenyon cell', level: 100, extent: 1 },
+    { clusterId: 'b', clusterName: 'scRNAseq_2022_FCA_FEMALE_HEAD_seq_clustering_gamma_Kenyon_cells', cellType: 'adult gamma Kenyon cell', level: 90, extent: 0.9 },
+    { clusterId: 'c', clusterName: 'scRNAseq_2022_FCA_FEMALE_HEAD_seq_clustering_gamma_Kenyon_cells', cellType: 'adult gamma Kenyon cell', level: 80, extent: 0.8 }
+  ] }]
+  const same = renderExpressionMarkdown({ genes, citations: [] }, 'gamma Kenyon cell')
+  assert.match(same, /\| Gene \| Davie 2018 · whole fly \| FCA 2022 · female head \(1\) \| FCA 2022 · female head \(2\) \|/)
+  assert.match(same, /columns are the gamma Kenyon cell clusters in each dataset/)
+  assert.doesNotMatch(same, /gamma Kenyon cell — /)
+  const mixed = renderExpressionMarkdown({ genes: [{ symbol: 'mub', perCluster: [
+    { clusterId: 'a', clusterName: 'scRNAseq_2018_Davie_FULL_seq_clustering_gamma_Kenyon_cells', cellType: 'adult gamma Kenyon cell', level: 100, extent: 1 },
+    { clusterId: 'b', clusterName: 'scRNAseq_2018_Davie_FULL_seq_clustering_alpha_beta_Kenyon_cells', cellType: 'adult alpha/beta Kenyon cell', level: 90, extent: 0.9 }
+  ] }], citations: [] }, 'Kenyon cell')
+  assert.match(mixed, /\| gamma Kenyon cell — Davie 2018 · whole fly \| alpha\/beta Kenyon cell — Davie 2018 · whole fly \|/)
 })
