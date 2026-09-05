@@ -7661,7 +7661,11 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
   // cap each cluster's expression table at 25 genes and drop the queried gene.
   try { clusters = parseScrnaseqClusters(parseJsonPayload(await callVfbToolTextWithFallback(client, 'run_query', { id, query_type: 'anatScRNAseqQuery', limit: 0 }))) } catch { clusters = [] }
   // Bound cost: prefer adult clusters, cap the number queried for expression.
-  const picked = clusters.filter(c => !(c.tags || []).includes('Larva')).slice(0, 4)
+  // Bound cost: prefer adult clusters, cap the number queried, and spread the
+  // four across DATASETS — one cluster per study before a second from any —
+  // so the columns compare Davie 2018 with FCA 2022 and AFCA 2023 rather
+  // than showing four FCA sex/tissue splits of the same study (#58).
+  const picked = spreadAcrossDatasets(clusters.filter(c => !(c.tags || []).includes('Larva')), 4)
   // Hop 2: per-cluster expression tables — fetched in parallel (independent calls).
   const perCluster = new Map()
   await Promise.all(picked.map(async c => {
@@ -7686,6 +7690,24 @@ async function scrnaseqGeneExpressionTool(client, args = {}, context = {}) {
     } : {}),
     ...matrix
   })
+}
+
+/** Round-robin over dataset ids: one cluster from each dataset, then seconds, up to cap. */
+function spreadAcrossDatasets(clusters, cap) {
+  const byDataset = new Map()
+  for (const c of clusters) {
+    const key = c.datasetId || c.dataset || ''
+    if (!byDataset.has(key)) byDataset.set(key, [])
+    byDataset.get(key).push(c)
+  }
+  const out = []
+  const queues = [...byDataset.values()]
+  for (let round = 0; out.length < cap; round++) {
+    let took = false
+    for (const q of queues) { if (q[round]) { out.push(q[round]); took = true; if (out.length >= cap) break } }
+    if (!took) break
+  }
+  return out
 }
 
 /**
