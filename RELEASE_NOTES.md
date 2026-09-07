@@ -4,6 +4,11 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.15
+- **A misspelt word in a name no longer reads as "VFB doesn't have this."** "What does the anterior optic tubercule look like?" was answered as unmatched — and then, in the same answer, suggested searching "anterior optic tubercle," which is the class VFB holds (FBbt_00007059). "Tubercule" isn't a synonym, it's a misspelling, and VFB's Solr index stems it differently from "tubercle," so the resolver's existing rungs (species words, Greek→ASCII, singularising, genotype markers, category nouns) never touched it. When a name and every variant of it come back empty, the resolver now searches the name with one candidate word removed at a time and accepts a hit only when a label or synonym differs from the name in exactly one word, within one or two edits — so "anterior optic tract" isn't mistaken for "anterior optic tubercle" just because it has the same shape. ([#63](https://github.com/VirtualFlyBrain/VFBchat/pull/63))
+
+  Unit suite 1,328/1,328.
+
 ## v4.2.14
 - **A symbol that names a type resolves to the type.** "EPG neurons" — a class named by its symbol, "EPG" — matched a FAFB reconstruction's synonym first (that cell also carries "EPG" as a synonym) and answered with one neuron's 38 partners as what VFB knows about EPG neurons. A name of the shape *symbol + category noun* ("EPG neurons", "the EPG neuron", "Kenyon cell types") names a type, and no record's own label ends that way — so when such a name lands on an individual without matching its label exactly, the resolver now searches the symbol alone among classes and takes an exact match. EPG neurons now return the class (FBbt_00047030): term info, 214 images, 10 subclasses, 12 driver reports, and the ranked downstream partner table. A connectivity question no longer gets an unrelated subtype tree appended just for saying "cell types" ([#59](https://github.com/VirtualFlyBrain/VFBchat/issues/59)).
 
