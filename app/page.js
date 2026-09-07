@@ -591,9 +591,21 @@ const BasicGraphView = memo(function BasicGraphView({ graph }) {
 // on) and per-row `cells`; those render as sortable columns, so a ranked
 // partner list can be re-ordered by any of its figures without another
 // question (#47/#50). Sorting is per table, client-side, on the rows given.
+// A result table starts folded to its title line unless it IS the answer. The
+// query previews are supporting material for the prose above them, and a
+// 22-row scRNA-seq listing sitting between that prose and the next question
+// scrolled the answer off the top of the screen (issue #61) — so they open on
+// a click, not by default, whatever their size. The tables the harness builds
+// deterministically as the answer carry a `kind` — the ranked partner table
+// (#50), the split-GAL4 stock table — and those stay open.
+function tableStartsOpen(tbl) {
+  return Boolean(tbl?.kind)
+}
+
 function ResultTable({ table: tbl }) {
   const columns = useMemo(() => (Array.isArray(tbl?.columns) ? tbl.columns : []), [tbl?.columns])
   const [sort, setSort] = useState({ key: tbl?.sortKey || null, dir: 'desc' })
+  const [open, setOpen] = useState(() => tableStartsOpen(tbl))
   const rows = useMemo(() => {
     const list = Array.isArray(tbl?.rows) ? tbl.rows : []
     if (!sort.key || !columns.some(c => c.key === sort.key)) return list
@@ -617,12 +629,22 @@ function ResultTable({ table: tbl }) {
     if (tbl?.countNoun && kind === 'exact' && typeof tbl?.count === 'number') return ` — ${tbl.count} ${tbl.countNoun}`
     return tableCountLabel(tbl)
   })()
+  const shown = rows.length
   return (
     <div style={{ marginBottom: '12px', border: '1px solid #222', borderRadius: '6px', overflow: 'hidden' }}>
-      <div style={{ fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', borderBottom: '1px solid #222' }}>
-        {tbl.title}{countText}
-        {tbl.subtitle && <span style={{ color: '#8a8a8a' }}> · {tbl.subtitle}</span>}
-      </div>
+      {/* The title line is the fold: one button, so a keyboard user can open
+          and close the table, and the row count stays visible either way. */}
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        title={open ? 'Collapse this table' : `Expand this table (${shown} row${shown === 1 ? '' : 's'} shown)`}
+        style={{ display: 'flex', width: '100%', alignItems: 'baseline', gap: '6px', textAlign: 'left', fontSize: '0.78em', color: '#bbb', padding: '6px 10px', background: '#111', border: 'none', borderBottom: open ? '1px solid #222' : 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+        <span aria-hidden="true" style={{ color: '#9ecbff', width: '1em', flex: 'none' }}>{open ? '▾' : '▸'}</span>
+        <span style={{ flex: 1 }}>
+          {tbl.title}{countText}
+          {tbl.subtitle && <span style={{ color: '#8a8a8a' }}> · {tbl.subtitle}</span>}
+        </span>
+        {!open && <span style={{ color: '#8a8a8a', flex: 'none' }}>show {shown} row{shown === 1 ? '' : 's'}</span>}
+      </button>
+      {open && (<>
       <div style={{ maxHeight: '360px', overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em' }}>
           {columns.length > 0 && (
@@ -686,6 +708,7 @@ function ResultTable({ table: tbl }) {
           </a>
         </div>
       )}
+      </>)}
     </div>
   )
 }
