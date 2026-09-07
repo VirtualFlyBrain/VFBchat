@@ -4,6 +4,11 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.17
+- **GA telemetry failures no longer vanish silently.** `sendStructuredTelemetry`'s call to Google Analytics sat in a bare `try/catch` that discarded every outcome — a bad measurement ID, a non-2xx response, a network failure, all indistinguishable from success. It now logs the response status on a rejected hit and the error's name on a thrown one, always omitting the endpoint (its query string carries `GA_API_SECRET`) and the error's own message (some runtimes fold the request URL into it). The GA4 Events report now shows `chat_query` recording real daily traffic as expected, so this was dormant risk rather than an active outage — but the next genuine delivery failure will now show up in the container logs instead of disappearing.
+
+  Unit suite 1,335/1,335 (5 new tests in `tests/unit/gaTelemetryFailure.test.mjs`). [#65](https://github.com/VirtualFlyBrain/VFBchat/pull/65)
+
 ## v4.2.16
 - **Every result gets its link.** "What are the subtypes of the gamma Kenyon cell?" named ten subclasses and linked five: the term-info preview registers at most five entities for linking, and rows returned by the query itself were folded into the digest without being registered. Every returned row is now registered, so a name the answer takes from VFB data always carries VFB's link for it ([#62](https://github.com/VirtualFlyBrain/VFBchat/issues/62)).
 
