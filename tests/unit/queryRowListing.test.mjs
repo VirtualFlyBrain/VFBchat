@@ -128,6 +128,30 @@ test('caps how many rows land in the digest', () => {
   assert.equal(q.exampleEntities.length, 5)
 })
 
+test('registers every returned row for linking, not just the five in the digest (#62)', () => {
+  // "What are the subtypes of the gamma Kenyon cell?" named ten subclasses and
+  // linked five: the term-info preview registers at most five entities, and the
+  // backfill wrote the rest into the digest without registering them.
+  const ledger = ledgerWith({ ...EMPTY_PREVIEW })
+  const parsed = { count: 10, count_status: 'exact', rows: Array.from({ length: 10 }, (_, i) => row(`FBbt_0010${i}`, `KCg-s${i}`)) }
+  backfillDigestPreview(ledger, { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' }, parsed)
+  assert.equal(ledger.terms.medulla.digest.queries[0].exampleEntities.length, 5)
+  for (let i = 0; i < 10; i++) assert.equal(ledger.registry[`kcg-s${i}`]?.id, `FBbt_0010${i}`, `row ${i} is linkable`)
+})
+
+test('registers rows even when the preview was already full', () => {
+  // A resolved term-info preview carries five rows, so the "never downgrade"
+  // rule below leaves the digest alone — but the registry must still learn the
+  // rows the query actually returned.
+  const existingRows = [{ name: 'already here', id: 'FBbt_9', thumbnail: '', tags: [] }]
+  const ledger = ledgerWith({ ...EMPTY_PREVIEW, previewRows: existingRows, examples: ['already here'], count: 10, countKind: 'exact' })
+  const parsed = { count: 10, count_status: 'exact', rows: [row('FBbt_1', 'Mi1'), row('FBbt_2', 'Tm3')] }
+  backfillDigestPreview(ledger, { id: 'FBbt_00003748', query_type: 'NeuronsPresynapticHere' }, parsed)
+  assert.equal(ledger.terms.medulla.digest.queries[0].previewRows[0].name, 'already here')
+  assert.equal(ledger.registry.mi1?.id, 'FBbt_1')
+  assert.equal(ledger.registry.tm3?.id, 'FBbt_2')
+})
+
 test('never downgrades a preview that already has rows', () => {
   const existingRows = [{ name: 'already here', id: 'FBbt_9', thumbnail: '', tags: [] }]
   const ledger = ledgerWith({
