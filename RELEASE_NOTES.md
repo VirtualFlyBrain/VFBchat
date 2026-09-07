@@ -4,6 +4,13 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.16
+- **Every result gets its link.** "What are the subtypes of the gamma Kenyon cell?" named ten subclasses and linked five: the term-info preview registers at most five entities for linking, and rows returned by the query itself were folded into the digest without being registered. Every returned row is now registered, so a name the answer takes from VFB data always carries VFB's link for it ([#62](https://github.com/VirtualFlyBrain/VFBchat/issues/62)).
+
+  **Result tables fold by default.** A 22-row scRNA-seq listing between the answer and the next question scrolled the answer off the top of the screen. Result tables now start collapsed to their title line — count and a "show N rows" hint — and open on a click from a keyboard-operable button. Tables the harness builds as the answer itself (ranked connectivity partners, split-GAL4 stocks) stay open ([#61](https://github.com/VirtualFlyBrain/VFBchat/issues/61)).
+
+  Unit suite 1,330/1,330; checked in a local production build against the live gateway. [#64](https://github.com/VirtualFlyBrain/VFBchat/pull/64), feedback from Clare, 7 September.
+
 ## v4.2.15
 - **A misspelt word in a name no longer reads as "VFB doesn't have this."** "What does the anterior optic tubercule look like?" was answered as unmatched — and then, in the same answer, suggested searching "anterior optic tubercle," which is the class VFB holds (FBbt_00007059). "Tubercule" isn't a synonym, it's a misspelling, and VFB's Solr index stems it differently from "tubercle," so the resolver's existing rungs (species words, Greek→ASCII, singularising, genotype markers, category nouns) never touched it. When a name and every variant of it come back empty, the resolver now searches the name with one candidate word removed at a time and accepts a hit only when a label or synonym differs from the name in exactly one word, within one or two edits — so "anterior optic tract" isn't mistaken for "anterior optic tubercle" just because it has the same shape. ([#63](https://github.com/VirtualFlyBrain/VFBchat/pull/63))
 
