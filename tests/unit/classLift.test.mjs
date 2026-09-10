@@ -76,6 +76,59 @@ test('"EPG neurons" is lifted from the instance the singular found to the class 
   assert.deepEqual(deps.calls[2].filter, ['class'])
 })
 
+// Issue #66: "what cell types are downstream of KCg?" resolved the bare symbol
+// to KCg-d_R (FlyEM-HB:1003837184). VFB's index ranks hundreds of KCg-*
+// individuals above the class whose symbol is "KCg", so the class never
+// reached the rows the ladder saw and the token-superset guess took the first
+// individual. No document matched "KCg" exactly; the class does, so it wins.
+const KCG_INSTANCES = ['1003837184', '1004514584', '1004514714'].map((acc, i) => ({
+  short_form: `VFB_jrchjw0${i}`,
+  label: `KCg-d_R (KCg-d_R (FlyEM-HB:${acc}))`,
+  original_label: `KCg-d_R (FlyEM-HB:${acc})`,
+  facets_annotation: ['Entity', 'Individual', 'Neuron', 'Adult', 'has_neuron_connectivity']
+}))
+const KCG_CLASS = { short_form: 'FBbt_00100247', label: 'KCg (gamma Kenyon cell)', original_label: 'gamma Kenyon cell', synonym: ['KCg', 'gamma KC'], facets_annotation: ['Entity', 'Class', 'Neuron'] }
+
+test('a bare symbol that landed on an instance by guess is lifted to the class the symbol names exactly (#66)', async () => {
+  const deps = makeDeps('what cell types are downstream of KCg?', 'KCg')
+  deps.runTool = (orig => async (name, args) => {
+    if (name === 'vfb_search_terms') {
+      deps.calls.push({ q: args.query, filter: args.filter_types || null })
+      if ((args.filter_types || []).includes('class')) return { results: args.query === 'KCg' ? [KCG_CLASS] : [] }
+      return { results: KCG_INSTANCES }
+    }
+    if (name === 'vfb_get_term_info') {
+      return args.id === 'FBbt_00100247'
+        ? { Id: args.id, Name: 'gamma Kenyon cell', IsClass: true, SuperTypes: ['Class', 'Neuron'], Publications: [], Queries: [] }
+        : { Id: args.id, Name: 'KCg-d_R (FlyEM-HB:1003837184)', IsIndividual: true, SuperTypes: ['Individual', 'Neuron'], Publications: [], Queries: [] }
+    }
+    return orig(name, args)
+  })(deps.runTool)
+  const r = await runHarness('what cell types are downstream of KCg?', deps)
+  assert.equal(r.ledger.terms.KCg.id, 'FBbt_00100247')
+  assert.ok(r.trace.some(e => e.resolve_lift_to_class === 'KCg' && e.from === 'VFB_jrchjw00' && e.to === 'FBbt_00100247'), 'lift logged')
+  const classCall = deps.calls.find(c => c.filter && c.filter.includes('class'))
+  assert.ok(classCall && classCall.q === 'KCg', 'the symbol was searched among classes')
+})
+
+test('a bare name that matches an instance exactly (label sans accession) is not lifted', async () => {
+  const deps = makeDeps('what is downstream of KCg-d_R?', 'KCg-d_R')
+  deps.runTool = (orig => async (name, args) => {
+    if (name === 'vfb_search_terms') {
+      deps.calls.push({ q: args.query, filter: args.filter_types || null })
+      // A class search would find a sibling symbol; it must never be made.
+      if ((args.filter_types || []).includes('class')) return { results: [{ short_form: 'FBbt_00110932', label: 'KCg-d (gamma dorsal Kenyon cell)', original_label: 'gamma dorsal Kenyon cell', synonym: ['KCg-d'], facets_annotation: ['Entity', 'Class', 'Neuron'] }] }
+      return { results: KCG_INSTANCES }
+    }
+    if (name === 'vfb_get_term_info') return { Id: args.id, Name: 'KCg-d_R (FlyEM-HB:1003837184)', IsIndividual: true, SuperTypes: ['Individual', 'Neuron'], Publications: [], Queries: [] }
+    return orig(name, args)
+  })(deps.runTool)
+  const r = await runHarness('what is downstream of KCg-d_R?', deps)
+  assert.equal(r.ledger.terms['KCg-d_R'].id, 'VFB_jrchjw00')
+  assert.ok(!r.trace.some(e => e.resolve_lift_to_class), 'no lift')
+  assert.ok(!deps.calls.some(c => c.filter && c.filter.includes('class')), 'no class search')
+})
+
 test('a name that IS the instance label is left on the instance', async () => {
   const deps = makeDeps('what is EPG-5L#3 (FAFB:4087066) connected to?', 'EPG-5L#3 (FAFB:4087066)')
   deps.runTool = (orig => async (name, args) => {

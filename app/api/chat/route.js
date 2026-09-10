@@ -52,7 +52,8 @@ import {
   annotateFailedRunQuery,
   createForceRefreshBudget,
   forceRefreshKey,
-  isFailedRunQueryPayload
+  isFailedRunQueryPayload,
+  isSuspiciousZeroRunQuery
 } from '../../../lib/runQueryRetry.mjs'
 import {
   parseThumbnailEntity,
@@ -1261,7 +1262,14 @@ function getForceRefreshBudget(context) {
 
 async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = {}) {
   const text = mcpResultToText(await callMcpToolWithRetry(client, name, args))
-  if (!FORCE_REFRESH_RETRY_TOOLS.has(name) || !isFailedRunQueryPayload(text)) return text
+  if (!FORCE_REFRESH_RETRY_TOOLS.has(name)) return text
+  const failed = isFailedRunQueryPayload(text)
+  // A class-connectivity count 0 is retried like a -1 (#66): the edge cache
+  // kept the zeros VFBquery used to emit for a failed aggregation, and one is
+  // indistinguishable from an empty set until it has been recomputed once.
+  // See SUSPICIOUS_ZERO_QUERY_TYPES for the scope; a second zero is believed.
+  const suspiciousZero = !failed && isSuspiciousZeroRunQuery(name, args, text)
+  if (!failed && !suspiciousZero) return text
 
   // `budget` was passed by exactly one of the 27 call sites — the generic MCP
   // routing path. Every macro tool left it empty and fell back to a fresh
@@ -1272,18 +1280,38 @@ async function callMcpToolTextWithForceRefresh(client, name, args, { budget } = 
   // that is seven X-Force-Refresh recomputes against the shared upstream instead
   // of two. The request's allowance now rides on the client.
   const allowance = budget || client?.[FORCE_REFRESH_BUDGET] || createForceRefreshBudget(1)
+  // annotateFailedRunQuery leaves a count-0 payload untouched, so the
+  // suspicious-zero path returns the original result when the budget is spent.
   if (!allowance.tryConsume(forceRefreshKey(name, args))) return annotateFailedRunQuery(text)
 
-  console.error(`[VFBchat] ${name} returned count -1 — retrying once with force_refresh | args=${safeToolArgs(args)}`)
+  const why = failed ? 'count -1' : 'count 0 for class connectivity'
+  console.error(`[VFBchat] ${name} returned ${why} — retrying once with force_refresh | args=${safeToolArgs(args)}`)
+  const startedAt = Date.now()
   try {
     const retryText = mcpResultToText(
       await callMcpToolWithRetry(client, name, { ...args, force_refresh: true })
     )
+    if (suspiciousZero) {
+      // Recorded either way: a zero that became a result is a cache the edge
+      // is still serving, and a zero that stayed zero is a class that really
+      // has no connectome-annotated instances. Both are worth counting.
+      const after = Number(parseMaybeJsonCount(retryText))
+      console.error(`[VFBchat] CLASS CONNECTIVITY ZERO RETRY | query_type=${args?.query_type} | id=${safeToolArgs({ id: args?.id })} | count_after=${Number.isFinite(after) ? after : 'n/a'} | ms=${Date.now() - startedAt}`)
+    }
     if (!isFailedRunQueryPayload(retryText)) return retryText
     return annotateFailedRunQuery(retryText)
   } catch (error) {
     console.error(`[VFBchat] force_refresh retry for ${name} failed: ${safeText(error?.message || error)}`)
     return annotateFailedRunQuery(text)
+  }
+}
+
+function parseMaybeJsonCount(text) {
+  try {
+    const parsed = typeof text === 'string' ? JSON.parse(text) : text
+    return parsed && typeof parsed === 'object' ? parsed.count : undefined
+  } catch {
+    return undefined
   }
 }
 

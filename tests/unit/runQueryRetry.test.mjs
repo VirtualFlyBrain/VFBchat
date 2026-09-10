@@ -110,3 +110,25 @@ test('the default allowance is small and positive', () => {
   assert.ok(DEFAULT_FORCE_REFRESH_BUDGET > 0 && DEFAULT_FORCE_REFRESH_BUDGET <= 3)
   assert.equal(createForceRefreshBudget().remaining, DEFAULT_FORCE_REFRESH_BUDGET)
 })
+
+// ------------------------------------------- suspicious class-connectivity zero
+
+import { isSuspiciousZeroRunQuery, SUSPICIOUS_ZERO_QUERY_TYPES } from '../../lib/runQueryRetry.mjs'
+
+test('an empty class-connectivity result is retried once, like a -1 (#66)', () => {
+  const zero = '{"count":0,"count_status":"exact","rows":[]}'
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity', limit: 2500 }, zero), true)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'UpstreamClassConnectivity' }, { count: 0 }), true)
+  assert.deepEqual([...SUSPICIOUS_ZERO_QUERY_TYPES].sort(), ['DownstreamClassConnectivity', 'UpstreamClassConnectivity'])
+})
+
+test('every other zero is still a zero', () => {
+  const zero = '{"count":0,"count_status":"exact","rows":[]}'
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'NeuronsPartHere' }, zero), false)
+  assert.equal(isSuspiciousZeroRunQuery('get_term_info', { id: 'FBbt_00100247' }, zero), false)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity' }, '{"count":3886,"rows":[{}]}'), false)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity' }, '{"count":0,"rows":[{"id":"x"}]}'), false)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity' }, '{"count":-1,"rows":[]}'), false)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity' }, '{"error":"boom","count":0}'), false)
+  assert.equal(isSuspiciousZeroRunQuery('run_query', { id: 'FBbt_00100247', query_type: 'DownstreamClassConnectivity' }, 'not json'), false)
+})
