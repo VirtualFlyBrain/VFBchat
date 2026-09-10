@@ -4,6 +4,11 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.18
+- - **A stray scanner request no longer crashes the server.** VFBchat has no React Server Actions of its own -- the chat send path is a plain `fetch()` POST to `/api/chat` -- so any request carrying Next's Server Action header was never real app traffic. It was most often an automated scanner (the shape matches probes for the Server Actions SSRF class of bug, CVE-2024-34351), and Next 14.0.0's own handling of that case has a known crash bug: a missing `origin` header, or an action id from a build it doesn't recognise, threw an uncaught `TypeError` straight into production logs instead of a clean rejection. Middleware now rejects any POST carrying a Server Action header before it reaches that code path -- a quiet 404 instead of a stack trace. Real chat traffic is untouched: verified against a production build that a forged request now gets 404 where it used to crash, while a normal POST to `/api/chat` reaches the route handler exactly as before. ([#67](https://github.com/VirtualFlyBrain/VFBchat/pull/67))
+
+    Unit suite 1,335/1,335. Found during a production log review, 9 September.
+
 ## v4.2.17
 - **GA telemetry failures no longer vanish silently.** `sendStructuredTelemetry`'s call to Google Analytics sat in a bare `try/catch` that discarded every outcome — a bad measurement ID, a non-2xx response, a network failure, all indistinguishable from success. It now logs the response status on a rejected hit and the error's name on a thrown one, always omitting the endpoint (its query string carries `GA_API_SECRET`) and the error's own message (some runtimes fold the request URL into it). The GA4 Events report now shows `chat_query` recording real daily traffic as expected, so this was dormant risk rather than an active outage — but the next genuine delivery failure will now show up in the container logs instead of disappearing.
 
