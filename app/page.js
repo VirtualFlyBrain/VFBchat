@@ -938,8 +938,13 @@ const ChatMessage = memo(function ChatMessage({
       }}>
         {getDisplayName(msg.role)}
       </div>
+      {/* dir="auto": a Persian, Arabic or Hebrew answer aligns to the right and
+          reads in its own direction; English keeps the default. Decided per
+          message from its first strong character, so a mixed conversation
+          renders each bubble the way its language reads. */}
       <div
         className="message-content"
+        dir="auto"
         style={msg.role === 'reasoning' ? { fontSize: '0.85em', fontStyle: 'italic', color: '#999' } : {}}
       >
         {/* remark-gfm: without it react-markdown is CommonMark only, and the
@@ -1952,6 +1957,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         <label htmlFor="chat-input" className="sr-only">Ask about Drosophila neuroanatomy</label>
         <input
           id="chat-input"
+          dir="auto"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSend()}

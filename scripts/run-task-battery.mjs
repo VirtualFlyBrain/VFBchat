@@ -682,7 +682,9 @@ async function runTask(baseUrl, task, repetition, timeoutMs, runId) {
       problems: turnProblems
     })
 
-    messages.push({ role: 'assistant', content: answer })
+    // As the UI sends it: the assistant message carries its chips, which is
+    // how a "reply in <language>" turn re-offers the previous turn's chips.
+    messages.push({ role: 'assistant', content: answer, followOns })
     context = parsed.result?.context || context
     lastResult = parsed.result
   }

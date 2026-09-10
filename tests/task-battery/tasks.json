@@ -823,5 +823,146 @@
         }
       }
     ]
+  },
+  {
+    "id": "L1",
+    "tier": 2,
+    "title": "Language \u2014 Persian typed in Latin letters is answered in Persian",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "chand ta driverline dar flywire data vojood dare?",
+        "expect": {
+          "answer_script": "Arabic",
+          "context_lang": {
+            "code": "fa",
+            "pinned": false
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "L2",
+    "tier": 2,
+    "title": "Language \u2014 Hungarian with an explicit request: links, count and chips survive, language pinned",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "sorold fel az ellipszis testet jelolo GAL4 torzseket, valaszolj magyarul",
+        "expect": {
+          "context_carries_id": "FBbt_00003678",
+          "no_unmatched_claim": true,
+          "answer_not_english": true,
+          "min_links": 1,
+          "min_followons": 2,
+          "context_lang": {
+            "code": "hu",
+            "pinned": true
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "L3",
+    "tier": 2,
+    "title": "Language \u2014 a Japanese question with a Japanese term name resolves and answers in Japanese",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "\u30ad\u30ce\u30b3\u4f53\u3068\u306f\u4f55\u3067\u3059\u304b\uff1f",
+        "expect": {
+          "context_carries_id": "FBbt_00005801",
+          "no_unmatched_claim": true,
+          "answer_not_english": true,
+          "min_links": 1,
+          "context_lang": {
+            "code": "ja",
+            "pinned": false
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "L4",
+    "tier": 2,
+    "title": "Language \u2014 a Chinese question is answered in Chinese with its links",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "\u8611\u83c7\u4f53\u6709\u54ea\u4e9b\u4e9a\u578b\uff1f",
+        "expect": {
+          "context_carries_id": "FBbt_00005801",
+          "no_unmatched_claim": true,
+          "answer_script": "Han",
+          "min_links": 1,
+          "context_lang": {
+            "code": "zh",
+            "pinned": false
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "L5",
+    "tier": 2,
+    "title": "Language \u2014 a German question with a symbol inside a translated name",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "Welche split-GAL4-Linien markieren die Kenyon-Zellen des Pilzk\u00f6rpers?",
+        "expect": {
+          "context_carries_id": "FBbt_00003686",
+          "no_unmatched_claim": true,
+          "answer_not_english": true,
+          "min_links": 1,
+          "context_lang": {
+            "code": "de",
+            "pinned": false
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "L6",
+    "tier": 7,
+    "title": "Language \u2014 \"can you reply in persian?\" re-renders the previous answer and pins the conversation, English follow-up included",
+    "category": "languages",
+    "turns": [
+      {
+        "question": "What is the ellipsoid body?",
+        "expect": {
+          "context_carries_id": "FBbt_00003678",
+          "min_followons": 3
+        }
+      },
+      {
+        "question": "can you reply in persian?",
+        "expect": {
+          "answer_script": "Arabic",
+          "min_links": 1,
+          "context_lang": {
+            "code": "fa",
+            "pinned": true
+          }
+        }
+      },
+      {
+        "question": "What is the fan-shaped body?",
+        "expect": {
+          "context_carries": "fan-shaped body",
+          "answer_script": "Arabic",
+          "min_links": 1,
+          "context_lang": {
+            "code": "fa",
+            "pinned": true
+          }
+        }
+      }
+    ]
   }
 ]

@@ -41,6 +41,9 @@ import { pickSeedIndividuals, parseSimilarityHits, groupSimilarByClass } from '.
 import { datasetAsked, groupHitsByDataset, bestHitInDataset } from '../../../lib/datasetAxis.mjs'
 import { parseMarkdownLinks } from '../../../lib/markdownLinks.mjs'
 import { minimizeHistory } from '../../../lib/conversationContext.mjs'
+import { isEnglish, languageName } from '../../../lib/language.mjs'
+import { translateMarkdown, translateChipLabels, translationFallbackNote, linkTargets } from '../../../lib/translateAnswer.mjs'
+import { roleRequestOptions } from '../../../lib/roleProfiles.mjs'
 import { findLeakedIds, stripLeakedIds, collectGroundedIds, collectGroundedNumbers, findUngroundedNumbers, repairMistranscribedCounts } from '../../../lib/grounding.mjs'
 import { curatedCountsForRegion, curatedNoteForRegion, curatedAnswerRules, curatedArticle } from '../../../lib/curatedNeuronCounts.mjs'
 import { renderNeuronCountEstimate } from '../../../lib/neuronCount.mjs'
@@ -11204,12 +11207,16 @@ async function requestNoToolFallbackResponse({
 // one call that could not be configured at all. Left at the gateway default, a
 // reasoning model streams its whole chain of thought into a channel this reader
 // ignores — 34 to 73 seconds of empty pane before the first visible character.
-async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId, sourceQuotes, sampling }) {
+async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, sendEvent, onResponseId, sourceQuotes, sampling, silent = false, signal = undefined }) {
   // Fenced code blocks are held until their closing fence and released closed —
   // the synthesiser re-indents a copied configuration often enough to lose its
   // last brace, and a streamed answer has no afterwards in which to fix that.
   // Inert outside a fence, and outside blocks that came from the documentation.
   const fences = createFenceRepairer(sourceQuotes)
+  // `silent`: accumulate the completion without showing it. The English draft
+  // of a non-English turn is written for the gates and linkers, not the reader;
+  // what the reader sees streams later, from the translation pass.
+  const emitDelta = silent ? () => {} : (text) => sendEvent('delta', { text })
   let res
   try {
     res = await fetch(`${apiBaseUrl}${CHAT_COMPLETIONS_ENDPOINT}`, {
@@ -11220,7 +11227,8 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
         messages,
         stream: true,
         ...(sampling && typeof sampling === 'object' ? sampling : {})
-      })
+      }),
+      ...(signal ? { signal } : {})
     })
   } catch {
     // Network failure reaching ELM — degrade rather than crash the request.
@@ -11232,7 +11240,7 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
     let content = ''
     try { content = JSON.parse(text)?.choices?.[0]?.message?.content || '' } catch { content = '' }
     if (content) content = fences.push(content) + fences.flush()
-    if (content) sendEvent('delta', { text: content })
+    if (content) emitDelta(content)
     return content
   }
 
@@ -11259,13 +11267,118 @@ async function streamSynthCompletion({ messages, model, apiBaseUrl, apiKey, send
         // `full` accumulates what was EMITTED, not what arrived, so the answer
         // returned for linking and sanitising is the same text the reader saw.
         const out = delta ? fences.push(delta) : ''
-        if (out) { full += out; sendEvent('delta', { text: out }) }
+        if (out) { full += out; emitDelta(out) }
       } catch { /* keep-alive or partial chunk */ }
     }
   }
   const tail = fences.flush()
-  if (tail) { full += tail; sendEvent('delta', { text: tail }) }
+  if (tail) { full += tail; emitDelta(tail) }
   return full
+}
+
+/**
+ * Render finished English markdown in the user's language, streaming the
+ * translation to the client, and verify it (lib/translateAnswer.mjs). On a
+ * verification failure the client is told to drop what it saw and the English
+ * text is returned with a note — never an unverified translation.
+ *
+ * Runs on the extract profile: transcription at temperature 0, thinking off.
+ *
+ * @returns {Promise<{ text: string, ok: boolean, attempts: number, reason: string }>}
+ */
+async function renderInLanguage({ text, language, kind = 'answer', sendEvent, apiBaseUrl, apiKey, apiModel, signal }) {
+  if (isEnglish(language) || !String(text || '').trim()) return { text, ok: true, attempts: 0, reason: '' }
+  const servedModels = await ensureServedModels({ baseUrl: apiBaseUrl, apiKey })
+  const opts = roleRequestOptions('extract', { fallback: apiModel, available: servedModels })
+  sendEvent('status', { message: `Translating into ${languageName(language)}`, phase: 'llm' })
+  // The run deadline is a bound on the HARNESS: a question that spent the whole
+  // ten minutes on its queries has still earned its translation, so only a
+  // client that has gone stops this. The translation carries its own bound —
+  // the extract profile's per-attempt timeout — so it cannot run unbounded
+  // either.
+  const gone = () => signal?.aborted && signal.reason?.reason !== 'deadline'
+  const call = ({ messages }) => {
+    if (gone()) throwIfAborted(signal, 'translate')
+    return streamSynthCompletion({
+      messages, model: opts.model, apiBaseUrl, apiKey, sendEvent, sourceQuotes: [], sampling: opts.sampling,
+      signal: AbortSignal.timeout(opts.timeoutMs || 120000)
+    })
+  }
+  const startedAt = Date.now()
+  const r = await translateMarkdown({
+    text, language, kind, call,
+    onDiscard: () => sendEvent('draft_discarded', { reason: 'translation-retry' })
+  })
+  // One line per translation, so the rate of verified translations, retries
+  // and fall-backs is readable from the container log — the same place the
+  // grounding audit reports. `links` is what the check had to preserve.
+  try {
+    console.error(`[VFBchat] TRANSLATION | language=${language} | kind=${kind} | ok=${r.ok} | attempts=${r.attempts} | links=${linkTargets(text).length} | chars=${String(text).length} | ms=${Date.now() - startedAt}${r.ok ? '' : ` | reason=${safeText(r.reason)}`}`)
+  } catch { /* logging best-effort */ }
+  if (!r.ok) {
+    sendEvent('draft_discarded', { reason: 'translation-unverified' })
+    return { text: `${text}\n\n${translationFallbackNote(language)}`, ok: false, attempts: r.attempts, reason: r.reason }
+  }
+  // The translation carries the same links the English did — the check proved
+  // it — but it is model output, so it meets the same allow-list on its way out.
+  const { sanitizedText } = sanitizeAssistantOutput(r.text, getOutboundAllowList())
+  return { text: sanitizedText || r.text, ok: true, attempts: r.attempts, reason: '' }
+}
+
+/**
+ * Follow-on chip labels in the user's language. The query behind each chip
+ * stays English (it is what runs on a click); only the text changes.
+ */
+async function localiseFollowOns(followOns, language, { apiBaseUrl, apiKey, apiModel, signal }) {
+  const chips = Array.isArray(followOns) ? followOns : []
+  if (isEnglish(language) || !chips.length) return chips
+  // Same rule as the translation: the run deadline does not cancel this, a
+  // departed client does. The call is bounded by the extract profile's budget.
+  if (signal?.aborted && signal.reason?.reason !== 'deadline') return chips
+  const servedModels = await ensureServedModels({ baseUrl: apiBaseUrl, apiKey })
+  const opts = roleRequestOptions('extract', { fallback: apiModel, available: servedModels })
+  const labels = await translateChipLabels({
+    labels: chips.map(c => c.label || ''),
+    language,
+    callStructured: ({ messages, schema, schemaName }) => callStructured({
+      baseUrl: apiBaseUrl, apiKey, model: opts.model, messages, schema, schemaName,
+      temperature: opts.temperature, timeoutMs: opts.timeoutMs, budgetMs: opts.budgetMs, extraBody: opts.extraBody
+    })
+  })
+  return chips.map((c, i) => (labels[i] && labels[i] !== c.label ? { ...c, label: labels[i] } : c))
+}
+
+/**
+ * The follow-on chips of the previous turn, as the client sent them back in
+ * its history, for the turn that re-renders that answer in another language.
+ * The client is not trusted with them: only the fields a chip is made of are
+ * taken, and only in the shapes the harness itself would have produced —
+ * a query type that reaches a URL, an id that is an id, a URL on a host the
+ * outbound gate already allows.
+ */
+function previousFollowOnsFrom(rawMessages) {
+  const last = [...(Array.isArray(rawMessages) ? rawMessages : [])].reverse()
+    .find(m => m && m.role === 'assistant' && Array.isArray(m.followOns) && m.followOns.length)
+  if (!last) return []
+  const out = []
+  for (const c of last.followOns.slice(0, 12)) {
+    if (!c || typeof c !== 'object') continue
+    const label = typeof c.label === 'string' ? c.label.trim().slice(0, 200) : ''
+    if (!label) continue
+    if (c.kind === 'vfb') {
+      const url = typeof c.url === 'string' ? c.url.trim() : ''
+      if (!/^https:\/\/(?:www\.)?virtualflybrain\.org\/reports\/[A-Za-z0-9_]+$/.test(url)) continue
+      out.push({ kind: 'vfb', label, url, title: typeof c.title === 'string' ? c.title.slice(0, 200) : undefined })
+      continue
+    }
+    const query = typeof c.query === 'string' ? c.query.trim().slice(0, 300) : ''
+    const id = typeof c.id === 'string' ? c.id.trim() : ''
+    const queryType = typeof c.query_type === 'string' ? c.query_type.trim() : ''
+    if (!query) continue
+    const addressed = /^(?:FBbt|FBgn|FBal|FBti|FBtp|FBco|FBlc|FBrf|VFBexp|VFB)_[0-9a-zA-Z]+$/.test(id) && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(queryType)
+    out.push({ kind: 'ask', label, query, ...(addressed ? { id, query_type: queryType } : {}), title: typeof c.title === 'string' ? c.title.slice(0, 200) : undefined })
+  }
+  return out
 }
 
 // Attach harvested VFB thumbnails as image objects (fallback richness when the
@@ -11298,7 +11411,7 @@ function buildHarnessToolCatalogue() {
   return TOOL_DEFINITIONS.map(tool => ({ name: tool.name, purpose: tool.description || '', parameters: tool.parameters }))
 }
 
-async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus, signal }) {
+async function runRoleHarnessForRequest({ priorMessages, lastAssistantText = '', previousFollowOns = [], sendEvent, apiBaseUrl, apiKey, apiModel, userMessage, scene, context, focus, signal }) {
   const mcpClients = new Map()
   const dataResourceStore = createDataResourceStore()
   const toolState = {
@@ -11372,8 +11485,8 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
         if (obj && typeof obj === 'object' && obj.endpoint && Array.isArray(obj.top_partners)) return []
         return buildConnectivityGraphs(obj).map(normalizeGraphSpec).filter(Boolean)
       },
-      streamText: ({ messages, model, sourceQuotes, sampling }) => streamSynthCompletion({
-        messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes, sampling,
+      streamText: ({ messages, model, sourceQuotes, sampling, silent }) => streamSynthCompletion({
+        messages, model, apiBaseUrl, apiKey, sendEvent, sourceQuotes, sampling, silent,
         onResponseId: (id) => { if (!responseId) responseId = id }
       }),
       onStatus: (status) => sendEvent('status', status),
@@ -11392,6 +11505,42 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       console.log(`[VFBchat] PLAN | tier=${complexity.tier} agreement=${live.plannerAgreement ?? 'n/a'} votes=${live.plannerVotesUsed ?? 0} escalated=${Boolean(live.plannerEscalated)}`)
     } catch { /* logging best-effort */ }
 
+    // The language this turn is answered in (lib/language.mjs). English turns
+    // are untouched by everything below; a non-English turn had its synthesis
+    // buffered silently and is rendered — streamed — from here.
+    const language = live.language || 'en'
+    const languageDeps = { apiBaseUrl, apiKey, apiModel, signal }
+
+    if (live.languageSwitch) {
+      // "Can you reply in Persian?" and nothing else. The context now carries
+      // the pinned language; the answer is the previous turn's answer in it —
+      // that is what was asked for, and "yes, I can" is not it. A conversation
+      // with no previous answer gets a short acknowledgement in the language
+      // instead, so the next question is asked knowing it will be understood.
+      const previous = String(lastAssistantText || '').trim()
+      const source = previous || `Yes — I will answer in ${languageName(language)} from now on. Ask me anything about Drosophila neuroanatomy, connectomes, gene expression or genetic tools in Virtual Fly Brain.`
+      const rendered = await renderInLanguage({ text: source, language, kind: 'answer', sendEvent, ...languageDeps })
+      // The same answer keeps the same next steps: the previous turn's chips,
+      // labelled in the new language, so the conversation carries on from
+      // where it was rather than from a dead end.
+      const followOns = previous ? await localiseFollowOns(previousFollowOns, language, languageDeps) : []
+      return {
+        ok: true,
+        responseText: rendered.text,
+        images: [],
+        graphs: [],
+        tables: [],
+        followOns,
+        sources: [],
+        terms: [],
+        context: live.context,
+        toolUsage: live.toolUsage,
+        toolRounds: live.toolRounds,
+        responseId,
+        blockedResponseDomains: []
+      }
+    }
+
     if (live.clarify) {
       // Through the same gates as every other exit. This branch used to return
       // `live.answer` raw and hard-code blockedResponseDomains: [] — so an
@@ -11405,9 +11554,15 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
       const { cleanedText } = stripLeakedToolCallJson(clarifyText)
       const { sanitizedText, blockedDomains } = sanitizeAssistantOutput(cleanedText, getOutboundAllowList())
       const safeClarify = stripHarnessFraming(sanitizeInternalToolMentions(sanitizedText))
+      const clarifyEnglish = stripLeakedIds(safeClarify, collectGroundedIds(userMessage, live.ledger))
+      // A clarifying question is written by the planner in English (it is the
+      // one planner field that reaches the reader), so it is rendered like an
+      // answer. The Finglish question that got "Do you want to know how many
+      // split-GAL4 driver lines…?" back in English is the case.
+      const clarifyRendered = await renderInLanguage({ text: clarifyEnglish, language, kind: 'clarification', sendEvent, ...languageDeps })
       return {
         ok: true,
-        responseText: stripLeakedIds(safeClarify, collectGroundedIds(userMessage, live.ledger)),
+        responseText: clarifyRendered.text,
         images: [],
         graphs: [],
         tables: [],
@@ -11598,12 +11753,23 @@ async function runRoleHarnessForRequest({ priorMessages, sendEvent, apiBaseUrl, 
     // looking at comes before the same entity aligned to a different template.
     const preferredTemplate = requestedTemplateFromScene(scene)
     const images = orderImagesByTemplate(rawImages, preferredTemplate).slice(0, 8)
+    // Last of all, and only on a non-English turn: the finished markdown —
+    // prose, notes, expression matrix, appendices, every link the linkers
+    // wrote — is rendered in the user's language and checked against itself
+    // (lib/translateAnswer.mjs). The chips' visible text is localised too; the
+    // query behind each chip stays English. Everything above this line is
+    // byte-identical to an English turn.
+    if (!isEnglish(language)) {
+      const rendered = await renderInLanguage({ text: built.responseText, language, kind: 'answer', sendEvent, ...languageDeps })
+      built.responseText = rendered.text
+    }
+    const followOns = await localiseFollowOns(live.followOns || [], language, languageDeps)
     return {
       ...built, images, tables, responseId,
       // One list, whatever path the address arrived by, so the governance
       // counter and the debug payload do not have to know the difference.
       blockedResponseDomains: [...new Set([...(built.blockedResponseDomains || []), ...structuredBlocked])].sort(),
-      followOns: live.followOns || [], sources: live.sources || [], terms: live.terms || [],
+      followOns, sources: live.sources || [], terms: live.terms || [],
       // The ids this turn resolved and the catalogue queries it ran, as runnable
       // VFBquery Python. Carried on every turn so a client can offer it as a
       // button; the prose only carries it when the user asked for it.
@@ -11799,10 +11965,15 @@ export async function POST(request) {
     // summarising prose that is already lean). The ids the stripped links used to
     // carry are not lost: they travel structurally in `context` now, which is
     // what makes cutting the prose safe.
-    const minimized = minimizeHistory(
-      messages.slice(0, -1).map(normalizeChatMessage).filter(Boolean)
-    )
+    const normalizedPrior = messages.slice(0, -1).map(normalizeChatMessage).filter(Boolean)
+    const minimized = minimizeHistory(normalizedPrior)
     const rawPriorMessages = minimized.messages
+    // The previous answer AS SHOWN — links, tables and all — for the turn that
+    // asks for it again in another language. The minimised history below has
+    // had exactly that apparatus stripped, which is right for the planner and
+    // wrong for a re-rendering.
+    const lastAssistantText = [...normalizedPrior].reverse().find(m => m?.role === 'assistant' && typeof m.content === 'string')?.content || ''
+    const previousFollowOns = previousFollowOnsFrom(messages.slice(0, -1))
     if (minimized.dropped) {
       try { console.log(`[VFBchat] HISTORY | kept=${rawPriorMessages.length} dropped=${minimized.dropped} chars=${minimized.chars}`) } catch { /* best-effort */ }
     }
@@ -11824,6 +11995,8 @@ export async function POST(request) {
     try {
       const result = await runRoleHarnessForRequest({
         priorMessages,
+        lastAssistantText,
+        previousFollowOns,
         signal,
         sendEvent,
         apiBaseUrl,
