@@ -85,7 +85,7 @@ Create `.env.local` with explicit values:
 ```bash
 ELM_API_KEY=elm-xxxxxxxx-xxxxxxxxxxxxxxxx
 ELM_BASE_URL=https://elm.edina.ac.uk/api/v1
-ELM_MODEL=meta-llama/Llama-3.3-70B-Instruct
+ELM_MODEL=Qwen/Qwen3.5-397B-A17B-FP8
 LOG_ROOT_DIR=./logs
 ```
 
