@@ -141,3 +141,15 @@ test('the cancellation hooks the deployment actually provides are both wired', (
   assert.match(src, /cancel \(reason\) \{/, 'the ReadableStream needs a cancel handler')
   assert.match(src, /clientSignal: request\.signal/, 'and the request signal must be passed in')
 })
+
+test('the SSE stream carries a heartbeat while the run is silent', () => {
+  // Node's fetch (undici) drops a body that is idle for 300 s, and proxies are
+  // shorter. Four battery tasks on the first Qwen run were cut between 5 and
+  // 7½ minutes in as `terminated`, none near the 900 s cap. A comment line is
+  // invisible to every SSE parser and resets every idle timer on the path.
+  const src = fs.readFileSync(new URL('../../app/api/chat/route.js', import.meta.url), 'utf8')
+  assert.match(src, /controller\.enqueue\(encoder\.encode\(': keepalive\\n\\n'\)\)/, 'a comment line, not an event')
+  assert.match(src, /const SSE_HEARTBEAT_MS = 15000/, 'well inside the 300 s idle timeout')
+  assert.match(src, /if \(heartbeat\) clearInterval\(heartbeat\)/, 'and stopped when the run ends')
+  assert.ok(src.indexOf('clearInterval(heartbeat)') < src.indexOf('run.dispose()'), 'before the run signal is disposed')
+})

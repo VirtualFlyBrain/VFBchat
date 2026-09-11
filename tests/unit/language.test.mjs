@@ -407,6 +407,12 @@ test('a Hungarian question is answered in Hungarian: the ledger says so and the 
   assert.equal(r.ledger.terms['ellipsoid body'].id, 'FBbt_00003678')
   assert.ok(deps.calls.synth.length >= 1)
   assert.equal(deps.calls.synth[0].silent, true, 'the English draft is accumulated, not shown')
+  // And the model is TOLD to write it in English: on a Japanese question Qwen
+  // wrote the draft in Japanese about one run in three, so the linker found
+  // nothing to link and the translation step had nothing to translate (L3).
+  const userMsg = deps.calls.synth[0].messages.find(m => m.role === 'user').content
+  assert.match(userMsg, /WRITE THE ANSWER IN ENGLISH, even though the question is written in Hungarian/)
+  assert.ok(userMsg.indexOf('WRITE THE ANSWER IN ENGLISH') > userMsg.indexOf('Write the answer, never where'), 'stated last')
   assert.ok(r.trace.some(e => e.step === 'language' && e.code === 'hu'))
 })
 
@@ -418,6 +424,7 @@ test('an English question streams as before', async () => {
   const r = await runHarness('Tell me about the ellipsoid body and its driver lines', deps)
   assert.equal(r.ledger.language, 'en')
   assert.equal(deps.calls.synth[0].silent, false)
+  assert.ok(!deps.calls.synth[0].messages.find(m => m.role === 'user').content.includes('WRITE THE ANSWER IN ENGLISH'), 'no language rule on an English turn')
   assert.ok(!deps.calls.structured.includes('english_term_name'), 'no translation rung on an English turn')
 })
 
