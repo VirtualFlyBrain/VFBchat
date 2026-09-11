@@ -345,3 +345,30 @@ test('a query VFB gave no label and this file cannot phrase is offered as nothin
   })
   assert.deepEqual(buildFollowOns(ledger).chips.filter(c => c.kind === 'ask'), [])
 })
+
+// --- written forms: plural and sentence-initial -------------------------------
+//
+// "The mushroom bodies are paired neuropils" opened the L3 answer about one
+// run in three and carried no link, because the linker matched the registry
+// name letter for letter. The name as written may be plural or capitalised.
+
+import { writtenFormsPattern } from '../../lib/followOns.mjs'
+
+test('writtenFormsPattern allows the regular plural and a capital first letter, nothing more', () => {
+  const re = (n) => new RegExp(`^${writtenFormsPattern(n)}$`)
+  for (const ok of ['mushroom body', 'mushroom bodies', 'Mushroom body', 'Mushroom bodies']) assert.ok(re('mushroom body').test(ok), ok)
+  for (const no of ['MUSHROOM BODY', 'mushroom bodys', 'mushroom bod']) assert.ok(!re('mushroom body').test(no), no)
+  assert.ok(re('Kenyon cell').test('Kenyon cells'))
+  assert.ok(!re('Kenyon cell').test('kenyon cell'), 'a capitalised name keeps its case')
+  assert.ok(re('PN').test('PNs') && !re('PN').test('pn'), 'a symbol keeps its case')
+  assert.ok(re('calyx').test('calyxes') && !re('calyx').test('calyxs'))
+  assert.ok(!re('asymmetrical bodies').test('asymmetrical bodiess'), 'a name ending in s takes no plural')
+})
+
+test('linkifyKnownTerms links the plural and sentence-initial forms, keeping the prose as written', () => {
+  const links = [{ name: 'mushroom body', id: 'FBbt_00005801', url: vfbReportUrl('FBbt_00005801') }]
+  const out = linkifyKnownTerms('Mushroom bodies are paired neuropils. The mushroom body has a calyx.', links)
+  assert.ok(out.startsWith('[Mushroom bodies](https://www.virtualflybrain.org/reports/FBbt_00005801 "Open mushroom body in Virtual Fly Brain") are'), out)
+  assert.equal((out.match(/\]\(https/g) || []).length, 1, 'still linked once')
+  assert.ok(out.includes('The mushroom body has a calyx.'), 'the second mention is left as prose')
+})

@@ -118,7 +118,18 @@ function logModelResolutionOnce() {
 // the client disconnects, when the stream is cancelled, or when the run deadline
 // passes — see lib/runSignal.mjs for why a request nobody is waiting for must
 // stop rather than run to completion.
-function buildSseResponse(startHandler, { clientSignal = null } = {}) {
+// How often the stream carries a byte while nothing else is being sent. A run
+// can be silent for minutes — a cold class-connectivity aggregation, a planner
+// round on a busy gateway — and every hop between the server and the reader
+// has an idle timeout that reads silence as a dead connection: Node's fetch
+// (undici) gives up after 300 s between body chunks, and proxies are often
+// shorter. That is what `terminated` in a task-battery artefact means (T2.7,
+// T3.2, T3.8 and C12 on the first Qwen run, all cut between 5 and 7½ minutes
+// in, none of them near the 900 s cap). An SSE comment line carries no event,
+// so every parser — the page, the battery runner, EventSource — ignores it.
+const SSE_HEARTBEAT_MS = 15000
+
+function buildSseResponse(startHandler, { clientSignal = null, heartbeatMs = SSE_HEARTBEAT_MS } = {}) {
   const encoder = new TextEncoder()
   const run = createRunSignal({ clientSignal })
   const stream = new ReadableStream({
@@ -133,6 +144,17 @@ function buildSseResponse(startHandler, { clientSignal = null } = {}) {
           run.abort('stream-closed')
         }
       }
+      const heartbeat = heartbeatMs > 0
+        ? setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': keepalive\n\n'))
+          } catch {
+            run.abort('stream-closed')
+          }
+        }, heartbeatMs)
+        : null
+      // A timer must never be what keeps the process alive.
+      if (heartbeat && typeof heartbeat.unref === 'function') heartbeat.unref()
 
       try {
         await startHandler(sendEvent, run.signal)
@@ -140,6 +162,7 @@ function buildSseResponse(startHandler, { clientSignal = null } = {}) {
         if (!isRunAbortedWith(error, run.signal)) throw error
         console.log(`[VFBchat] RUN ABANDONED | reason=${run.reason() || 'aborted'}`)
       } finally {
+        if (heartbeat) clearInterval(heartbeat)
         run.dispose()
         try { controller.close() } catch { /* already closed by cancel() */ }
       }
