@@ -333,6 +333,19 @@ test('the claim answers the question that was asked', () => {
   assert.equal(s.rows[0].id, 'FBbt_90000029')
 })
 
+test('every class the claim names is registrable: roll-ups and the self-row too', () => {
+  // The caller registers `rows` for linking. The roll-up classes are named in
+  // the claim and shown in the table, so an answer that mentions them must be
+  // able to link them — a DNp32 answer left "adult neuron, adult CNS neuron,
+  // adult interneuron" as its only unlinked names.
+  const s = summariseClassPartners(downstreamPayload(), { label: 'Kenyon cell' })
+  const names = s.rows.map(r => r.name)
+  for (const r of s.aggregates) assert.ok(names.includes(r.label), `roll-up ${r.label} is in rows`)
+  for (const r of s.self) assert.ok(names.includes(r.label), `self ${r.label} is in rows`)
+  assert.ok(s.rows.every(r => r.id), 'every row carries an id')
+  assert.equal(s.rows.length, s.partners.length + s.aggregates.length + s.self.length)
+})
+
 test('the collapsed names are surfaced in the claim, not swallowed', () => {
   const c = summariseClassPartners(downstreamPayload(), { label: 'Kenyon cell' }).claim
   assert.ok(/VFB lists the same connections under/.test(c), c)
