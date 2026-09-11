@@ -276,6 +276,32 @@ test('suppression is per term, not per query type', () => {
     'the lobula was never asked about — its chip must survive')
 })
 
+test('when the answer ran EVERY offerable query, the chips come back rather than vanish', () => {
+  // The olfactory system offers exactly two: PartsOf and NeuronsPartHere. When
+  // the absence check runs both — about one welcome-screen answer in three — the
+  // reader was left an answer with nothing at all to click (battery WS3).
+  const OLFACTORY = {
+    id: 'FBbt_00007688',
+    label: 'olfactory system',
+    digest: {
+      name: 'olfactory system',
+      queries: [
+        { query_type: 'NeuronsPartHere', label: 'Neurons with some part here', count: 315 },
+        { query_type: 'PartsOf', label: 'Parts', count: 368 }
+      ]
+    }
+  }
+  const ran = qt => ({ id: 's', tool: 'vfb_run_query', args: { id: 'FBbt_00007688', query_type: qt }, status: 'satisfied' })
+  const both = buildFollowOns({ terms: { 'olfactory system': OLFACTORY }, plan: [ran('NeuronsPartHere'), ran('PartsOf')] })
+    .chips.filter(c => c.kind === 'ask')
+  assert.deepEqual(both.map(c => c.query_type), ['PartsOf', 'NeuronsPartHere'], 'largest first, as usual')
+  assert.ok(both.every(c => c.id === 'FBbt_00007688'), 'and still addressed')
+  // One of the two run is still ordinary suppression: the unasked one wins alone.
+  const one = buildFollowOns({ terms: { 'olfactory system': OLFACTORY }, plan: [ran('PartsOf')] })
+    .chips.filter(c => c.kind === 'ask')
+  assert.deepEqual(one.map(c => c.query_type), ['NeuronsPartHere'])
+})
+
 test('a planned query with no id suppresses nothing', () => {
   // `::type` steps exist (a planner step naming a query with no target). They must
   // not mute a chip for a term they may not even be about.
