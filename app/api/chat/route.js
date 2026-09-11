@@ -11384,6 +11384,31 @@ async function localiseFollowOns(followOns, language, { apiBaseUrl, apiKey, apiM
  * a query type that reaches a URL, an id that is an id, a URL on a host the
  * outbound gate already allows.
  */
+/**
+ * One chip per reading the resolver could not choose between (#66 follow-up):
+ * the user's own question with the ambiguous name swapped for the reading's
+ * VFB label, so clicking it re-asks the question about exactly that term. When
+ * the name is not literally in the question (the planner paraphrased it) the
+ * label is prefixed instead, which the next turn's planner reads as the term.
+ * Exported for the unit test; no model, no network.
+ */
+export function clarifyReadingChips(question = '', options = []) {
+  const out = []
+  const seen = new Set()
+  for (const o of Array.isArray(options) ? options : []) {
+    const label = String(o?.label || '').trim()
+    const name = String(o?.name || '').trim()
+    if (!label || seen.has(label.toLowerCase())) continue
+    seen.add(label.toLowerCase())
+    const q = String(question || '').trim()
+    const re = name ? new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'i') : null
+    const query = re && re.test(q) ? q.replace(re, label) : (q ? `${q} (I mean ${label})` : label)
+    out.push({ kind: 'ask', label, query: query.slice(0, 300), title: `Ask again about ${label}` })
+    if (out.length >= 6) break
+  }
+  return out
+}
+
 function previousFollowOnsFrom(rawMessages) {
   const last = [...(Array.isArray(rawMessages) ? rawMessages : [])].reverse()
     .find(m => m && m.role === 'assistant' && Array.isArray(m.followOns) && m.followOns.length)
@@ -11588,13 +11613,19 @@ async function runRoleHarnessForRequest({ priorMessages, lastAssistantText = '',
       // answer. The Finglish question that got "Do you want to know how many
       // split-GAL4 driver lines…?" back in English is the case.
       const clarifyRendered = await renderInLanguage({ text: clarifyEnglish, language, kind: 'clarification', sendEvent, ...languageDeps })
+      // When the resolver asked which of several exact readings was meant, the
+      // readings are offered as chips: each re-asks THIS question with the
+      // ambiguous name replaced by the term's own VFB label, which the next
+      // turn resolves exactly. Labels are localised like any other chip.
+      const readingChips = clarifyReadingChips(userMessage, live.ledger?.clarifyOptions)
+      const clarifyFollowOns = readingChips.length ? await localiseFollowOns(readingChips, language, languageDeps) : []
       return {
         ok: true,
         responseText: clarifyRendered.text,
         images: [],
         graphs: [],
         tables: [],
-        followOns: [],
+        followOns: clarifyFollowOns,
         sources: [],
         // Even a clarifying turn carries the context forward. A question the
         // harness could not answer without more information is exactly the
