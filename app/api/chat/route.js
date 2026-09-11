@@ -11377,14 +11377,6 @@ async function localiseFollowOns(followOns, language, { apiBaseUrl, apiKey, apiM
 }
 
 /**
- * The follow-on chips of the previous turn, as the client sent them back in
- * its history, for the turn that re-renders that answer in another language.
- * The client is not trusted with them: only the fields a chip is made of are
- * taken, and only in the shapes the harness itself would have produced —
- * a query type that reaches a URL, an id that is an id, a URL on a host the
- * outbound gate already allows.
- */
-/**
  * One chip per reading the resolver could not choose between (#66 follow-up):
  * the user's own question with the ambiguous name swapped for the reading's
  * VFB label, so clicking it re-asks the question about exactly that term. When
@@ -11409,6 +11401,14 @@ export function clarifyReadingChips(question = '', options = []) {
   return out
 }
 
+/**
+ * The follow-on chips of the previous turn, as the client sent them back in
+ * its history, for the turn that re-renders that answer in another language.
+ * The client is not trusted with them: only the fields a chip is made of are
+ * taken, and only in the shapes the harness itself would have produced —
+ * a query type that reaches a URL, an id that is an id, a URL on a host the
+ * outbound gate already allows.
+ */
 function previousFollowOnsFrom(rawMessages) {
   const last = [...(Array.isArray(rawMessages) ? rawMessages : [])].reverse()
     .find(m => m && m.role === 'assistant' && Array.isArray(m.followOns) && m.followOns.length)
