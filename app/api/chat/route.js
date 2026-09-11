@@ -11365,6 +11365,9 @@ async function renderInLanguage({ text, language, kind = 'answer', sendEvent, ap
   // grounding audit reports. `links` is what the check had to preserve.
   try {
     console.error(`[VFBchat] TRANSLATION | language=${language} | kind=${kind} | ok=${r.ok} | attempts=${r.attempts} | links=${linkTargets(text).length} | chars=${String(text).length} | ms=${Date.now() - startedAt}${r.ok ? '' : ` | reason=${safeText(r.reason)}`}`)
+    // The English source, trace mode only: "links=0" on a translated answer is
+    // unreadable without the text it was measured on (battery L3, 11 Sep).
+    if (process.env.VFB_HARNESS_TRACE === 'true') console.log('[VFBchat] TRANSLATION SOURCE', JSON.stringify(String(text)))
   } catch { /* logging best-effort */ }
   if (!r.ok) {
     sendEvent('draft_discarded', { reason: 'translation-unverified' })
