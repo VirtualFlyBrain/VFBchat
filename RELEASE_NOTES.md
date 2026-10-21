@@ -4,6 +4,9 @@ This file summarizes the release notes inferred from git tags (tag message/annot
 
 ---
 
+## v4.2.22
+- Rebuild on the patched Node.js 22 base image (22.23.4) for the 21 Oct 2026 Node.js security release, which fixes a Brotli decoder out-of-bounds write (CVE-2026-111497) and TLS hostname-verification bypasses (CVE-2026-106069, CVE-2026-105483). No application changes.
+
 ## v4.2.21
 - - **A long answer no longer dies silently on its way to the reader.** The stream can go minutes without a byte — a planner round on a busy gateway, a cold class-connectivity aggregation — and every hop between the server and the browser reads that silence as a dead connection: Node's own fetch gives up after 300 s between chunks, and proxies are often shorter. The connection now carries a keepalive every 15 seconds while nothing else is being sent. It is an SSE comment, so the chat window, the task battery and any other client ignore it; what changes is that nothing in between hangs up. Four battery questions had been cut off between five and seven and a half minutes in, none of them near the timeout.
 
