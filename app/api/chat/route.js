@@ -9587,7 +9587,7 @@ async function executeFunctionTool(name, args, context = {}) {
 // from the ledger registry by linkifyKnownTerms, which can only ever point a label
 // at the id VFB gave it.
 
-const VFB_QUERY_LINK_BASE = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
+const VFB_QUERY_LINK_BASE = 'https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?q='
 
 const VFB_QUERY_SHORT_NAMES = [
   { name: 'ListAllAvailableImages', description: 'List all available images of $NAME' },

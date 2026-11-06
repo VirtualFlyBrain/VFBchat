@@ -182,13 +182,13 @@ test('buildTurnContext writes the ledger decision into the context', () => {
 
 const EN = [
   'The [ellipsoid body](https://www.virtualflybrain.org/reports/FBbt_00003678 "Open ellipsoid body in Virtual Fly Brain") is a neuropil.',
-  'VFB holds [392](https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB") driver lines, 1,335 images and 3 subclasses (FBbt_00003678).'
+  'VFB holds [392](https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB") driver lines, 1,335 images and 3 subclasses (FBbt_00003678).'
 ].join('\n\n')
 
 test('link targets are read to the closing paren, titles and all', () => {
   assert.deepEqual(linkTargets(EN), [
     'https://www.virtualflybrain.org/reports/FBbt_00003678',
-    'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere'
+    'https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere'
   ])
   assert.deepEqual(linkTargets('see https://flybase.org/reports/FBgn0000014 now'), ['https://flybase.org/reports/FBgn0000014'])
 })
@@ -215,7 +215,7 @@ test('a faithful translation passes, whichever digits it used', () => {
 })
 
 test('a translation that dropped a link, a number or an id fails, and says which', () => {
-  const noLink = EN.replace('[392](https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB")', '392')
+  const noLink = EN.replace('[392](https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB")', '392')
   const c1 = checkTranslation(EN, noLink)
   assert.equal(c1.ok, false)
   assert.equal(c1.missing.urls.length, 1)
@@ -268,7 +268,7 @@ test('translateMarkdown: a verified first attempt ships', async () => {
 })
 
 test('translateMarkdown: a dropped link is retried with the complaint, and the client drops the draft', async () => {
-  const bad = EN.replace('[392](https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB")', '392')
+  const bad = EN.replace('[392](https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?q=FBbt_00003678,TransgeneExpressionHere "Run in VFB")', '392')
   const good = EN.replace('is a neuropil', 'egy neuropil')
   const seen = []
   let discarded = 0
@@ -332,19 +332,19 @@ test('chip labels fall back to English on any shape mismatch, and per label when
 // --- the battery's language checks ------------------------------------------
 
 test('scriptShare and englishStopwordRatio read the prose, not the links', () => {
-  const fa = 'VFB تعداد [70](https://v2.virtualflybrain.org/x "Run in VFB") نوع نورون را برای [ellipsoid body](https://www.virtualflybrain.org/reports/FBbt_00003678 "Open") ثبت کرده است.'
+  const fa = 'VFB تعداد [70](https://v3.virtualflybrain.org/x "Run in VFB") نوع نورون را برای [ellipsoid body](https://www.virtualflybrain.org/reports/FBbt_00003678 "Open") ثبت کرده است.'
   assert.ok(scriptShare(fa, 'Arabic') > 0.7, 'the English label inside the link text does not count against the Persian')
   assert.ok(scriptShare(fa, 'Latin') < 0.3)
   assert.equal(scriptShare('', 'Arabic'), 0)
   assert.equal(scriptShare('abc', 'NotAScript'), 0)
-  const hu = 'A VFB jelenleg [392](https://v2.virtualflybrain.org/x "Run in VFB") transzgén expressziós jelentést tart nyilván az ellipszis testre (ellipsoid body) vonatkozóan.'
+  const hu = 'A VFB jelenleg [392](https://v3.virtualflybrain.org/x "Run in VFB") transzgén expressziós jelentést tart nyilván az ellipszis testre (ellipsoid body) vonatkozóan.'
   assert.ok(englishStopwordRatio(hu) < 0.06, `hungarian ratio ${englishStopwordRatio(hu)}`)
   const en = 'VFB holds 392 transgene expression reports for the ellipsoid body, and these are the ones with GAL4 drivers.'
   assert.ok(englishStopwordRatio(en) > 0.2, `english ratio ${englishStopwordRatio(en)}`)
 })
 
 test('checkTurn: the language expectations name what went wrong', () => {
-  const en = 'VFB holds [392](https://v2.virtualflybrain.org/x "Run in VFB") reports for the ellipsoid body.'
+  const en = 'VFB holds [392](https://v3.virtualflybrain.org/x "Run in VFB") reports for the ellipsoid body.'
   const problems = checkTurn(
     { answer_script: 'Arabic', answer_not_english: true, context_lang: { code: 'fa', pinned: true }, min_links: 2 },
     { answer: en, followOns: [], context: { lang: { code: 'fa', pinned: false } } }
@@ -355,7 +355,7 @@ test('checkTurn: the language expectations name what went wrong', () => {
   assert.match(problems[2], /not pinned, expected pinned/)
   assert.match(problems[3], /at least 2 link/)
   assert.deepEqual(checkTurn({ context_lang: 'hu' }, { answer: 'x', followOns: [], context: {} }), ['context language is unset, expected hu'])
-  const fa = 'VFB تعداد [70](https://v2.virtualflybrain.org/x "Run in VFB") نوع نورون را ثبت کرده است.'
+  const fa = 'VFB تعداد [70](https://v3.virtualflybrain.org/x "Run in VFB") نوع نورون را ثبت کرده است.'
   assert.deepEqual(checkTurn({ answer_script: 'Arabic', answer_not_english: true, context_lang: 'fa', min_links: 1 }, { answer: fa, followOns: [], context: { lang: { code: 'fa', pinned: true } } }), [])
 })
 

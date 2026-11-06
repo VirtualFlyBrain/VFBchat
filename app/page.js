@@ -1179,7 +1179,7 @@ export default function Home() {
 
   function createVFBUrl(scene) {
     if (!scene.id) return '#'
-    const baseUrl = 'https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto'
+    const baseUrl = 'https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto'
     return `${baseUrl}?id=${encodeURIComponent(scene.id)}${scene.i ? `&i=${encodeURIComponent(scene.i)}` : ''}`
   }
 
@@ -1559,7 +1559,7 @@ Feel free to ask about neural circuits, gene expression, connectome data, or any
         title = 'View in FlyBase'
       } else if (normalizedHref.startsWith('VFB') || normalizedHref.startsWith('FBbt')) {
         // VFB and FBbt IDs should link to VFB
-        url = `https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${normalizedHref}`
+        url = `https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?id=${normalizedHref}`
         title = 'View in VFB'
       }
     }
