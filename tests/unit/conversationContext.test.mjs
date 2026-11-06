@@ -261,7 +261,7 @@ test('contextPromptBlock names the id and the available queries, or says nothing
 test('minimizeMessage keeps the sentence and drops the apparatus', () => {
   const src = [
     '## The medulla',
-    'The [medulla](https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto?id=FBbt_00003748 "medulla") is a **neuropil**.',
+    'The [medulla](https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto?id=FBbt_00003748 "medulla") is a **neuropil**.',
     '![thumb](http://www.virtualflybrain.org/data/VFB/i/jrmc/20bn/VFB_00101567/thumbnail.png)',
     '| Name | Id |',
     '| --- | --- |',
