@@ -159,6 +159,21 @@ test('cluster names decode to study, year, condition, sex and tissue', () => {
     { study: 'FCA', year: '2022', condition: '', sex: 'mixed', tissue: 'antenna', cell: 'Gr21a ORNs' })
 })
 
+// VFB curates the scRNAseq data itself now (VFBseq ids) and the cluster names
+// changed shape; the columns must still say which study each one is from.
+test('VFBseq cluster names decode to study, year and tissue', () => {
+  assert.equal(clusterDatasetLabel('G-KC cluster 8 (res-2.0) (Davie 2018)'), 'Davie 2018')
+  assert.equal(clusterDatasetLabel('gamma Kenyon cell cluster (Fly Cell Atlas 10x Stringent Head) (Li 2022)'), 'FCA 2022 · head')
+  assert.equal(clusterDatasetLabel('gamma Kenyon cell cluster (Aging Fly Cell Atlas head) (Lu 2023)'), 'AFCA 2023 · head')
+  assert.equal(clusterDatasetLabel('fat cell cluster (Fly Cell Atlas 10x Relaxed Fat Body) (Li 2022)'), 'FCA 2022 · fat body')
+  assert.equal(clusterDatasetLabel('T4 neuron cluster (Kurmangaliyev 2020)'), 'Kurmangaliyev 2020')
+  assert.equal(clusterDatasetLabel('insulin-producing cell cells, sorted (Fly Cell Atlas Smart-seq2 dilp2 IPC (insulin-producing cells)) (Li 2022)'), 'FCA 2022 · dilp2 ipc (insulin-producing cells)')
+  assert.deepEqual(describeCluster('G-KC cluster 8 (res-2.0) (Davie 2018)'),
+    { study: 'Davie', year: '2018', condition: '', sex: '', tissue: '', cell: 'G-KC' })
+  assert.equal(describeCluster('gamma Kenyon cell cluster (Aging Fly Cell Atlas head) (Lu 2023)').cell, 'gamma Kenyon cell')
+  assert.equal(clusterDatasetLabel('a cluster with no study'), '')
+})
+
 test('column headers carry the dataset, and the cell type only when it varies', () => {
   const genes = [{ symbol: 'mub', perCluster: [
     { clusterId: 'a', clusterName: 'scRNAseq_2018_Davie_FULL_seq_clustering_gamma_Kenyon_cells', cellType: 'adult gamma Kenyon cell', level: 100, extent: 1 },
